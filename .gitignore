@@ -1,0 +1,33 @@
+# SwiftPM build artifacts
+.build/
+.swiftpm/
+.sourcekit-lsp/
+*.dSYM/
+
+# Xcode and Apple toolchain user data
+DerivedData/
+Packages/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+
+# macOS filesystem noise
+.DS_Store
+._*
+
+# Editor and shell noise
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment files
+.env
+.env.*

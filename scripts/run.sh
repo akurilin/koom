@@ -3,7 +3,37 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_PATH="$("$ROOT_DIR/scripts/build-app.sh")"
+BUILD_ARGS=()
+
+usage() {
+    cat >&2 <<'EOF'
+Usage: ./scripts/run.sh [--clean]
+
+Options:
+  --clean    Remove .build before invoking swift build.
+  --help     Show this help text.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --clean)
+            BUILD_ARGS+=("$1")
+            shift
+            ;;
+        --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+APP_PATH="$("$ROOT_DIR/scripts/build-app.sh" "${BUILD_ARGS[@]}")"
 APP_EXECUTABLE="$APP_PATH/Contents/MacOS/koom"
 
 if [[ ! -x "$APP_EXECUTABLE" ]]; then

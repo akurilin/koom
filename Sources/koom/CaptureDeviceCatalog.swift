@@ -2,13 +2,18 @@
 
 enum CaptureDeviceCatalog {
     static func cameras() -> [AVCaptureDevice] {
-        var deviceTypes: [AVCaptureDevice.DeviceType] = [
-            .builtInWideAngleCamera,
-            .externalUnknown,
-        ]
-
+        let deviceTypes: [AVCaptureDevice.DeviceType]
         if #available(macOS 14.0, *) {
-            deviceTypes.insert(.continuityCamera, at: 1)
+            deviceTypes = [
+                .builtInWideAngleCamera,
+                .continuityCamera,
+                .external,
+            ]
+        } else {
+            deviceTypes = [
+                .builtInWideAngleCamera,
+                .externalUnknown,
+            ]
         }
 
         return AVCaptureDevice.DiscoverySession(
@@ -19,13 +24,17 @@ enum CaptureDeviceCatalog {
     }
 
     static func microphones() -> [AVCaptureDevice] {
-        var deviceTypes: [AVCaptureDevice.DeviceType] = [
-            .builtInMicrophone,
-            .externalUnknown,
-        ]
-
+        let deviceTypes: [AVCaptureDevice.DeviceType]
         if #available(macOS 14.0, *) {
-            deviceTypes.insert(.microphone, at: 0)
+            deviceTypes = [
+                .microphone,
+                .external,
+            ]
+        } else {
+            deviceTypes = [
+                .builtInMicrophone,
+                .externalUnknown,
+            ]
         }
 
         return AVCaptureDevice.DiscoverySession(

@@ -9,6 +9,7 @@ Local-first macOS screen recorder built with SwiftUI, ScreenCaptureKit, and AVFo
 - Always-on camera overlay pinned to the bottom-left of the selected monitor
 - Start, pause, resume, stop, and restart recording
 - Save recordings locally to `~/Movies/koom/*.mp4`
+- Normalize multichannel microphones to a recordable mono or stereo stream before writing MP4 output
 - Restore selected monitor, camera, and microphone between app launches
 - Build and launch entirely from the terminal
 

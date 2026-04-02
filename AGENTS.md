@@ -5,7 +5,6 @@
 - Do not commit unless the user explicitly asks for a commit.
 - Keep `.gitignore` conservative and avoid committing build artifacts, local state, credentials, or editor noise.
 - Prefer terminal-only workflows. Do not introduce an Xcode project unless the user explicitly asks for one.
-- Keep `README.md` current when developer workflow or runtime behavior changes.
 
 ## Build Hygiene
 

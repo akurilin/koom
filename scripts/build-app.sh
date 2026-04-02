@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/.build"
 APP_PATH="$BUILD_DIR/koom.app"
 EXECUTABLE_PATH="$BUILD_DIR/debug/koom"
-APP_ICON_SOURCE_PATH="$ROOT_DIR/assets/camera-lens.png"
+APP_ICON_SOURCE_PATH="$ROOT_DIR/assets/camera-lens-glitch.png"
 APP_ICON_PATH="$APP_PATH/Contents/Resources/AppIcon.icns"
 CLEAN_BUILD=false
 

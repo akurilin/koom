@@ -32,6 +32,13 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         let outputURL: URL
     }
 
+    private struct TrackTimingState {
+        var firstPTS: CMTime?
+        var accumulatedPauseOffset: CMTime = .zero
+        var pausePTS: CMTime?
+        var needsResumeOffset = false
+    }
+
     private let configuration: Configuration
     private let sampleQueue = DispatchQueue(label: "koom.recording.samples")
 
@@ -40,12 +47,11 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
     private var microphoneCapture: MicrophoneCapture?
-    private var sessionStartPTS: CMTime?
-    private var accumulatedPauseOffset: CMTime = .zero
-    private var pauseStartPTS: CMTime?
-    private var resumeNeedsOffset = false
-    private var lastSourcePTS: CMTime = .invalid
+    private var hasStartedSession = false
+    private var videoTimingState = TrackTimingState()
+    private var audioTimingState = TrackTimingState()
     private var isPaused = false
+    private var isFinishing = false
 
     init(configuration: Configuration) {
         self.configuration = configuration
@@ -123,7 +129,6 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         sampleQueue.async {
             guard !self.isPaused else { return }
             self.isPaused = true
-            self.pauseStartPTS = CMTIME_IS_VALID(self.lastSourcePTS) ? self.lastSourcePTS : nil
             AppLog.info("Recorder paused.")
         }
     }
@@ -132,7 +137,8 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         sampleQueue.async {
             guard self.isPaused else { return }
             self.isPaused = false
-            self.resumeNeedsOffset = true
+            self.videoTimingState.needsResumeOffset = true
+            self.audioTimingState.needsResumeOffset = true
             AppLog.info("Recorder resumed.")
         }
     }
@@ -144,90 +150,117 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
         AppLog.info("Recorder stopping. Discard output: \(discardOutput)")
         try? await stream?.stopCapture()
-        microphoneCapture?.stop()
+        await microphoneCapture?.stop()
+        await drainSampleQueue()
 
-        return try await withCheckedThrowingContinuation { continuation in
+        await withCheckedContinuation { continuation in
             sampleQueue.async {
+                self.isFinishing = true
                 self.videoInput?.markAsFinished()
                 self.audioInput?.markAsFinished()
-
-                writer.finishWriting {
-                    defer {
-                        self.stream = nil
-                        self.writer = nil
-                        self.videoInput = nil
-                        self.audioInput = nil
-                        self.microphoneCapture = nil
-                        self.sessionStartPTS = nil
-                        self.accumulatedPauseOffset = .zero
-                        self.pauseStartPTS = nil
-                        self.resumeNeedsOffset = false
-                        self.lastSourcePTS = .invalid
-                        self.isPaused = false
-                    }
-
-                    if discardOutput {
-                        try? FileManager.default.removeItem(at: self.configuration.outputURL)
-                        AppLog.info("Discarded recording at \(self.configuration.outputURL.path)")
-                    }
-
-                    if writer.status == .completed || discardOutput {
-                        AppLog.info("Recorder finished writing \(self.configuration.outputURL.path)")
-                        continuation.resume(returning: self.configuration.outputURL)
-                        return
-                    }
-
-                    let reason = writer.error?.localizedDescription ?? "koom could not finalize the recording."
-                    AppLog.error("Recorder failed to finalize: \(reason)")
-                    continuation.resume(throwing: RecorderError.writerFailed(reason))
-                }
+                continuation.resume()
             }
         }
+
+        await writer.finishWriting()
+
+        defer {
+            stream = nil
+            self.writer = nil
+            videoInput = nil
+            audioInput = nil
+            microphoneCapture = nil
+            hasStartedSession = false
+            videoTimingState = TrackTimingState()
+            audioTimingState = TrackTimingState()
+            isPaused = false
+            isFinishing = false
+        }
+
+        if discardOutput {
+            try? FileManager.default.removeItem(at: configuration.outputURL)
+            AppLog.info("Discarded recording at \(configuration.outputURL.path)")
+        }
+
+        if writer.status == .completed || discardOutput {
+            AppLog.info("Recorder finished writing \(configuration.outputURL.path)")
+            return configuration.outputURL
+        }
+
+        let reason = Self.writerFailureDescription(writer)
+        AppLog.error("Recorder failed to finalize: \(reason)")
+        throw RecorderError.writerFailed(reason)
     }
 
     private func append(sampleBuffer: CMSampleBuffer, mediaType: AVMediaType) {
         guard CMSampleBufferIsValid(sampleBuffer) else { return }
-
-        let sourcePTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        if CMTIME_IS_VALID(sourcePTS) {
-            lastSourcePTS = sourcePTS
-        }
-
-        if isPaused {
-            if pauseStartPTS == nil, CMTIME_IS_VALID(sourcePTS) {
-                pauseStartPTS = sourcePTS
-            }
-            return
-        }
-
-        if resumeNeedsOffset, let pauseStartPTS, CMTIME_IS_VALID(sourcePTS) {
-            let pauseDelta = CMTimeSubtract(sourcePTS, pauseStartPTS)
-            if pauseDelta > .zero {
-                accumulatedPauseOffset = CMTimeAdd(accumulatedPauseOffset, pauseDelta)
-            }
-            self.pauseStartPTS = nil
-            resumeNeedsOffset = false
-        }
-
-        if sessionStartPTS == nil, CMTIME_IS_VALID(sourcePTS) {
-            sessionStartPTS = sourcePTS
-            writer?.startSession(atSourceTime: .zero)
-        }
-
-        guard let sessionStartPTS else { return }
-        let offset = CMTimeAdd(sessionStartPTS, accumulatedPauseOffset)
-
-        guard let retimedBuffer = sampleBuffer.retimed(bySubtracting: offset) else { return }
+        guard !isFinishing else { return }
 
         switch mediaType {
         case .video:
+            guard let retimedBuffer = prepareRetimedBuffer(sampleBuffer, state: &videoTimingState, trackName: "video") else { return }
             guard let videoInput, videoInput.isReadyForMoreMediaData else { return }
-            _ = videoInput.append(retimedBuffer)
+            if !videoInput.append(retimedBuffer) {
+                AppLog.error("Failed appending video sample. \(Self.writerFailureDescription(writer))")
+            }
         case .audio:
+            guard let retimedBuffer = prepareRetimedBuffer(sampleBuffer, state: &audioTimingState, trackName: "audio") else { return }
             guard let audioInput, audioInput.isReadyForMoreMediaData else { return }
-            _ = audioInput.append(retimedBuffer)
+            if !audioInput.append(retimedBuffer) {
+                AppLog.error("Failed appending audio sample. \(Self.writerFailureDescription(writer))")
+            }
         default:
             return
+        }
+    }
+
+    private func prepareRetimedBuffer(
+        _ sampleBuffer: CMSampleBuffer,
+        state: inout TrackTimingState,
+        trackName: String
+    ) -> CMSampleBuffer? {
+        let sourcePTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+        if isPaused {
+            if state.pausePTS == nil, CMTIME_IS_VALID(sourcePTS) {
+                state.pausePTS = sourcePTS
+            }
+            return nil
+        }
+
+        if state.needsResumeOffset {
+            if let pausePTS = state.pausePTS, CMTIME_IS_VALID(sourcePTS) {
+                let pauseDelta = CMTimeSubtract(sourcePTS, pausePTS)
+                if pauseDelta > .zero {
+                    state.accumulatedPauseOffset = CMTimeAdd(state.accumulatedPauseOffset, pauseDelta)
+                }
+            }
+
+            state.pausePTS = nil
+            state.needsResumeOffset = false
+        }
+
+        if state.firstPTS == nil, CMTIME_IS_VALID(sourcePTS) {
+            state.firstPTS = sourcePTS
+
+            if !hasStartedSession {
+                writer?.startSession(atSourceTime: .zero)
+                hasStartedSession = true
+            }
+
+            AppLog.info("Anchored \(trackName) track at source PTS \(sourcePTS.seconds).")
+        }
+
+        guard let firstPTS = state.firstPTS else { return nil }
+        let offset = CMTimeAdd(firstPTS, state.accumulatedPauseOffset)
+        return sampleBuffer.retimed(bySubtracting: offset)
+    }
+
+    private func drainSampleQueue() async {
+        await withCheckedContinuation { continuation in
+            sampleQueue.async {
+                continuation.resume()
+            }
         }
     }
 
@@ -252,6 +285,19 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             AVNumberOfChannelsKey: 1,
             AVEncoderBitRateKey: 128_000,
         ]
+    }
+
+    private static func writerFailureDescription(_ writer: AVAssetWriter?) -> String {
+        guard let writer else {
+            return "Writer unavailable."
+        }
+
+        let baseDescription = writer.error?.localizedDescription ?? "The operation could not be completed."
+        let nsError = writer.error as NSError?
+        let domain = nsError.map { "domain=\($0.domain)" } ?? "domain=unknown"
+        let code = nsError.map { "code=\($0.code)" } ?? "code=unknown"
+
+        return "status=\(writer.status.rawValue) \(domain) \(code) \(baseDescription)"
     }
 }
 
@@ -293,11 +339,17 @@ private final class MicrophoneCapture: NSObject, @unchecked Sendable {
         }
     }
 
-    func stop() {
-        sessionQueue.async {
-            if self.session.isRunning {
-                self.session.stopRunning()
-                AppLog.info("Microphone capture stopped.")
+    func stop() async {
+        await withCheckedContinuation { continuation in
+            sessionQueue.async {
+                self.audioOutput.setSampleBufferDelegate(nil, queue: nil)
+
+                if self.session.isRunning {
+                    self.session.stopRunning()
+                    AppLog.info("Microphone capture stopped.")
+                }
+
+                continuation.resume()
             }
         }
     }

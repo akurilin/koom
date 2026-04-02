@@ -20,10 +20,11 @@ Local-first macOS screen recorder built with SwiftUI, ScreenCaptureKit, and AVFo
 
 That command:
 
-1. Builds the Swift package with `swift build`
-2. Bundles a real macOS app at `.build/koom.app`
-3. Runs the app executable in the foreground
-4. Streams app logs into the terminal
+1. Deletes this repo's local `.build` directory after validating the target path
+2. Builds the Swift package from scratch with `swift build`
+3. Bundles a real macOS app at `.build/koom.app`
+4. Runs the app executable in the foreground
+5. Streams app logs into the terminal
 
 `Ctrl-C` in that terminal will terminate `koom`.
 

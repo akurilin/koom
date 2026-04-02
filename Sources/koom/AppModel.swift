@@ -71,8 +71,6 @@ final class AppModel: ObservableObject {
         AppLog.info(
             "Restored settings. Display: \(restoredSettings.selectedDisplayID.map(String.init) ?? "none"), camera: \(restoredSettings.selectedCameraID ?? "none"), microphone: \(restoredSettings.selectedMicrophoneID ?? "none")"
         )
-
-        refreshHardware()
     }
 
     func refreshHardware() {

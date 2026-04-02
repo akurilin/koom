@@ -46,12 +46,23 @@ final class CameraPreviewManager: @unchecked Sendable {
 }
 
 final class CameraOverlayWindowController: NSWindowController {
-    private let hostingView = NSHostingView(rootView: CameraOverlayContent(session: AVCaptureSession()))
-    private let overlaySize = CGSize(width: 176, height: 176)
+    private static let previewDiameter: CGFloat = 176
+    private static let shadowInset: CGFloat = 18
+    private static let overlaySize = CGSize(
+        width: previewDiameter + (shadowInset * 2),
+        height: previewDiameter + (shadowInset * 2)
+    )
+    private lazy var hostingView = NSHostingView(
+        rootView: CameraOverlayContent(
+            session: AVCaptureSession(),
+            previewDiameter: Self.previewDiameter,
+            shadowInset: Self.shadowInset
+        )
+    )
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: overlaySize),
+            contentRect: NSRect(origin: .zero, size: Self.overlaySize),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -59,7 +70,7 @@ final class CameraOverlayWindowController: NSWindowController {
 
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = true
+        window.hasShadow = false
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         window.titleVisibility = .hidden
@@ -76,7 +87,11 @@ final class CameraOverlayWindowController: NSWindowController {
     }
 
     func update(session: AVCaptureSession, displayID: CGDirectDisplayID, isVisible: Bool) {
-        hostingView.rootView = CameraOverlayContent(session: session)
+        hostingView.rootView = CameraOverlayContent(
+            session: session,
+            previewDiameter: Self.previewDiameter,
+            shadowInset: Self.shadowInset
+        )
 
         guard isVisible, let window = window else {
             window?.orderOut(nil)
@@ -89,24 +104,30 @@ final class CameraOverlayWindowController: NSWindowController {
         }
 
         let frame = screen.frame
-        let origin = NSPoint(x: frame.minX + 24, y: frame.minY + 24)
-        window.setFrame(NSRect(origin: origin, size: overlaySize), display: true)
+        let origin = NSPoint(
+            x: frame.minX + 24 - Self.shadowInset,
+            y: frame.minY + 24 - Self.shadowInset
+        )
+        window.setFrame(NSRect(origin: origin, size: Self.overlaySize), display: true)
         window.orderFrontRegardless()
     }
 }
 
 private struct CameraOverlayContent: View {
     let session: AVCaptureSession
+    let previewDiameter: CGFloat
+    let shadowInset: CGFloat
 
     var body: some View {
         CameraPreviewView(session: session)
+            .frame(width: previewDiameter, height: previewDiameter)
             .clipShape(Circle())
             .overlay {
                 Circle()
                     .stroke(.white.opacity(0.9), lineWidth: 3)
             }
-            .shadow(color: .black.opacity(0.32), radius: 12, x: 0, y: 8)
-            .padding(4)
+            .shadow(color: .black.opacity(0.2), radius: 7, x: 0, y: 4)
+            .padding(shadowInset)
             .background(.clear)
     }
 }

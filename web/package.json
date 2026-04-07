@@ -1,0 +1,11 @@
+{
+  "name": "@koom/web",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Koom web app and backend API routes. Next.js scaffolding to be added in a later phase.",
+  "scripts": {},
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1026.0",
+    "@aws-sdk/s3-request-presigner": "^3.1026.0"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "koom",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Self-deployable Loom-style screen recorder.",
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "r2:setup": "tsx scripts/r2-setup.ts",
+    "doctor": "tsx scripts/doctor.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

@@ -31,3 +31,10 @@ xcuserdata/
 # Local environment files
 .env
 .env.*
+!.env.example
+
+# Node
+node_modules/
+
+# Operator script state
+scripts/.r2-state.json

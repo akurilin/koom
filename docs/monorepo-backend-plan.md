@@ -93,7 +93,9 @@ v1 *does* include a database. The earlier sidecar-JSON-metadata idea has been di
 ### Technology preferences
 
 - TypeScript throughout `web/` and `scripts/`.
-- Drizzle ORM for Postgres schema and migrations.
+- `pg` (node-postgres) for Postgres access. No ORM — raw parameterized SQL queries. koom's schema is small enough that an ORM's benefits don't outweigh the extra concept count, and raw SQL stays closer to what's actually running.
+- Schema and migrations managed by the Supabase CLI. Migration files live in `supabase/migrations/` as hand-written SQL and are committed to the repo.
+- Local development targets a Dockerized Supabase stack (`npm run db:start`). The hosted Supabase project is only used once production is ready.
 - `@aws-sdk/client-s3` against R2's S3-compatible endpoint for bucket interactions and presigned URLs.
 - Next.js App Router.
 - `npm` workspaces at the repository root.
@@ -186,19 +188,24 @@ web/
   components/
   lib/
     db/
-      schema.ts
-      client.ts
+      client.ts             # thin pg Pool wrapper reading DATABASE_URL
+      queries.ts            # parameterized SQL query helpers
     r2/
       client.ts
     auth/
   public/
-  drizzle/                  # generated migrations
-  drizzle.config.ts
   package.json
   tsconfig.json
   next.config.ts
   .env.example              # committed template
   .env.local                # gitignored, real values
+
+supabase/
+  config.toml               # local stack configuration
+  migrations/               # hand-written SQL migrations
+    YYYYMMDDHHMMSS_create_recordings.sql
+  seed.sql                  # optional — seed data for `db reset`
+  .gitignore                # ignores .branches/, .temp/, etc.
 
 docs/
   monorepo-backend-plan.md
@@ -206,8 +213,8 @@ docs/
 scripts/
   build-app.sh              # existing
   run.sh                    # existing
-  r2-setup.ts               # new
-  doctor.ts                 # new
+  r2-setup.ts               # R2 provisioning
+  doctor.ts                 # stack verification
   .r2-state.json            # gitignored, written by r2-setup.ts
 
 README.md
@@ -245,7 +252,7 @@ This is a low-cost decision now and expensive to reverse later.
 
 ## Database Schema
 
-One table. Drizzle schema definition lives in `web/lib/db/schema.ts`.
+One table. The schema lives in `supabase/migrations/*.sql` and is managed by the Supabase CLI. The web app reads and writes via raw parameterized queries through `pg` (node-postgres); there is no ORM layer.
 
 ```sql
 CREATE TABLE recordings (
@@ -566,7 +573,8 @@ Root `package.json` with `npm` workspaces covering:
 
 - Next.js (App Router)
 - TypeScript
-- Drizzle ORM + `pg` driver against Supabase Postgres
+- `pg` (node-postgres) against Postgres, with raw parameterized queries. No ORM.
+- Supabase CLI for local Postgres stack (`npm run db:start`) and migration management
 - `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner` against R2
 - `iron-session` (or equivalent) for the signed admin cookie
 - Minimal CSS approach — Tailwind is fine if it speeds things up, plain CSS modules are also fine
@@ -766,9 +774,12 @@ Execute in this order.
 ### Phase 2. Web scaffold + database
 
 - Create `web/` Next.js app with the App Router and TypeScript.
-- Wire up Drizzle + Postgres driver.
-- Define the `recordings` table schema and generate the initial migration.
-- Create `web/.env.example` (committed) and `web/.env.local` (gitignored) — initially with hand-pasted Supabase + R2 values for development.
+- Install `pg` and `@types/pg` in the `web/` workspace.
+- Initialize the local Supabase stack (`supabase init` + `npm run db:start`) so development runs against a Dockerized Postgres, not the hosted project.
+- Add the first migration in `supabase/migrations/` creating the `recordings` table.
+- Apply migrations to the local stack via `npm run db:reset`.
+- Write a thin `web/lib/db/client.ts` wrapping a `pg.Pool` around `DATABASE_URL`.
+- Create `web/.env.example` (committed) and `web/.env.local` (gitignored). Local `DATABASE_URL` defaults to `postgresql://postgres:postgres@127.0.0.1:54322/postgres`.
 - Add admin session handling: login page, cookie, bearer header, route guard.
 
 ### Phase 3. R2 integration
@@ -879,14 +890,14 @@ If work resumes later, the next practical actions are:
 1. Verify the branch is `feat/monorepo-web-backend-foundation`.
 2. Move the Swift app into `client/` and keep root wrappers working.
 3. Create the root Node workspace and scaffold `web/`.
-4. Stand up a scratch Supabase project by hand; create a dev R2 bucket by hand.
-5. Implement the `recordings` table schema and Drizzle migration.
+4. Run `npm run db:start` to boot the local Supabase stack; create a dev R2 bucket via `npm run r2:setup`.
+5. Add the first migration in `supabase/migrations/` creating the `recordings` table; apply via `npm run db:reset`.
 6. Implement admin auth (cookie + bearer) against `KOOM_ADMIN_SECRET`.
-7. Implement `uploads/init`, `uploads/complete`, `recordings/list`, `recordings/get`.
+7. Implement `uploads/init`, `uploads/complete`, `recordings/list`, `recordings/get` using parameterized `pg` queries.
 8. Build the public watch page and the admin `my recordings` page.
 9. Verify Range requests work end-to-end against R2 before wiring the client.
 10. Integrate the desktop client upload path.
-11. Implement `scripts/r2-setup.ts` and `scripts/doctor.ts` last; backfill `web/.env.example` with verified setup instructions.
+11. Harden and test `scripts/r2-setup.ts` and `scripts/doctor.ts` on a fresh machine; backfill `web/.env.example` with any new setup instructions.
 
 ## External Reference Notes
 
@@ -897,9 +908,10 @@ These references are expected to remain relevant during implementation:
 - Cloudflare REST API docs for R2 bucket creation, S3 token creation, CORS, and public access management
 - Cloudflare API token permission groups (specifically "Workers R2 Storage")
 - AWS SDK v3 (`@aws-sdk/client-s3`, `@aws-sdk/s3-request-presigner`) usage against S3-compatible endpoints
-- Supabase Postgres connection string format, pgBouncer port, and SSL requirements
+- Supabase CLI docs: local dev stack, migrations, `db reset` workflow
+- Supabase Postgres connection string format and SSL requirements for the hosted tier
+- `pg` (node-postgres) parameterized query API and connection pooling
 - Vercel project environment variable management via dashboard
 - Next.js App Router route handler docs and `.env.local` loading behavior
-- Drizzle ORM schema and migration docs
 - `iron-session` or equivalent for signed cookies in Next.js
 - `tsx` for running TypeScript scripts without a build step

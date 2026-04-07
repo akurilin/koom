@@ -8,7 +8,12 @@
   ],
   "scripts": {
     "r2:setup": "tsx scripts/r2-setup.ts",
-    "doctor": "tsx scripts/doctor.ts"
+    "doctor": "tsx scripts/doctor.ts",
+    "db:start": "npx -y supabase@2.87.2 start",
+    "db:stop": "npx -y supabase@2.87.2 stop",
+    "db:status": "npx -y supabase@2.87.2 status",
+    "db:reset": "npx -y supabase@2.87.2 db reset",
+    "db:migration:new": "npx -y supabase@2.87.2 migration new"
   },
   "engines": {
     "node": ">=20"

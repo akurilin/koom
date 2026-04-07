@@ -28,9 +28,10 @@ xcuserdata/
 *.swo
 *~
 
-# Local environment files
-.env
-.env.*
+# Local environment files. The bare `.env*` pattern catches edge cases
+# like Finder duplicates ('.env copy.example') and any .env-prefixed
+# file at any depth. The negation re-includes the committed template.
+.env*
 !.env.example
 
 # Node

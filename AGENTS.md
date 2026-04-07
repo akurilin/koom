@@ -3,7 +3,6 @@
 ## Working Rules
 
 - Do not commit unless the user explicitly asks for a commit.
-- Keep `.gitignore` conservative and avoid committing build artifacts, local state, credentials, or editor noise.
 - Prefer terminal-only workflows. Do not introduce an Xcode project unless the user explicitly asks for one.
 
 ## Build Hygiene

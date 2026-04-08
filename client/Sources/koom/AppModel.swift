@@ -51,15 +51,26 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var lastRecordingURL: URL?
+    @Published var uploadState: UploadState = .idle
 
     private let cameraPreviewManager = CameraPreviewManager()
     private let overlayWindowController = CameraOverlayWindowController()
     private let settingsStore: AppSettingsStore
     private var recorder: ScreenRecorder?
     private var hasPlacedWindow = false
+    private let uploader = Uploader()
 
     init(settingsStore: AppSettingsStore = AppSettingsStore()) {
         self.settingsStore = settingsStore
+
+        // The upload state callback is invoked from a background
+        // delegate queue inside KoomAPI; hop back onto the main
+        // actor before touching @Published state.
+        uploader.onStateChange = { @Sendable [weak self] state in
+            Task { @MainActor in
+                self?.uploadState = state
+            }
+        }
 
         let restoredSettings = settingsStore.load()
         if let restoredDisplayID = restoredSettings.selectedDisplayID {
@@ -281,6 +292,13 @@ final class AppModel: ObservableObject {
             } else {
                 lastRecordingURL = outputURL
                 statusMessage = "Saved \(outputURL.lastPathComponent)"
+                // Kick off the upload. Progress and terminal state
+                // are surfaced via uploadState, which
+                // ControlPanelView observes. The local file is
+                // never deleted regardless of upload outcome.
+                Task { [uploader] in
+                    await uploader.uploadRecording(at: outputURL)
+                }
             }
 
             if restartAfterStop {

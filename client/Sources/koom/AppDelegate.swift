@@ -10,6 +10,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppLog.info("koom launched.")
         NSApp.setActivationPolicy(.regular)
         showControlPanel()
+        maybePromptForSettings()
+    }
+
+    /// If either the backend URL or the admin secret is missing on
+    /// launch, automatically open the Settings window so the user
+    /// isn't stuck staring at a broken upload path the first time
+    /// they try to record. Runs after a small delay so the control
+    /// panel is already on screen when the settings window slides
+    /// in — otherwise the settings window opens first and the
+    /// control panel ends up behind it.
+    private func maybePromptForSettings() {
+        guard !KoomConfig.isFullyConfigured else {
+            AppLog.info("koom configuration present; skipping first-run prompt.")
+            return
+        }
+
+        AppLog.info("koom is not fully configured; opening Settings window.")
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            NSApp.sendAction(
+                Selector(("showSettingsWindow:")),
+                to: nil,
+                from: nil
+            )
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

@@ -52,6 +52,8 @@ final class AppModel: ObservableObject {
     }
     @Published var lastRecordingURL: URL?
     @Published var uploadState: UploadState = .idle
+    @Published var catchUpState: CatchUpState = .idle
+    @Published var isCatchingUp: Bool = false
 
     private let cameraPreviewManager = CameraPreviewManager()
     private let overlayWindowController = CameraOverlayWindowController()
@@ -72,6 +74,21 @@ final class AppModel: ObservableObject {
             }
         }
 
+        // Listen for the "Sync Unsent Recordings" menu command. The
+        // menu item posts a notification via NotificationCenter
+        // because SwiftUI `.commands` blocks can't easily reach an
+        // `@MainActor` model instance directly.
+        NotificationCenter.default.addObserver(
+            forName: .koomCatchUpRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                self.catchUpRecordings()
+            }
+        }
+
         let restoredSettings = settingsStore.load()
         if let restoredDisplayID = restoredSettings.selectedDisplayID {
             selectedDisplayID = restoredDisplayID
@@ -82,6 +99,40 @@ final class AppModel: ObservableObject {
         AppLog.info(
             "Restored settings. Display: \(restoredSettings.selectedDisplayID.map(String.init) ?? "none"), camera: \(restoredSettings.selectedCameraID ?? "none"), microphone: \(restoredSettings.selectedMicrophoneID ?? "none")"
         )
+    }
+
+    // MARK: - Catch-up
+
+    /// Kicks off the batch catch-up flow. Guarded so overlapping
+    /// invocations (e.g. the user hitting the menu item twice) are
+    /// no-ops. Terminal states are surfaced via `catchUpState` so
+    /// the control panel can render progress and results.
+    func catchUpRecordings() {
+        guard !isCatchingUp else {
+            AppLog.info("Catch-up already in progress; ignoring duplicate request.")
+            return
+        }
+        isCatchingUp = true
+
+        // Mirror the batch-level state updates the Uploader emits
+        // onto our @Published property via a main-actor hop.
+        let onCatchUpStateChange: @Sendable (CatchUpState) -> Void = { [weak self] state in
+            Task { @MainActor in
+                self?.catchUpState = state
+            }
+        }
+
+        Task { [uploader] in
+            await uploader.catchUpRecordings(
+                onCatchUpStateChange: onCatchUpStateChange
+            )
+            // The observer above has already set the terminal
+            // catchUpState, so here we only need to release the
+            // re-entry guard.
+            await MainActor.run {
+                self.isCatchingUp = false
+            }
+        }
     }
 
     func refreshHardware() {

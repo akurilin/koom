@@ -54,6 +54,15 @@ struct KoomAPI {
         let shareUrl: String
     }
 
+    struct DiffFilenamesRequest: Encodable {
+        let filenames: [String]
+    }
+
+    struct DiffFilenamesResponse: Decodable {
+        let uploaded: [String]
+        let missing: [String]
+    }
+
     // MARK: - Errors
 
     enum APIError: LocalizedError {
@@ -116,6 +125,23 @@ struct KoomAPI {
             path: "api/admin/uploads/complete",
             body: body,
             responseType: CompleteUploadResponse.self
+        )
+    }
+
+    /// Given a list of local filenames, asks the backend which ones
+    /// correspond to complete recordings already in the database.
+    /// Used by the catch-up feature to figure out which local files
+    /// still need to be uploaded. The server dedupes, filters empty
+    /// strings, and treats pending (not-yet-complete) rows as
+    /// missing so the catch-up retries interrupted uploads.
+    func diffFilenames(
+        _ filenames: [String]
+    ) async throws -> DiffFilenamesResponse {
+        let body = DiffFilenamesRequest(filenames: filenames)
+        return try await post(
+            path: "api/admin/uploads/diff",
+            body: body,
+            responseType: DiffFilenamesResponse.self
         )
     }
 

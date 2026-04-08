@@ -96,6 +96,7 @@ struct ControlPanelView: View {
                     .disabled(model.isBusy)
                 }
 
+                CatchUpStatusView(state: model.catchUpState)
                 UploadStatusView(state: model.uploadState)
             }
 
@@ -181,6 +182,86 @@ private struct UploadStatusView: View {
         case .failed(let message):
             VStack(alignment: .leading, spacing: 2) {
                 Text("Upload failed")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 4)
+        }
+    }
+}
+
+/// Renders the batch-catch-up state. Lives above the per-file
+/// `UploadStatusView` in the control panel so the user can see
+/// both "Catching up 2 of 5: foo.mp4" and the progress bar for
+/// the currently-uploading file at the same time. Shows nothing
+/// when `state == .idle` so the layout doesn't reserve space
+/// outside active catch-up sessions.
+private struct CatchUpStatusView: View {
+    let state: CatchUpState
+
+    var body: some View {
+        switch state {
+        case .idle:
+            EmptyView()
+
+        case .scanning:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Scanning local recordings…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+
+        case .diffing(let localCount):
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Checking \(localCount) file\(localCount == 1 ? "" : "s") against the server…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+
+        case .noMissingFiles(let localCount):
+            Text("All caught up — \(localCount) recording\(localCount == 1 ? " is" : "s are") already uploaded.")
+                .font(.caption)
+                .foregroundStyle(.green)
+                .padding(.top, 4)
+
+        case .uploading(let currentIndex, let totalMissing, let currentFilename):
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Catching up \(currentIndex) of \(totalMissing)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Text(currentFilename)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(.top, 4)
+
+        case .completed(let uploaded, let total):
+            if total == 0 {
+                Text("No local recordings to sync.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            } else {
+                Text("Catch-up complete — uploaded \(uploaded) of \(total).")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                    .padding(.top, 4)
+            }
+
+        case .failed(let uploaded, let total, let message):
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Catch-up finished with errors (\(uploaded) of \(total) uploaded)")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.red)
                 Text(message)

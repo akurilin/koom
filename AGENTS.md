@@ -4,6 +4,7 @@
 
 - Do not commit unless the user explicitly asks for a commit.
 - Prefer terminal-only workflows. Do not introduce an Xcode project unless the user explicitly asks for one.
+- `npm run doctor` verifies the operator's environment (Postgres reachable, R2 bucket configured, env vars present, Range requests working). It is **not** a per-change check and should not be run after routine code edits — use `npm test` and `npm run lint` / `npm run format:check` for that. Run doctor only when validating a fresh setup, after env-var or infra changes, or when debugging end-to-end infrastructure issues.
 
 ## Build Hygiene
 

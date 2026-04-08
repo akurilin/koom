@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Minimal two-field settings window that lets the user paste the
-/// koom backend URL and admin secret.
+/// Settings window for backend credentials and recording
+/// compression preferences.
 ///
 /// Opened automatically on first run (from AppDelegate) when either
 /// value is missing, and otherwise reachable via `Cmd+,` or the
@@ -10,16 +10,23 @@ import SwiftUI
 ///
 /// Persistence:
 ///
-///   - Backend URL  → UserDefaults (via KoomConfig)
-///   - Admin secret → Keychain     (via KoomConfig)
+///   - Backend URL          → UserDefaults (via KoomConfig)
+///   - Admin secret         → Keychain     (via KoomConfig)
+///   - Compression settings → UserDefaults (via AppSettingsStore)
 ///
 /// The view never tries to call the backend or validate the secret
 /// online. Save just writes both values and closes. The doctor
 /// script and the upload flow itself are where bad credentials
 /// surface as actionable errors.
 struct SettingsView: View {
+    private let settingsStore = AppSettingsStore()
+
     @State private var backendURLString: String = ""
     @State private var adminSecret: String = ""
+    @State private var captureFrameRate: CaptureFrameRateOption =
+        CompressionSettings.default.captureFrameRate
+    @State private var optimizeUploads: Bool =
+        CompressionSettings.default.optimizeUploads
     @State private var errorMessage: String?
     @State private var savedAt: Date?
 
@@ -39,6 +46,25 @@ struct SettingsView: View {
                 Text("The backend URL and admin secret are the two values from your web/.env.local.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("Capture cadence", selection: $captureFrameRate) {
+                    ForEach(CaptureFrameRateOption.allCases) { option in
+                        Text(option.label).tag(option)
+                    }
+                }
+
+                Toggle("Optimize uploads with ffmpeg when available", isOn: $optimizeUploads)
+            } header: {
+                Text("Compression")
+                    .font(.headline)
+            } footer: {
+                Text(
+                    "15 fps usually shrinks static screen recordings with little quality cost. Upload optimization keeps the local recording untouched and only uploads a smaller MP4 when ffmpeg is installed and the re-encode is meaningfully smaller."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             if let errorMessage {
@@ -72,6 +98,9 @@ struct SettingsView: View {
 
     private func loadFromStore() {
         backendURLString = KoomConfig.backendURL?.absoluteString ?? ""
+        let compressionSettings = settingsStore.loadCompressionSettings()
+        captureFrameRate = compressionSettings.captureFrameRate
+        optimizeUploads = compressionSettings.optimizeUploads
 
         do {
             adminSecret = try KoomConfig.loadAdminSecret() ?? ""
@@ -117,8 +146,12 @@ struct SettingsView: View {
             return
         }
 
+        settingsStore.saveCaptureFrameRate(captureFrameRate)
+        settingsStore.saveOptimizeUploads(optimizeUploads)
+
         savedAt = Date()
         AppLog.info(
-            "Settings saved. Backend: \(normalized.absoluteString), admin secret \(secret.isEmpty ? "cleared" : "set (\(secret.count) chars)").")
+            "Settings saved. Backend: \(normalized.absoluteString), admin secret \(secret.isEmpty ? "cleared" : "set (\(secret.count) chars)"), compression: \(CompressionSettings(captureFrameRate: captureFrameRate, optimizeUploads: optimizeUploads).logDescription)."
+        )
     }
 }

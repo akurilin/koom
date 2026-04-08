@@ -46,10 +46,12 @@ final class RecordingAssembler: @unchecked Sendable {
         }
 
         let composition = AVMutableComposition()
-        guard let compositionVideoTrack = composition.addMutableTrack(
-            withMediaType: .video,
-            preferredTrackID: kCMPersistentTrackID_Invalid
-        ) else {
+        guard
+            let compositionVideoTrack = composition.addMutableTrack(
+                withMediaType: .video,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            )
+        else {
             throw RecordingAssemblerError.couldNotCreateCompositionTrack("video")
         }
 
@@ -169,10 +171,12 @@ final class RecordingAssembler: @unchecked Sendable {
         to outputURL: URL,
         presetName: String
     ) async throws {
-        guard let exportSession = AVAssetExportSession(
-            asset: asset,
-            presetName: presetName
-        ) else {
+        guard
+            let exportSession = AVAssetExportSession(
+                asset: asset,
+                presetName: presetName
+            )
+        else {
             throw RecordingAssemblerError.exportSessionUnavailable(presetName)
         }
 

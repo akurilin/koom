@@ -32,6 +32,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         let microphoneID: String?
         let outputURL: URL
         let movieFragmentInterval: CMTime?
+        let expectedFrameRate: Int
     }
 
     private struct TrackTimingState {
@@ -63,7 +64,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     func start() async throws {
         AppLog.info(
-            "Recorder starting. Display ID: \(configuration.displayID), microphone: \(configuration.microphoneID ?? "none"), output: \(configuration.outputURL.path)"
+            "Recorder starting. Display ID: \(configuration.displayID), microphone: \(configuration.microphoneID ?? "none"), frame rate: \(configuration.expectedFrameRate) fps, output: \(configuration.outputURL.path)"
         )
         if FileManager.default.fileExists(atPath: configuration.outputURL.path) {
             try FileManager.default.removeItem(at: configuration.outputURL)
@@ -77,7 +78,10 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         let streamConfiguration = SCStreamConfiguration()
         streamConfiguration.width = display.width
         streamConfiguration.height = display.height
-        streamConfiguration.minimumFrameInterval = CMTime(value: 1, timescale: 30)
+        streamConfiguration.minimumFrameInterval = CMTime(
+            value: 1,
+            timescale: CMTimeScale(configuration.expectedFrameRate)
+        )
         streamConfiguration.queueDepth = 6
         streamConfiguration.showsCursor = true
         streamConfiguration.capturesAudio = false
@@ -90,7 +94,14 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         if let movieFragmentInterval = configuration.movieFragmentInterval {
             writer.movieFragmentInterval = movieFragmentInterval
         }
-        let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: Self.videoSettings(width: display.width, height: display.height))
+        let videoInput = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: Self.videoSettings(
+                width: display.width,
+                height: display.height,
+                frameRate: configuration.expectedFrameRate
+            )
+        )
         videoInput.expectsMediaDataInRealTime = true
 
         guard writer.canAdd(videoInput) else {
@@ -300,15 +311,19 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         }
     }
 
-    private static func videoSettings(width: Int, height: Int) -> [String: Any] {
+    private static func videoSettings(
+        width: Int,
+        height: Int,
+        frameRate: Int
+    ) -> [String: Any] {
         [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: max(width * height * 4, 8_000_000),
-                AVVideoExpectedSourceFrameRateKey: 30,
-                AVVideoMaxKeyFrameIntervalKey: 60,
+                AVVideoExpectedSourceFrameRateKey: frameRate,
+                AVVideoMaxKeyFrameIntervalKey: max(frameRate * 2, 1),
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
             ],
         ]

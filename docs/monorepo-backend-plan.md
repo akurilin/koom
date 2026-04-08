@@ -115,9 +115,10 @@ These observations come from the code already in the repository and affect the d
 ### Output characteristics
 
 - Output container is MP4.
-- Video codec is H.264.
-- Recording writes directly to the final output file.
-- There is no post-recording optimization or transcoding pass.
+- Local recording codec is H.264.
+- Recording writes directly to the final local output file.
+- Default capture cadence is 15 fps, with a 30 fps option in Settings.
+- Uploads can run a best-effort ffmpeg optimization pass that keeps the local file intact and uploads a smaller MP4 only when that re-encode is meaningfully smaller.
 - Resolution follows the native display capture size.
 - The current bitrate heuristic can produce fairly large files, especially for 4K displays. Rough guidance in the README is ~249 MB per minute for 4K, so a 30-minute recording can approach 7–8 GB.
 

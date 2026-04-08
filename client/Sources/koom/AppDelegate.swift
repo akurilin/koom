@@ -167,7 +167,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if !success {
                 let alert = NSAlert()
                 alert.alertStyle = .warning
-                alert.messageText = discardOutput
+                alert.messageText =
+                    discardOutput
                     ? "Could not discard recording"
                     : "Could not save recording"
                 alert.informativeText =

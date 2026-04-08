@@ -12,10 +12,11 @@ import Foundation
 enum UploadState: Equatable, Sendable {
     case idle
     case preparing
+    case optimizing
     case initializing
     case uploading(progress: Double)
     case finalizing
-    case completed(shareURL: URL)
+    case completed(shareURL: URL, summary: UploadCompletionSummary)
     case failed(message: String)
 }
 
@@ -45,6 +46,21 @@ private struct UploadFailure: Error {
     let message: String
 }
 
+struct UploadCompletionSummary: Equatable, Sendable {
+    let localSizeBytes: Int64
+    let uploadedSizeBytes: Int64
+    let usedOptimizedCopy: Bool
+
+    var savingsBytes: Int64 {
+        max(localSizeBytes - uploadedSizeBytes, 0)
+    }
+
+    var savingsRatio: Double {
+        guard localSizeBytes > 0 else { return 0 }
+        return Double(savingsBytes) / Double(localSizeBytes)
+    }
+}
+
 /// Success payload for `performUpload`. The recording id is
 /// surfaced so the post-recording auto-titler can land a generated
 /// title on the row via PATCH once both the upload and Whisper +
@@ -52,6 +68,7 @@ private struct UploadFailure: Error {
 private struct UploadOutcome: Sendable {
     let recordingId: String
     let shareURL: URL
+    let summary: UploadCompletionSummary
 }
 
 /// Orchestrates upload flows against the koom backend.
@@ -70,10 +87,11 @@ private struct UploadOutcome: Sendable {
 ///     tabs per file (that would spam N tabs for a batch of N).
 ///
 /// Both entry points share a private `performUpload(at:)` method
-/// that handles the init → streaming PUT → complete sequence and
-/// emits `UploadState` progress updates along the way. The shared
-/// method returns a typed `Result` so each entry point can decide
-/// how to handle success/failure at the batch level.
+/// that optionally prepares a smaller upload copy, then handles the
+/// init → streaming PUT → complete sequence and emits `UploadState`
+/// progress updates along the way. The shared method returns a
+/// typed `Result` so each entry point can decide how to handle
+/// success/failure at the batch level.
 ///
 /// Error handling contract: the local recording file is **never**
 /// deleted or mutated by this class. Any failure path leaves the
@@ -94,6 +112,7 @@ final class Uploader {
     /// malformed — in that case the upload flow behaves exactly
     /// as it did before this feature existed.
     private let autotitler: Autotitler? = Autotitler.makeFromEnvironment()
+    private let settingsStore = AppSettingsStore()
 
     // MARK: Single-file upload (post-recording)
 
@@ -124,7 +143,12 @@ final class Uploader {
                 await patchTitle(recordingId: outcome.recordingId, title: title)
             }
             openAndPasteShareURL(outcome.shareURL)
-            emit(.completed(shareURL: outcome.shareURL))
+            emit(
+                .completed(
+                    shareURL: outcome.shareURL,
+                    summary: outcome.summary
+                )
+            )
             return true
         case .failure(let failure):
             emit(.failed(message: failure.message))
@@ -321,6 +345,21 @@ final class Uploader {
         // send null rather than failing the upload — the backend
         // contract allows nullable duration.
         let durationSeconds = await Self.readDurationSeconds(of: fileURL)
+        let compressionSettings = settingsStore.loadCompressionSettings()
+        let onStateChange = self.onStateChange
+        let preparedUpload = await UploadOptimizer.prepareUploadSource(
+            from: fileURL,
+            originalSizeBytes: sizeBytes,
+            optimizeUploads: compressionSettings.optimizeUploads,
+            onOptimizationStarted: {
+                onStateChange?(.optimizing)
+            }
+        )
+        defer {
+            UploadOptimizer.cleanupTemporaryDirectory(
+                preparedUpload.cleanupDirectoryURL
+            )
+        }
 
         // Step 1: init
         emit(.initializing)
@@ -329,7 +368,7 @@ final class Uploader {
             initResponse = try await api.initUpload(
                 originalFilename: fileURL.lastPathComponent,
                 contentType: "video/mp4",
-                sizeBytes: sizeBytes,
+                sizeBytes: preparedUpload.sizeBytes,
                 durationSeconds: durationSeconds,
                 title: nil
             )
@@ -349,10 +388,9 @@ final class Uploader {
         // closure, so we capture a local copy of `onStateChange`
         // (which is already @Sendable by type).
         emit(.uploading(progress: 0.0))
-        let onStateChange = self.onStateChange
         do {
             try await api.uploadFile(
-                fileURL: fileURL,
+                fileURL: preparedUpload.fileURL,
                 to: initResponse.upload.url,
                 method: initResponse.upload.method,
                 headers: initResponse.upload.headers ?? [:],
@@ -387,7 +425,12 @@ final class Uploader {
         return .success(
             UploadOutcome(
                 recordingId: initResponse.recordingId,
-                shareURL: shareURL
+                shareURL: shareURL,
+                summary: UploadCompletionSummary(
+                    localSizeBytes: sizeBytes,
+                    uploadedSizeBytes: preparedUpload.sizeBytes,
+                    usedOptimizedCopy: preparedUpload.usedOptimization
+                )
             )
         )
     }

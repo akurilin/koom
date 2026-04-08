@@ -28,7 +28,7 @@ struct ControlPanelView: View {
                         Text(display.name).tag(display.id)
                     }
                 }
-                .onChange(of: model.selectedDisplayID) { _ in
+                .onChange(of: model.selectedDisplayID) {
                     model.displaySelectionDidChange()
                 }
 
@@ -38,7 +38,7 @@ struct ControlPanelView: View {
                         Text(camera.name).tag(camera.id)
                     }
                 }
-                .onChange(of: model.selectedCameraID) { _ in
+                .onChange(of: model.selectedCameraID) {
                     model.cameraSelectionDidChange()
                 }
 
@@ -48,7 +48,7 @@ struct ControlPanelView: View {
                         Text(microphone.name).tag(microphone.id)
                     }
                 }
-                .onChange(of: model.selectedMicrophoneID) { _ in
+                .onChange(of: model.selectedMicrophoneID) {
                     model.microphoneSelectionDidChange()
                 }
             }
@@ -133,6 +133,15 @@ private struct UploadStatusView: View {
             }
             .padding(.top, 4)
 
+        case .optimizing:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Optimizing upload copy…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+
         case .initializing:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
@@ -166,11 +175,18 @@ private struct UploadStatusView: View {
             }
             .padding(.top, 4)
 
-        case .completed(let shareURL):
+        case .completed(let shareURL, let summary):
             VStack(alignment: .leading, spacing: 4) {
-                Text("Uploaded. Share URL copied and opened.")
-                    .font(.caption)
-                    .foregroundStyle(.green)
+                Text(
+                    summary.usedOptimizedCopy
+                        ? "Uploaded optimized copy. Share URL copied and opened."
+                        : "Uploaded. Share URL copied and opened."
+                )
+                .font(.caption)
+                .foregroundStyle(.green)
+                Text(summaryDescription(summary))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 Text(shareURL.absoluteString)
                     .font(.caption2.monospaced())
                     .lineLimit(1)
@@ -193,6 +209,25 @@ private struct UploadStatusView: View {
             }
             .padding(.top, 4)
         }
+    }
+
+    private func summaryDescription(_ summary: UploadCompletionSummary) -> String {
+        let localSize = ByteCountFormatter.string(
+            fromByteCount: summary.localSizeBytes,
+            countStyle: .file
+        )
+        let uploadedSize = ByteCountFormatter.string(
+            fromByteCount: summary.uploadedSizeBytes,
+            countStyle: .file
+        )
+
+        guard summary.usedOptimizedCopy else {
+            return "Uploaded size: \(uploadedSize). Local file remains \(localSize)."
+        }
+
+        let savingsPercent = Int((summary.savingsRatio * 100).rounded())
+        return
+            "Uploaded size: \(uploadedSize) from \(localSize) (\(savingsPercent)% smaller)."
     }
 }
 

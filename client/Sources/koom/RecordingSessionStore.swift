@@ -115,9 +115,9 @@ final class RecordingSessionStore: @unchecked Sendable {
         var handles: [SessionHandle] = []
 
         for directoryURL in entries {
-                let manifestURL = directoryURL.appendingPathComponent(
-                    Self.sessionManifestFilename
-                )
+            let manifestURL = directoryURL.appendingPathComponent(
+                Self.sessionManifestFilename
+            )
             let decoder = JSONDecoder()
             guard
                 let data = try? Data(contentsOf: manifestURL),
@@ -267,10 +267,11 @@ final class RecordingSessionStore: @unchecked Sendable {
     }
 
     private func recordingsDirectoryURL() -> URL {
-        let baseDirectory = fileManager.urls(
-            for: .moviesDirectory,
-            in: .userDomainMask
-        ).first ?? fileManager.homeDirectoryForCurrentUser
+        let baseDirectory =
+            fileManager.urls(
+                for: .moviesDirectory,
+                in: .userDomainMask
+            ).first ?? fileManager.homeDirectoryForCurrentUser
         return baseDirectory.appendingPathComponent("koom", isDirectory: true)
     }
 

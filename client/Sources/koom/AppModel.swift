@@ -107,7 +107,7 @@ final class AppModel: ObservableObject {
         selectedMicrophoneID = restoredSettings.selectedMicrophoneID ?? ""
 
         AppLog.info(
-            "Restored settings. Display: \(restoredSettings.selectedDisplayID.map(String.init) ?? "none"), camera: \(restoredSettings.selectedCameraID ?? "none"), microphone: \(restoredSettings.selectedMicrophoneID ?? "none")"
+            "Restored settings. Display: \(restoredSettings.selectedDisplayID.map(String.init) ?? "none"), camera: \(restoredSettings.selectedCameraID ?? "none"), microphone: \(restoredSettings.selectedMicrophoneID ?? "none"), compression: \(restoredSettings.compressionSettings.logDescription)"
         )
     }
 
@@ -399,6 +399,8 @@ final class AppModel: ObservableObject {
             }
 
             let segmentURL = try sessionStore.createNextSegment(in: &workingSession)
+            let compressionSettings = settingsStore.loadCompressionSettings()
+            AppLog.info("Using compression settings: \(compressionSettings.logDescription)")
             let recorder = ScreenRecorder(
                 configuration: .init(
                     displayID: selectedDisplayID,
@@ -407,7 +409,9 @@ final class AppModel: ObservableObject {
                     movieFragmentInterval: CMTime(
                         seconds: fragmentIntervalSeconds,
                         preferredTimescale: 600
-                    )
+                    ),
+                    expectedFrameRate: compressionSettings.captureFrameRate
+                        .framesPerSecond
                 )
             )
 
@@ -418,7 +422,8 @@ final class AppModel: ObservableObject {
             self.recorder = recorder
             lastRecordingURL = nil
             recordingState = .recording
-            statusMessage = recovered
+            statusMessage =
+                recovered
                 ? "Interrupted recording resumed."
                 : "Recording to \(workingSession.session.finalFilename)"
         } catch {
@@ -489,7 +494,8 @@ final class AppModel: ObservableObject {
                 self.currentSession = nil
                 currentSessionWasRecovered = false
                 lastRecordingURL = finalURL
-                statusMessage = uploadAfterStop
+                statusMessage =
+                    uploadAfterStop
                     ? "Saved \(finalURL.lastPathComponent). Uploading..."
                     : "Saved \(finalURL.lastPathComponent)"
 
@@ -602,7 +608,8 @@ final class AppModel: ObservableObject {
         displaySelectionDidChange()
 
         if let savedCameraID = recoverableSession.session.cameraID,
-           cameras.contains(where: { $0.id == savedCameraID }) {
+            cameras.contains(where: { $0.id == savedCameraID })
+        {
             selectedCameraID = savedCameraID
         } else {
             selectedCameraID = ""
@@ -610,7 +617,8 @@ final class AppModel: ObservableObject {
         cameraSelectionDidChange()
 
         if let savedMicrophoneID = recoverableSession.session.microphoneID,
-           microphones.contains(where: { $0.id == savedMicrophoneID }) {
+            microphones.contains(where: { $0.id == savedMicrophoneID })
+        {
             selectedMicrophoneID = savedMicrophoneID
         } else {
             selectedMicrophoneID = ""
@@ -628,14 +636,11 @@ final class AppModel: ObservableObject {
         }
 
         return displays.first(where: {
-            $0.name == snapshot.name &&
-                Int($0.size.width) == snapshot.width &&
-                Int($0.size.height) == snapshot.height
+            $0.name == snapshot.name && Int($0.size.width) == snapshot.width && Int($0.size.height) == snapshot.height
         })?.id
     }
 
-    private func currentDisplaySnapshot(
-    ) -> RecordingSessionStore.RecordingSession.DisplaySnapshot? {
+    private func currentDisplaySnapshot() -> RecordingSessionStore.RecordingSession.DisplaySnapshot? {
         guard let selectedDisplay = displays.first(where: { $0.id == selectedDisplayID }) else {
             return nil
         }

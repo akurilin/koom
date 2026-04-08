@@ -1,65 +1,152 @@
 # koom
 
-`koom` is a local macOS screen recorder built with SwiftUI, AVFoundation, and ScreenCaptureKit. It records a selected display to disk, can show an on-screen camera bubble, and can optionally capture microphone narration.
+[![CI](https://github.com/akurilin/koom/actions/workflows/ci.yml/badge.svg)](https://github.com/akurilin/koom/actions/workflows/ci.yml)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/akurilin/koom)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](https://swift.org)
+[![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?logo=next.js&logoColor=white)](https://nextjs.org)
+[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white)](https://developer.apple.com/macos/)
+[![style: prettier](https://img.shields.io/badge/style-prettier-ff69b4.svg)](https://prettier.io)
+[![lint: eslint](https://img.shields.io/badge/lint-eslint-4B32C3.svg)](https://eslint.org)
+
+`koom` is a self-deployable, Loom-style screen recorder for a single user. You record locally in the macOS app, the finished MP4 auto-uploads to storage you own, and you get a shareable watch URL that opens in any browser. No SaaS subscription, no third party holding your videos, and typically **$0–5/month** at personal scale.
+
+## Why koom
+
+Loom is great, but you don't actually own your recordings, you pay monthly, and the videos live on someone else's infrastructure. koom is the same core loop — record, auto-upload, share a link — but:
+
+- **You own the bytes.** Videos sit in your Cloudflare R2 bucket. No vendor can deprecate, paywall, or delete them.
+- **Zero-egress storage.** R2 has no bandwidth fees, so cost stays flat no matter how much the links get shared.
+- **Deliberately narrow scope.** Single-tenant, one admin secret, no teams, no comments, no transcription, no search beyond a simple list. The whole stack fits in your head.
+- **Cheap steady state.** Vercel Hobby + Supabase free tier + R2 free tier. The only variable cost is R2 storage above 10 GB.
+
+v1 intentionally leaves a lot out: no accounts, no comments, no transcription, no transcoding, no custom domains. See [`docs/monorepo-backend-plan.md`](docs/monorepo-backend-plan.md) for the full decision record.
+
+## Architecture
+
+koom is a small monorepo split by runtime:
+
+| Component   | Stack                                            | Role                                                           |
+| ----------- | ------------------------------------------------ | -------------------------------------------------------------- |
+| `client/`   | Swift 6, SwiftUI, AVFoundation, ScreenCaptureKit | Records the screen, uploads the finished file                  |
+| `web/`      | Next.js 16 (App Router), TypeScript, React 19    | Public watch pages, admin UI, backend API routes               |
+| `supabase/` | Hand-written SQL migrations, managed via `pg`    | Single `recordings` metadata table (no ORM)                    |
+| `scripts/`  | TypeScript, run through `tsx`                    | R2 provisioning (`r2:setup`) and stack verification (`doctor`) |
+
+Deployment targets:
+
+- **Web tier:** Vercel Hobby
+- **Metadata:** Supabase Postgres (used purely as a Postgres provider — no Supabase Auth, no Supabase Storage)
+- **Video + CDN:** Cloudflare R2 with its built-in CDN
+- **Auth:** a single deployment-wide admin secret; browsers use a signed cookie, the desktop client uses `Authorization: Bearer`
+
+### How a recording flows end to end
+
+1. The macOS client records directly to `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4` and keeps the local copy permanently.
+2. On completion, the client asks `POST /api/admin/uploads/init` for a presigned R2 `PUT` URL and writes a `pending` row to Postgres.
+3. The client `PUT`s the file straight to R2 — bytes never flow through Vercel.
+4. `POST /api/admin/uploads/complete` `HEAD`s the object to confirm it landed, flips the row to `complete`, and returns the share URL.
+5. The client copies the share URL to the clipboard and opens it. Anyone with the link can watch at `/r/[id]` (with `?t=` timestamp deep-linking).
+
+The Next.js app holds all R2 and Postgres credentials. The desktop client only knows the web URL and the admin secret; every interaction with R2 is gated by short-lived presigned URLs.
+
+## Repository layout
+
+```text
+client/                  macOS Swift package (recorder + uploader)
+  Sources/koom/          SwiftUI app, ScreenCaptureKit, upload pipeline
+  Package.swift
+  scripts/               build-app.sh, run.sh
+web/                     Next.js app (frontend + backend)
+  app/                   App Router pages
+    r/[id]/              public watch page
+    app/                 admin UI (login, recordings list)
+    api/public/          public JSON endpoints
+    api/admin/           admin JSON endpoints (session, uploads, recordings)
+  lib/
+    db/                  thin `pg` Pool + parameterized query helpers
+    r2/                  S3-compatible R2 client + presigning
+    auth/                admin session + bearer validation
+  tests/                 Vitest integration + Playwright E2E
+supabase/
+  migrations/            hand-written SQL, applied via the Supabase CLI
+  config.toml            local stack configuration
+scripts/
+  doctor.ts              read-only verification sweep across the full stack
+  r2-setup.ts            provisions the production R2 bucket + credentials
+  r2-setup-test.ts       provisions the isolated E2E test bucket
+  build-app.sh, run.sh   thin wrappers that delegate into client/scripts
+docs/
+  monorepo-backend-plan.md   architectural decision record
+```
 
 ## Requirements
 
-- macOS 13 or newer
-- Screen Recording permission
-- Camera permission when using the face overlay
-- Microphone permission when recording narration
+- macOS 13+ for the desktop client
+- Node.js 20+ for the web app and operator scripts
+- A Cloudflare account (R2 free tier is enough to start)
+- A Supabase project — or Docker, for the local Supabase stack via `npm run db:start`
+- Optional local tooling so the pre-commit hook can run: `brew install gitleaks shellcheck`
+
+The macOS client also needs Screen Recording permission, Camera permission (if using the face overlay), and Microphone permission (if recording narration).
+
+## Getting started
+
+```bash
+# 1. install dependencies (npm workspaces, husky, etc.)
+npm install
+
+# 2. bring up local Postgres via the Supabase CLI and apply migrations
+npm run db:start
+npm run db:reset
+
+# 3. provision a Cloudflare R2 bucket + credentials (writes back into web/.env.local)
+npm run r2:setup
+
+# 4. verify the stack end to end (db reachable, R2 works, range requests OK)
+npm run doctor
+
+# 5. run the web app
+npm run dev -w web
+
+# 6. build and run the macOS client
+./scripts/run.sh
+```
+
+`npm run doctor` is the authoritative "is this environment actually usable?" check. It's always safe to re-run and exercises the database, R2 credentials, and HTTP range support that browser `<video>` scrubbing depends on.
 
 ## Development
 
-- Build app bundle: `./scripts/build-app.sh`
-- Run app in foreground: `./scripts/run.sh`
+| Task                               | Command                   |
+| ---------------------------------- | ------------------------- |
+| Lint the web workspace             | `npm run lint`            |
+| Check formatting (Prettier)        | `npm run format:check`    |
+| Auto-fix formatting                | `npm run format`          |
+| ShellCheck every tracked `.sh`     | `npm run shellcheck`      |
+| Web unit + integration tests       | `npm test -w web`         |
+| Web end-to-end tests (Playwright)  | `npm run test:e2e -w web` |
+| Build the macOS client bundle      | `./scripts/build-app.sh`  |
+| Run the macOS client in foreground | `./scripts/run.sh`        |
 
-## Recording Output
+A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, ShellCheck, and gitleaks against staged changes before any commit lands. The same checks run in GitHub Actions on push and pull requests, plus a full-history gitleaks scan.
 
-The current implementation writes the final recording directly to disk as an H.264 MP4 in real time. There is no later export, resize, transcode, or "optimize for sharing" pass after capture completes.
+## Recording output
 
-### Saved file
+The macOS client captures with ScreenCaptureKit and writes directly to disk as H.264 MP4 — there is no post-capture export, resize, or transcode pass.
 
-- Container: MP4
-- Output path: `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4`
-- Video codec: H.264 (`AVVideoCodecType.h264`)
-- H.264 profile: High Auto Level
-- Cursor: included
-- Screen/system audio from ScreenCaptureKit: disabled
-- Microphone audio: optional, encoded with AVFoundation's recommended MP4-compatible writer settings
+- **Path:** `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4`
+- **Codec:** H.264 (High Auto Level), 30 fps, keyframe every ~2 seconds
+- **Resolution:** native capture size of the selected display (no preset, no downscaling)
+- **Bitrate heuristic:** `max(width × height × 4, 8 Mb/s)`
+- **Audio:** screen/system audio disabled; microphone optional
+- **Cursor:** included
 
-### Resolution
+Approximate file sizes under the current bitrate heuristic:
 
-Video is recorded at the selected display's native capture size. The recorder copies `display.width` and `display.height` from `ScreenCaptureKit` directly into both the stream configuration and the asset writer. There is no fixed 1080p or 4K preset and no downscaling step.
+| Resolution | Bitrate    | ~Size per minute |
+| ---------- | ---------- | ---------------- |
+| 1920×1080  | ~8.3 Mb/s  | ~62 MB           |
+| 2560×1440  | ~14.7 Mb/s | ~111 MB          |
+| 3840×2160  | ~33.2 Mb/s | ~249 MB          |
 
-That means:
-
-- It is 4K only when the selected display is 4K.
-- On higher-resolution displays, the saved file will also use that higher resolution.
-
-### Frame cadence
-
-- Target frame rate: 30 fps
-- Maximum keyframe interval: 60 frames, or about every 2 seconds at 30 fps
-
-### Video bitrate
-
-The current target average video bitrate is:
-
-```text
-max(width * height * 4, 8_000_000) bits per second
-```
-
-Approximate examples:
-
-- 1920x1080: about 8.3 Mb/s, around 62 MB/min
-- 2560x1440: about 14.7 Mb/s, around 111 MB/min
-- 3840x2160: about 33.2 Mb/s, around 249 MB/min
-
-Actual file size will vary with content complexity and any audio track, but these numbers are a reasonable guide for the current implementation.
-
-### Practical takeaway
-
-The saved asset is not raw or lossless. It is already compressed during capture, so it is not "absolutely gigantic" in the sense of an uncompressed or ProRes master. However, because the recorder preserves the full selected display resolution and uses a meaningful bitrate, files can still become fairly large on 4K and higher-resolution displays.
-
-In short: the current output is best described as direct-to-H.264 at native display resolution, not as a raw master that is expected to be optimized later.
+The file is already compressed during capture, so it is not a raw or ProRes master — but 4K recordings can still get large quickly. The client never deletes local files, and upload failures never destroy the source.

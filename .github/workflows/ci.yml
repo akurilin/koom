@@ -56,3 +56,131 @@ jobs:
 
       - name: Scan repository
         run: gitleaks git --redact --no-banner --exit-code 1 .
+
+  tests:
+    name: integration + e2e tests
+    runs-on: ubuntu-latest
+    # Don't burn CI minutes on the slow test job if static checks are red.
+    needs: checks
+
+    # Integration and E2E tests both hit a real Postgres. GitHub spins up
+    # this service container beside the job's host container; the app
+    # reaches it via localhost:5432 because we map the port below.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Job-level env gets injected into every step below AND is what the
+    # "Write web/.env.test.local" step snapshots into the test env file.
+    #
+    # The five R2_* secrets must be configured on the repository (Settings
+    # → Secrets and variables → Actions). Each one corresponds to the
+    # identically-named variable produced by `npm run r2:setup:test` in
+    # web/.env.test.local locally:
+    #
+    #   R2_BUCKET              — e.g. koom-recordings-test
+    #   R2_ACCOUNT_ID          — Cloudflare account id
+    #   R2_ACCESS_KEY_ID       — bucket-scoped S3 access key
+    #   R2_SECRET_ACCESS_KEY   — bucket-scoped S3 secret
+    #   R2_PUBLIC_BASE_URL     — e.g. https://pub-<hash>.r2.dev
+    #
+    # KOOM_ADMIN_SECRET is a fixed test string (same one r2-setup-test.ts
+    # bakes into the template) — it's deliberately not a real secret.
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      KOOM_ADMIN_SECRET: e2e-test-admin-secret-not-for-production
+      KOOM_PUBLIC_BASE_URL: http://localhost:3456
+      KOOM_TEST_PORT: "3456"
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Verify R2 secrets are configured
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for v in R2_BUCKET R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_PUBLIC_BASE_URL; do
+            if [ -z "${!v:-}" ]; then missing+=("$v"); fi
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required GitHub secrets: ${missing[*]}"
+            echo "::error::Configure them under repo Settings → Secrets and variables → Actions."
+            echo "::error::Values come from your local web/.env.test.local, produced by 'npm run r2:setup:test'."
+            exit 1
+          fi
+          echo "all R2 secrets present"
+
+      - name: Install system dependencies (ffmpeg, psql)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg postgresql-client
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Apply database migrations
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in supabase/migrations/*.sql; do
+            echo "applying $f"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Write web/.env.test.local from CI env
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use printf so R2 secret values (which may contain '$', '`',
+          # etc.) are written verbatim without shell interpolation.
+          {
+            printf 'DATABASE_URL=%s\n' "$DATABASE_URL"
+            printf 'KOOM_PUBLIC_BASE_URL=%s\n' "$KOOM_PUBLIC_BASE_URL"
+            printf 'KOOM_ADMIN_SECRET=%s\n' "$KOOM_ADMIN_SECRET"
+            printf 'R2_BUCKET=%s\n' "$R2_BUCKET"
+            printf 'R2_ACCOUNT_ID=%s\n' "$R2_ACCOUNT_ID"
+            printf 'R2_ACCESS_KEY_ID=%s\n' "$R2_ACCESS_KEY_ID"
+            printf 'R2_SECRET_ACCESS_KEY=%s\n' "$R2_SECRET_ACCESS_KEY"
+            printf 'R2_PUBLIC_BASE_URL=%s\n' "$R2_PUBLIC_BASE_URL"
+          } > web/.env.test.local
+
+      - name: Run vitest integration tests
+        run: npm test -w web
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: web
+
+      - name: Run Playwright E2E tests
+        run: npm run test:e2e -w web
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7

@@ -43,7 +43,7 @@ Deployment targets:
 
 ### How a recording flows end to end
 
-1. The macOS client records directly to `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4` and keeps the local copy permanently.
+1. The macOS client records to `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4` and keeps the local copy permanently. Recording is staged through a fragmented MP4 session so a crash mid-capture can be recovered on the next launch (see [Crash recovery](#crash-recovery)).
 2. On completion, the client asks `POST /api/admin/uploads/init` for a presigned R2 `PUT` URL and writes a `pending` row to Postgres.
 3. The client `PUT`s the file straight to R2 — bytes never flow through Vercel.
 4. In parallel with step 3, the local auto-titler extracts the mic track via `AVAssetReader`, transcribes it in-process with WhisperKit, and asks a local Ollama model for a short title. Nothing leaves the machine, and every stage is best-effort — a missing mic or an Ollama that isn't running just leaves the title blank.
@@ -137,7 +137,7 @@ A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, `swift format`, S
 
 ## Recording output
 
-The macOS client captures with ScreenCaptureKit and writes directly to disk as H.264 MP4 — there is no post-capture export, resize, or transcode pass.
+The macOS client captures with ScreenCaptureKit and writes directly to disk as H.264 MP4 — there is no post-capture transcode or resize pass. (Recordings stitched back together after a crash go through an `AVAssetExportSession` passthrough mux — see [Crash recovery](#crash-recovery) — but even then nothing is re-encoded.)
 
 - **Path:** `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4`
 - **Codec:** H.264 (High Auto Level), 30 fps, keyframe every ~2 seconds
@@ -155,6 +155,18 @@ Approximate file sizes under the current bitrate heuristic:
 | 3840×2160  | ~33.2 Mb/s | ~249 MB          |
 
 The file is already compressed during capture, so it is not a raw or ProRes master — but 4K recordings can still get large quickly. The client never deletes local files, and upload failures never destroy the source.
+
+## Crash recovery
+
+If koom is force-quit, crashes, or loses power mid-recording, the next launch finds the unfinished recording and offers to recover it. The writer flushes a fresh MP4 fragment every ~2 seconds, so the bytes already on disk stay playable without a clean stop.
+
+Under the hood:
+
+- While recording, the client writes fragmented MP4 segments under `~/Movies/koom/.sessions/<session-id>/segment-NNNN.mp4` next to a `session.json` manifest tracking the display, camera, mic, and per-segment status.
+- On a clean stop of a single-segment session, the segment is moved into its `koom_*.mp4` final path and the session directory is deleted — no copy, no re-encode.
+- On the next launch after a crash, the orphaned session triggers an "Interrupted recording found" dialog with four options: **Resume Recording** appends a new segment on top of the existing ones and keeps going; **Finish Partial** stitches whatever segments exist into the final file now; **Not Now** leaves it for later; **Discard** deletes the session directory.
+- Multi-segment finalizations (resumed recordings and partial finishes) go through `AVAssetExportSession`'s passthrough preset, so the stitch still has no re-encode.
+- Quitting while a recording is active first triggers a "Stop and Save / Discard / Keep Recording" prompt before the app shuts down.
 
 ## Auto-titling
 

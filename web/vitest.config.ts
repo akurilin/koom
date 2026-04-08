@@ -19,11 +19,13 @@ export default defineConfig({
     // runs could conflict. If we ever split into isolated units that
     // can run in parallel, revisit.
     fileParallelism: false,
-    // Only pick up files under tests/ — don't let a stray *.test.ts in
-    // the Next.js source tree get scooped up by the default glob.
-    include: ["tests/**/*.{test,spec}.ts"],
-    // Populate process.env from .env.local before any route handler
-    // modules are imported by the test files.
+    // Only pick up files under tests/integration. The tests/e2e
+    // directory is owned by Playwright and uses @playwright/test
+    // assertions, which would crash the vitest runner.
+    include: ["tests/integration/**/*.{test,spec}.ts"],
+    exclude: ["tests/e2e/**", "node_modules/**", ".next/**"],
+    // Populate process.env from .env.test.local before any route
+    // handler modules are imported by the test files.
     setupFiles: ["./tests/setup.ts"],
   },
 });

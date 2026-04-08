@@ -13,9 +13,17 @@
 # testing
 /coverage
 
-# next.js
+# next.js — the bare `/.next/` catches the default dev/build
+# output, and `/.next-*` covers alternate distDir values we may
+# use (e.g. for test isolation).
 /.next/
+/.next-*/
 /out/
+
+# Playwright
+/test-results/
+/playwright-report/
+/playwright/.cache/
 
 # production
 /build

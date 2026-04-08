@@ -24,6 +24,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install ShellCheck 0.11.0
+        # Ubuntu's apt package is older (0.10) and still fires SC2317
+        # "Command appears to be unreachable" on trap handler bodies,
+        # even when the function has an SC2329 disable. 0.11.0 tracks
+        # trap references correctly, so pin to that explicitly and
+        # match what developers run locally.
+        env:
+          SHELLCHECK_VERSION: "0.11.0"
+        run: |
+          set -euo pipefail
+          curl -sSL \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ -C /tmp
+          sudo mv "/tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
       - name: ESLint
         run: npm run lint
 

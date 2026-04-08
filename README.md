@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](https://swift.org)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?logo=next.js&logoColor=white)](https://nextjs.org)
-[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-000000?logo=apple&logoColor=white)](https://developer.apple.com/macos/)
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](https://developer.apple.com/macos/)
 [![style: prettier](https://img.shields.io/badge/style-prettier-ff69b4.svg)](https://prettier.io)
 [![lint: eslint](https://img.shields.io/badge/lint-eslint-4B32C3.svg)](https://eslint.org)
 
@@ -17,10 +17,11 @@ Loom is great, but you don't actually own your recordings, you pay monthly, and 
 
 - **You own the bytes.** Videos sit in your Cloudflare R2 bucket. No vendor can deprecate, paywall, or delete them.
 - **Zero-egress storage.** R2 has no bandwidth fees, so cost stays flat no matter how much the links get shared.
-- **Deliberately narrow scope.** Single-tenant, one admin secret, no teams, no comments, no transcription, no search beyond a simple list. The whole stack fits in your head.
+- **Deliberately narrow scope.** Single-tenant, one admin secret, no teams, no comments, no stored transcripts, no search beyond a simple list. The whole stack fits in your head.
 - **Cheap steady state.** Vercel Hobby + Supabase free tier + R2 free tier. The only variable cost is R2 storage above 10 GB.
+- **Private auto-titles.** Recordings get a short descriptive title generated locally via WhisperKit + Ollama — the audio never leaves your machine, and the feature is an opt-out, not an extra subscription.
 
-v1 intentionally leaves a lot out: no accounts, no comments, no transcription, no transcoding, no custom domains. See [`docs/monorepo-backend-plan.md`](docs/monorepo-backend-plan.md) for the full decision record.
+v1 intentionally leaves a lot out: no accounts, no comments, no stored transcripts or captions, no transcoding, no custom domains. See [`docs/monorepo-backend-plan.md`](docs/monorepo-backend-plan.md) for the full decision record.
 
 ## Architecture
 
@@ -45,8 +46,9 @@ Deployment targets:
 1. The macOS client records directly to `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4` and keeps the local copy permanently.
 2. On completion, the client asks `POST /api/admin/uploads/init` for a presigned R2 `PUT` URL and writes a `pending` row to Postgres.
 3. The client `PUT`s the file straight to R2 — bytes never flow through Vercel.
-4. `POST /api/admin/uploads/complete` `HEAD`s the object to confirm it landed, flips the row to `complete`, and returns the share URL.
-5. The client copies the share URL to the clipboard and opens it. Anyone with the link can watch at `/r/[id]` (with `?t=` timestamp deep-linking).
+4. In parallel with step 3, the local auto-titler extracts the mic track via `AVAssetReader`, transcribes it in-process with WhisperKit, and asks a local Ollama model for a short title. Nothing leaves the machine, and every stage is best-effort — a missing mic or an Ollama that isn't running just leaves the title blank.
+5. `POST /api/admin/uploads/complete` `HEAD`s the object to confirm it landed, flips the row to `complete`, and returns the share URL. If the auto-titler produced a title by then, the client `PATCH`es it onto the row.
+6. The client copies the share URL to the clipboard and opens it. Anyone with the link can watch at `/r/[id]` (with `?t=` timestamp deep-linking).
 
 The Next.js app holds all R2 and Postgres credentials. The desktop client only knows the web URL and the admin secret; every interaction with R2 is gated by short-lived presigned URLs.
 
@@ -82,10 +84,11 @@ docs/
 
 ## Requirements
 
-- macOS 13+ for the desktop client
+- macOS 14+ for the desktop client (bumped from 13 when WhisperKit landed)
 - Node.js 20+ for the web app and operator scripts
 - A Cloudflare account (R2 free tier is enough to start)
 - A Supabase project — or Docker, for the local Supabase stack via `npm run db:start`
+- Optional: [Ollama](https://ollama.com) running locally if you want the auto-titler (`brew install ollama && ollama pull gemma4:e4b`). The upload flow works unchanged without it.
 - Optional local tooling so the pre-commit hook can run: `brew install gitleaks shellcheck`
 
 The macOS client also needs Screen Recording permission, Camera permission (if using the face overlay), and Microphone permission (if recording narration).
@@ -122,13 +125,15 @@ npm run dev -w web
 | Lint the web workspace             | `npm run lint`            |
 | Check formatting (Prettier)        | `npm run format:check`    |
 | Auto-fix formatting                | `npm run format`          |
+| Lint Swift sources                 | `npm run swift:lint`      |
+| Auto-fix Swift formatting          | `npm run swift:format`    |
 | ShellCheck every tracked `.sh`     | `npm run shellcheck`      |
 | Web unit + integration tests       | `npm test -w web`         |
 | Web end-to-end tests (Playwright)  | `npm run test:e2e -w web` |
 | Build the macOS client bundle      | `./scripts/build-app.sh`  |
 | Run the macOS client in foreground | `./scripts/run.sh`        |
 
-A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, ShellCheck, and gitleaks against staged changes before any commit lands. The same checks run in GitHub Actions on push and pull requests, plus a full-history gitleaks scan.
+A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, `swift format`, ShellCheck, and gitleaks against staged changes before any commit lands. Swift sources use Apple's official `swift-format` (ships with the Swift 6 toolchain) against the repo-level `.swift-format` config. The rest of the checks also run in GitHub Actions on push and pull requests, plus a full-history gitleaks scan.
 
 ## Recording output
 
@@ -150,3 +155,25 @@ Approximate file sizes under the current bitrate heuristic:
 | 3840×2160  | ~33.2 Mb/s | ~249 MB          |
 
 The file is already compressed during capture, so it is not a raw or ProRes master — but 4K recordings can still get large quickly. The client never deletes local files, and upload failures never destroy the source.
+
+## Auto-titling
+
+Recordings that otherwise would have stayed untitled get a short descriptive title generated on the same machine that did the recording — no cloud APIs, no third-party telemetry, no server-side worker. The pipeline runs once per recording and every stage is best-effort: any failure (no mic track, Ollama offline, empty transcript) logs a line and leaves the `title` column `NULL`. The upload flow is otherwise untouched.
+
+Stages, all in-process on the macOS client:
+
+1. **Extract.** `AVAssetReader` pulls the mic audio out of the finalized MP4 into 16 kHz mono float PCM. No ffmpeg, no temp files.
+2. **Transcribe.** An actor-wrapped `WhisperKit` instance runs the CoreML model against the PCM buffer. The instance is loaded lazily on first use and memoized for the rest of the process, so the ~500 MB model download only happens once (into the standard HuggingFace Hub cache at `~/.cache/huggingface/hub/`).
+3. **Summarize.** The transcript is sent to a local Ollama model via `POST http://localhost:11434/api/generate` with `think: false` (important — reasoning-capable models like `gemma4:e4b` otherwise route their output into a separate `thinking` field and return an empty `response`). The client asks for a 4–10 word title and sanitizes it (strips `Title:` prefixes, smart/straight quotes, trailing punctuation, clamps to 10 words).
+4. **Persist.** The title is `PATCH`ed onto the `recordings` row via `PATCH /api/admin/recordings/[id]`. Pending rows (upload still in flight) are also allowed to take a title so the auto-titler can land early on fast uploads.
+
+All four environment variables are optional. Defaults are hard-coded in `Autotitler.swift`:
+
+| Variable                 | Default                   | Purpose                                                     |
+| ------------------------ | ------------------------- | ----------------------------------------------------------- |
+| `KOOM_AUTOTITLE_ENABLED` | `true`                    | Set to `false`/`0`/`no`/`off` to skip the pipeline entirely |
+| `KOOM_WHISPER_MODEL`     | `openai_whisper-small.en` | Any model WhisperKit publishes on HuggingFace               |
+| `KOOM_OLLAMA_URL`        | `http://localhost:11434`  | Ollama HTTP base URL                                        |
+| `KOOM_OLLAMA_MODEL`      | `gemma4:e4b`              | Any model you've `ollama pull`ed locally                    |
+
+`npm run doctor` has an "Auto-title (Ollama)" section that verifies Ollama is reachable and the configured model has been pulled. Both checks are non-fatal: failures become warnings so the rest of the doctor sweep still runs.

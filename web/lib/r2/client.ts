@@ -57,6 +57,20 @@ export function recordingObjectKey(recordingId: string): string {
 }
 
 /**
+ * Build the public playback URL for a recording. Served by R2's
+ * managed `.r2.dev` subdomain (or a custom domain in production),
+ * fronted by Cloudflare's CDN. Safe to embed in `<video src>` and
+ * in JSON API responses.
+ */
+export function recordingPublicUrl(recordingId: string): string {
+  const base = process.env.R2_PUBLIC_BASE_URL;
+  if (!base) {
+    throw new Error("R2_PUBLIC_BASE_URL not set");
+  }
+  return `${base.replace(/\/$/, "")}/${recordingObjectKey(recordingId)}`;
+}
+
+/**
  * Mint a time-limited presigned PUT URL for the desktop client to
  * upload video bytes directly to R2, bypassing the Next.js backend.
  * The default expiry is 15 minutes which comfortably covers uploading

@@ -308,10 +308,7 @@ async function writeOutputEnv(
 // State file
 // ────────────────────────────────────────────────────────────────────
 
-async function loadState(
-  statePath: string,
-  accountId: string,
-): Promise<State> {
+async function loadState(statePath: string, accountId: string): Promise<State> {
   if (!existsSync(statePath)) {
     return { version: 1, cloudflare: { accountId } };
   }
@@ -522,8 +519,7 @@ async function createR2Token(
   runtimeTokenName: string,
   permissionGroupIds: Record<string, string>,
 ): Promise<CreatedToken> {
-  const resourceKey =
-    `com.cloudflare.edge.r2.bucket.${accountId}_default_${bucketName}`;
+  const resourceKey = `com.cloudflare.edge.r2.bucket.${accountId}_default_${bucketName}`;
   return cfRequest<CreatedToken>(
     token,
     "POST",
@@ -652,7 +648,9 @@ export async function provisionR2(opts: ProvisionOptions): Promise<void> {
       logSuccess(`Bucket "${opts.bucketName}" exists`);
       log();
       log(`  This bucket is in your Cloudflare account but is not tracked by`);
-      log(`  koom (no entry in ${friendlyPath(opts.stateFilePath)}). It may be`);
+      log(
+        `  koom (no entry in ${friendlyPath(opts.stateFilePath)}). It may be`,
+      );
       log(`  from a prior koom install or unrelated to koom entirely.`);
       log();
       const reuse = await confirm(
@@ -805,9 +803,7 @@ export async function provisionR2(opts: ProvisionOptions): Promise<void> {
       );
     } catch (err) {
       if (err instanceof CloudflareError && err.status === 403) {
-        fail(
-          `Token does not have permission to list permission groups (403).`,
-        );
+        fail(`Token does not have permission to list permission groups (403).`);
       }
       throw err;
     }

@@ -56,10 +56,7 @@ const R2_REQUIRED_ENV_VARS = [
 
 const POSTGRES_REQUIRED_ENV_VARS = ["DATABASE_URL"] as const;
 
-const SOFT_ENV_VARS = [
-  "KOOM_PUBLIC_BASE_URL",
-  "KOOM_ADMIN_SECRET",
-] as const;
+const SOFT_ENV_VARS = ["KOOM_PUBLIC_BASE_URL", "KOOM_ADMIN_SECRET"] as const;
 
 // Columns we expect to find on the `recordings` table. Keep in sync
 // with supabase/migrations/*_create_recordings.sql.
@@ -198,10 +195,7 @@ async function main(): Promise<void> {
   // ── Section: Configuration ────────────────────────────────────────
   logSection("Configuration");
 
-  for (const key of [
-    ...R2_REQUIRED_ENV_VARS,
-    ...POSTGRES_REQUIRED_ENV_VARS,
-  ]) {
+  for (const key of [...R2_REQUIRED_ENV_VARS, ...POSTGRES_REQUIRED_ENV_VARS]) {
     if (env[key]) {
       pass(`${key} present`);
     } else {
@@ -249,10 +243,7 @@ async function main(): Promise<void> {
   // ── Section: Vercel (optional) ────────────────────────────────────
   logSection("Vercel");
   if (env.VERCEL_TOKEN && env.VERCEL_PROJECT_ID) {
-    skip(
-      "Vercel project reachable",
-      "not yet implemented (later round)",
-    );
+    skip("Vercel project reachable", "not yet implemented (later round)");
   } else {
     skip(
       "Vercel project reachable",
@@ -268,7 +259,6 @@ async function main(): Promise<void> {
 // ────────────────────────────────────────────────────────────────────
 
 async function runR2Checks(env: Record<string, string>): Promise<void> {
-
   const bucket = env.R2_BUCKET!;
   const accountId = env.R2_ACCOUNT_ID!;
   const accessKeyId = env.R2_ACCESS_KEY_ID!;
@@ -323,32 +313,29 @@ async function runR2Checks(env: Record<string, string>): Promise<void> {
 
     // Public GET — full object
     const publicUrl = `${publicBaseUrl}/${testKey}`;
-    await runCheck(
-      `Public URL serves the test object (no Range)`,
-      async () => {
-        const res = await fetch(publicUrl);
-        if (res.status === 404) {
-          throw new Error(
-            `404 from ${publicUrl} — the .r2.dev URL may need a few\n` +
-              `seconds to start serving newly written objects. Try re-running\n` +
-              `the doctor in 5–10 seconds.`,
-          );
-        }
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status} from ${publicUrl}`);
-        }
-        const body = Buffer.from(await res.arrayBuffer());
-        if (body.length !== TEST_BYTE_COUNT) {
-          throw new Error(
-            `Expected ${TEST_BYTE_COUNT} bytes, got ${body.length}`,
-          );
-        }
-        if (!body.equals(testBytes)) {
-          throw new Error(`Returned bytes do not match what we PUT`);
-        }
-        return `(${body.length} bytes match)`;
-      },
-    );
+    await runCheck(`Public URL serves the test object (no Range)`, async () => {
+      const res = await fetch(publicUrl);
+      if (res.status === 404) {
+        throw new Error(
+          `404 from ${publicUrl} — the .r2.dev URL may need a few\n` +
+            `seconds to start serving newly written objects. Try re-running\n` +
+            `the doctor in 5–10 seconds.`,
+        );
+      }
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} from ${publicUrl}`);
+      }
+      const body = Buffer.from(await res.arrayBuffer());
+      if (body.length !== TEST_BYTE_COUNT) {
+        throw new Error(
+          `Expected ${TEST_BYTE_COUNT} bytes, got ${body.length}`,
+        );
+      }
+      if (!body.equals(testBytes)) {
+        throw new Error(`Returned bytes do not match what we PUT`);
+      }
+      return `(${body.length} bytes match)`;
+    });
 
     // Public GET — Range request (the load-bearing assumption)
     await runCheck(
@@ -452,9 +439,7 @@ async function runPostgresChecks(env: Record<string, string>): Promise<void> {
 
     // Basic SELECT
     await runCheck("Basic SELECT 1 query works", async () => {
-      const { rows } = await client.query<{ n: number }>(
-        "SELECT 1::int AS n",
-      );
+      const { rows } = await client.query<{ n: number }>("SELECT 1::int AS n");
       if (rows[0]?.n !== 1) {
         throw new Error(`Expected 1, got ${JSON.stringify(rows[0])}`);
       }
@@ -496,84 +481,73 @@ async function runPostgresChecks(env: Record<string, string>): Promise<void> {
     if (!tableOk) return;
 
     // INSERT a throwaway row
-    const insertOk = await runCheck(
-      "INSERT a throwaway row",
-      async () => {
-        await client.query(
-          `INSERT INTO recordings
+    const insertOk = await runCheck("INSERT a throwaway row", async () => {
+      await client.query(
+        `INSERT INTO recordings
              (id, status, original_filename, size_bytes, bucket, object_key)
            VALUES ($1, $2, $3, $4, $5, $6)`,
-          [
-            testId,
-            "pending",
-            "koom-doctor-test.mp4",
-            1024,
-            env.R2_BUCKET ?? "koom-recordings",
-            "_koom-doctor/placeholder.bin",
-          ],
-        );
-        inserted = true;
-        return `(id=${testId})`;
-      },
-    );
+        [
+          testId,
+          "pending",
+          "koom-doctor-test.mp4",
+          1024,
+          env.R2_BUCKET ?? "koom-recordings",
+          "_koom-doctor/placeholder.bin",
+        ],
+      );
+      inserted = true;
+      return `(id=${testId})`;
+    });
     if (!insertOk) return;
 
     // SELECT it back and verify round-trip
-    await runCheck(
-      "SELECT the row back and verify round-trip",
-      async () => {
-        const { rows } = await client.query<{
-          id: string;
-          status: string;
-          size_bytes: string; // BIGINT comes back as string from pg by default
-        }>(
-          `SELECT id, status, size_bytes
+    await runCheck("SELECT the row back and verify round-trip", async () => {
+      const { rows } = await client.query<{
+        id: string;
+        status: string;
+        size_bytes: string; // BIGINT comes back as string from pg by default
+      }>(
+        `SELECT id, status, size_bytes
              FROM recordings
             WHERE id = $1`,
-          [testId],
-        );
-        if (rows.length !== 1) {
-          throw new Error(`Expected 1 row, got ${rows.length}`);
-        }
-        const row = rows[0]!;
-        if (row.status !== "pending") {
-          throw new Error(`Expected status='pending', got '${row.status}'`);
-        }
-        if (row.size_bytes !== "1024") {
-          throw new Error(
-            `Expected size_bytes='1024', got '${row.size_bytes}'`,
-          );
-        }
-        return undefined;
-      },
-    );
+        [testId],
+      );
+      if (rows.length !== 1) {
+        throw new Error(`Expected 1 row, got ${rows.length}`);
+      }
+      const row = rows[0]!;
+      if (row.status !== "pending") {
+        throw new Error(`Expected status='pending', got '${row.status}'`);
+      }
+      if (row.size_bytes !== "1024") {
+        throw new Error(`Expected size_bytes='1024', got '${row.size_bytes}'`);
+      }
+      return undefined;
+    });
 
     // Verify the listing-query shape is efficient (uses the index).
     // This is cheap belt-and-suspenders — if the index got dropped,
     // this will catch it before we notice slow listings in production.
-    await runCheck(
-      "Listing query shape is indexed",
-      async () => {
-        const { rows } = await client.query<{ "QUERY PLAN": string }>(
-          `EXPLAIN (FORMAT TEXT)
+    await runCheck("Listing query shape is indexed", async () => {
+      const { rows } = await client.query<{ "QUERY PLAN": string }>(
+        `EXPLAIN (FORMAT TEXT)
            SELECT id, created_at
              FROM recordings
             WHERE status = 'complete'
             ORDER BY created_at DESC
             LIMIT 20`,
+      );
+      const plan = rows.map((r) => r["QUERY PLAN"]).join("\n");
+      // At this scale (~1 row), Postgres may prefer a Seq Scan. We
+      // just verify the index at least exists and is considered.
+      // A truly missing index would error out before reaching here.
+      if (!plan.includes("recordings")) {
+        throw new Error(
+          `EXPLAIN output did not mention 'recordings' — unexpected`,
         );
-        const plan = rows.map((r) => r["QUERY PLAN"]).join("\n");
-        // At this scale (~1 row), Postgres may prefer a Seq Scan. We
-        // just verify the index at least exists and is considered.
-        // A truly missing index would error out before reaching here.
-        if (!plan.includes("recordings")) {
-          throw new Error(
-            `EXPLAIN output did not mention 'recordings' — unexpected`,
-          );
-        }
-        return undefined;
-      },
-    );
+      }
+      return undefined;
+    });
   } finally {
     // Always clean up the test row if we managed to insert one.
     if (inserted) {
@@ -605,7 +579,8 @@ function finish(): never {
   const bits: string[] = [];
   bits.push(`${passCount} passed`);
   if (failCount > 0) bits.push(`${failCount} failed`);
-  if (warnCount > 0) bits.push(`${warnCount} warning${warnCount === 1 ? "" : "s"}`);
+  if (warnCount > 0)
+    bits.push(`${warnCount} warning${warnCount === 1 ? "" : "s"}`);
   if (skipCount > 0) bits.push(`${skipCount} skipped`);
   log(`Summary: ${bits.join(", ")}`);
   process.exit(failCount > 0 ? 1 : 0);

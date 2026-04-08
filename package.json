@@ -9,8 +9,8 @@
   "scripts": {
     "prepare": "husky",
     "lint": "npm run lint -w web",
-    "format": "npm run format -w web",
-    "format:check": "npm run format:check -w web",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "shellcheck": "git ls-files -z '*.sh' '*.bash' | xargs -0 shellcheck",
     "r2:setup": "tsx scripts/r2-setup.ts",
     "r2:setup:test": "tsx scripts/r2-setup-test.ts",

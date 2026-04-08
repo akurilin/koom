@@ -59,7 +59,7 @@ These decisions were explicitly made and should be treated as settled for the fi
 - Minimal but visually appealing watch page
 - Timestamp deep-linking should be supported
 
-v1 *does* include a database. The earlier sidecar-JSON-metadata idea has been discarded in favor of a single Postgres table. See [Database Schema](#database-schema).
+v1 _does_ include a database. The earlier sidecar-JSON-metadata idea has been discarded in favor of a single Postgres table. See [Database Schema](#database-schema).
 
 ### Access model
 
@@ -688,7 +688,7 @@ A TypeScript script runnable via `npm run r2:setup`. It provisions or reconciles
 
 #### A note on the "Workers R2 Storage: Edit" permission
 
-The exact permission scope needed for *all* steps of the script is mostly covered by "Workers R2 Storage: Edit", but creating R2 S3 credentials (step 5 above) may require an additional account-level scope that hasn't been verified. If step 5 returns a 403, the script's error output will include the missing scope from Cloudflare's response, and the user updates the token in the dashboard and re-runs. Worst case is one iteration. The `.env.example` documentation should be updated with the final correct scope once verified during Phase 6.
+The exact permission scope needed for _all_ steps of the script is mostly covered by "Workers R2 Storage: Edit", but creating R2 S3 credentials (step 5 above) may require an additional account-level scope that hasn't been verified. If step 5 returns a 403, the script's error output will include the missing scope from Cloudflare's response, and the user updates the token in the dashboard and re-runs. Worst case is one iteration. The `.env.example` documentation should be updated with the final correct scope once verified during Phase 6.
 
 ### `scripts/.r2-state.json`
 
@@ -866,7 +866,7 @@ Supabase free-tier projects are paused after a week of inactivity and must be un
 
 ### Cloudflare API token permission scope uncertainty
 
-The exact Cloudflare API token scopes needed for *all* steps of `r2-setup.ts` are not 100% verified — specifically, creating R2 S3 credentials may require an additional permission beyond "Workers R2 Storage: Edit". If hit, the script surfaces the missing scope from the API error and the user updates the token. The Phase 6 verification step pins down the final correct scope and updates the docs.
+The exact Cloudflare API token scopes needed for _all_ steps of `r2-setup.ts` are not 100% verified — specifically, creating R2 S3 credentials may require an additional permission beyond "Workers R2 Storage: Edit". If hit, the script surfaces the missing scope from the API error and the user updates the token. The Phase 6 verification step pins down the final correct scope and updates the docs.
 
 ## Deferred Decisions
 

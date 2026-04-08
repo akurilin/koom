@@ -100,9 +100,7 @@ R2_PUBLIC_BASE_URL=
 async function main(): Promise<void> {
   // Seed the output env file from the template on first run.
   if (!existsSync(TEST_ENV_PATH)) {
-    process.stdout.write(
-      `Creating ${TEST_ENV_PATH} from template…\n`,
-    );
+    process.stdout.write(`Creating ${TEST_ENV_PATH} from template…\n`);
     await writeFile(TEST_ENV_PATH, TEST_ENV_TEMPLATE, "utf-8");
   }
 

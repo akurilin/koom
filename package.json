@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "r2:setup": "tsx scripts/r2-setup.ts",
+    "r2:setup:test": "tsx scripts/r2-setup-test.ts",
     "doctor": "tsx scripts/doctor.ts",
     "db:start": "npx -y supabase@2.87.2 start",
     "db:stop": "npx -y supabase@2.87.2 stop",

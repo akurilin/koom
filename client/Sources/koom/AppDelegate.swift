@@ -2,15 +2,23 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private enum TerminationDecision {
+        case stopAndSave
+        case discard
+        case keepRecording
+    }
+
     private let model = AppModel()
     private var controlPanelWindow: NSWindow?
+    private var isResolvingTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppLog.info("koom launched.")
         NSApp.setActivationPolicy(.regular)
         showControlPanel()
         maybePromptForSettings()
+        maybeRecoverInterruptedRecording()
     }
 
     /// If either the backend URL or the admin secret is missing on
@@ -39,6 +47,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         AppLog.info("koom terminating.")
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isResolvingTermination else {
+            return .terminateCancel
+        }
+
+        guard model.isRecordingInProgress else {
+            return .terminateNow
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Recording in progress"
+        alert.informativeText =
+            "Choose how koom should handle the current recording before quitting."
+        alert.addButton(withTitle: "Stop and Save")
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Keep Recording")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return resolveTermination(discardOutput: false)
+        case .alertSecondButtonReturn:
+            return resolveTermination(discardOutput: true)
+        default:
+            return .terminateCancel
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -90,6 +126,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         window.contentViewController = NSHostingController(rootView: contentView)
         window.isReleasedWhenClosed = false
+        window.delegate = self
         return window
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard model.isRecordingInProgress else {
+            return true
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Recording in progress"
+        alert.informativeText =
+            "Stop or discard the current recording before closing the control panel."
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: sender)
+        return false
+    }
+
+    private func maybeRecoverInterruptedRecording() {
+        guard let controlPanelWindow else { return }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            await model.recoverInterruptedSessionsIfNeeded(
+                attachedTo: controlPanelWindow
+            )
+        }
+    }
+
+    private func resolveTermination(discardOutput: Bool) -> NSApplication.TerminateReply {
+        isResolvingTermination = true
+
+        Task { @MainActor in
+            let success = await model.resolveRecordingForTermination(
+                discardOutput: discardOutput
+            )
+
+            if !success {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = discardOutput
+                    ? "Could not discard recording"
+                    : "Could not save recording"
+                alert.informativeText =
+                    "koom kept the app open because the current recording could not be finalized safely."
+                alert.runModal()
+            }
+
+            isResolvingTermination = false
+            NSApp.reply(toApplicationShouldTerminate: success)
+        }
+
+        return .terminateLater
     }
 }

@@ -97,7 +97,8 @@ final class Uploader {
 
     // MARK: Single-file upload (post-recording)
 
-    func uploadRecording(at fileURL: URL) async {
+    @discardableResult
+    func uploadRecording(at fileURL: URL) async -> Bool {
         emit(.preparing)
 
         // Kick off the upload and the auto-title pipeline in
@@ -124,8 +125,10 @@ final class Uploader {
             }
             openAndPasteShareURL(outcome.shareURL)
             emit(.completed(shareURL: outcome.shareURL))
+            return true
         case .failure(let failure):
             emit(.failed(message: failure.message))
+            return false
         }
     }
 

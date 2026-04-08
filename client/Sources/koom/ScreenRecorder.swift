@@ -31,6 +31,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         let displayID: CGDirectDisplayID
         let microphoneID: String?
         let outputURL: URL
+        let movieFragmentInterval: CMTime?
     }
 
     private struct TrackTimingState {
@@ -86,6 +87,9 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
 
         let writer = try AVAssetWriter(outputURL: configuration.outputURL, fileType: .mp4)
+        if let movieFragmentInterval = configuration.movieFragmentInterval {
+            writer.movieFragmentInterval = movieFragmentInterval
+        }
         let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: Self.videoSettings(width: display.width, height: display.height))
         videoInput.expectsMediaDataInRealTime = true
 

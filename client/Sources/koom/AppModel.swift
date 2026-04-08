@@ -55,29 +55,39 @@ final class AppModel: ObservableObject {
     @Published var catchUpState: CatchUpState = .idle
     @Published var isCatchingUp: Bool = false
 
+    var isRecordingInProgress: Bool {
+        recorder != nil
+    }
+
+    private enum RecoveryDecision {
+        case resume
+        case finishPartial
+        case notNow
+        case discard
+    }
+
     private let cameraPreviewManager = CameraPreviewManager()
     private let overlayWindowController = CameraOverlayWindowController()
     private let settingsStore: AppSettingsStore
+    private let uploader = Uploader()
+    private let sessionStore = RecordingSessionStore()
+    private let assembler = RecordingAssembler()
+    private let fragmentIntervalSeconds: TimeInterval = 2
+
     private var recorder: ScreenRecorder?
     private var hasPlacedWindow = false
-    private let uploader = Uploader()
+    private var currentSession: RecordingSessionStore.SessionHandle?
+    private var currentSessionWasRecovered = false
 
     init(settingsStore: AppSettingsStore = AppSettingsStore()) {
         self.settingsStore = settingsStore
 
-        // The upload state callback is invoked from a background
-        // delegate queue inside KoomAPI; hop back onto the main
-        // actor before touching @Published state.
         uploader.onStateChange = { @Sendable [weak self] state in
             Task { @MainActor in
                 self?.uploadState = state
             }
         }
 
-        // Listen for the "Sync Unsent Recordings" menu command. The
-        // menu item posts a notification via NotificationCenter
-        // because SwiftUI `.commands` blocks can't easily reach an
-        // `@MainActor` model instance directly.
         NotificationCenter.default.addObserver(
             forName: .koomCatchUpRequested,
             object: nil,
@@ -103,10 +113,6 @@ final class AppModel: ObservableObject {
 
     // MARK: - Catch-up
 
-    /// Kicks off the batch catch-up flow. Guarded so overlapping
-    /// invocations (e.g. the user hitting the menu item twice) are
-    /// no-ops. Terminal states are surfaced via `catchUpState` so
-    /// the control panel can render progress and results.
     func catchUpRecordings() {
         guard !isCatchingUp else {
             AppLog.info("Catch-up already in progress; ignoring duplicate request.")
@@ -114,8 +120,6 @@ final class AppModel: ObservableObject {
         }
         isCatchingUp = true
 
-        // Mirror the batch-level state updates the Uploader emits
-        // onto our @Published property via a main-actor hop.
         let onCatchUpStateChange: @Sendable (CatchUpState) -> Void = { [weak self] state in
             Task { @MainActor in
                 self?.catchUpState = state
@@ -126,11 +130,47 @@ final class AppModel: ObservableObject {
             await uploader.catchUpRecordings(
                 onCatchUpStateChange: onCatchUpStateChange
             )
-            // The observer above has already set the terminal
-            // catchUpState, so here we only need to release the
-            // re-entry guard.
             await MainActor.run {
                 self.isCatchingUp = false
+            }
+        }
+    }
+
+    // MARK: - Recovery
+
+    func recoverInterruptedSessionsIfNeeded(attachedTo window: NSWindow) async {
+        guard recorder == nil, !isBusy else { return }
+
+        let recoverableSessions = sessionStore.loadRecoverableSessions()
+        guard !recoverableSessions.isEmpty else { return }
+
+        for recoverableSession in recoverableSessions {
+            let decision = await presentRecoveryPrompt(
+                for: recoverableSession,
+                attachedTo: window
+            )
+
+            switch decision {
+            case .resume:
+                guard applySelections(from: recoverableSession) else {
+                    return
+                }
+                await startRecordingTask(
+                    resuming: recoverableSession,
+                    recovered: true
+                )
+                return
+
+            case .finishPartial:
+                await finalizeRecoveredSession(recoverableSession)
+
+            case .discard:
+                try? sessionStore.discardSession(recoverableSession)
+                statusMessage = "Discarded interrupted recording \(recoverableSession.session.finalFilename)."
+
+            case .notNow:
+                statusMessage = "Interrupted recording kept for later recovery."
+                return
             }
         }
     }
@@ -196,7 +236,12 @@ final class AppModel: ObservableObject {
         guard recordingState != .idle, !isBusy else { return }
         AppLog.info("Stop recording requested.")
         Task {
-            await stopRecordingTask(discardOutput: false, restartAfterStop: false)
+            _ = await stopRecordingTask(
+                discardOutput: false,
+                restartAfterStop: false,
+                uploadAfterStop: true,
+                awaitUploadAfterStop: false
+            )
         }
     }
 
@@ -210,24 +255,46 @@ final class AppModel: ObservableObject {
 
         AppLog.info("Restart recording requested.")
         Task {
-            await stopRecordingTask(discardOutput: true, restartAfterStop: true)
+            _ = await stopRecordingTask(
+                discardOutput: true,
+                restartAfterStop: true,
+                uploadAfterStop: true,
+                awaitUploadAfterStop: false
+            )
         }
+    }
+
+    func resolveRecordingForTermination(discardOutput: Bool) async -> Bool {
+        guard recorder != nil else { return true }
+        return await stopRecordingTask(
+            discardOutput: discardOutput,
+            restartAfterStop: false,
+            uploadAfterStop: !discardOutput,
+            awaitUploadAfterStop: !discardOutput
+        )
     }
 
     func togglePause() {
         guard let recorder else { return }
+        guard var currentSession else { return }
 
         switch recordingState {
         case .recording:
             AppLog.info("Pause recording requested.")
             recorder.pause()
+            try? sessionStore.updateState(.paused, in: &currentSession)
+            self.currentSession = currentSession
             recordingState = .paused
             statusMessage = "Paused."
+
         case .paused:
             AppLog.info("Resume recording requested.")
             recorder.resume()
+            try? sessionStore.updateState(.recording, in: &currentSession)
+            self.currentSession = currentSession
             recordingState = .recording
             statusMessage = "Recording resumed."
+
         case .idle:
             break
         }
@@ -291,7 +358,10 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private func startRecordingTask() async {
+    private func startRecordingTask(
+        resuming recoverableSession: RecordingSessionStore.SessionHandle? = nil,
+        recovered: Bool = false
+    ) async {
         guard displays.contains(where: { $0.id == selectedDisplayID }) else {
             statusMessage = "Choose a display before recording."
             return
@@ -304,64 +374,278 @@ final class AppModel: ObservableObject {
         let permissionsOkay = await requestPermissions()
         guard permissionsOkay else { return }
 
-        let outputURL = makeOutputURL()
+        let previousRecoverableState = recoverableSession?.session.state ?? .recording
+        var workingSession = recoverableSession
 
         do {
+            if workingSession == nil {
+                guard let displaySnapshot = currentDisplaySnapshot() else {
+                    statusMessage = "Choose a display before recording."
+                    return
+                }
+
+                workingSession = try sessionStore.createSession(
+                    finalFilename: makeOutputFilename(),
+                    display: displaySnapshot,
+                    cameraID: selectedCameraID.isEmpty ? nil : selectedCameraID,
+                    microphoneID: selectedMicrophoneID.isEmpty ? nil : selectedMicrophoneID,
+                    fragmentIntervalSeconds: fragmentIntervalSeconds
+                )
+            }
+
+            guard var workingSession else {
+                statusMessage = "koom could not create a recording session."
+                return
+            }
+
+            let segmentURL = try sessionStore.createNextSegment(in: &workingSession)
             let recorder = ScreenRecorder(
                 configuration: .init(
                     displayID: selectedDisplayID,
                     microphoneID: selectedMicrophoneID.isEmpty ? nil : selectedMicrophoneID,
-                    outputURL: outputURL
+                    outputURL: segmentURL,
+                    movieFragmentInterval: CMTime(
+                        seconds: fragmentIntervalSeconds,
+                        preferredTimescale: 600
+                    )
                 )
             )
 
             try await recorder.start()
 
+            self.currentSession = workingSession
+            self.currentSessionWasRecovered = recovered
             self.recorder = recorder
-            lastRecordingURL = outputURL
+            lastRecordingURL = nil
             recordingState = .recording
-            statusMessage = "Recording to \(outputURL.lastPathComponent)"
+            statusMessage = recovered
+                ? "Interrupted recording resumed."
+                : "Recording to \(workingSession.session.finalFilename)"
         } catch {
+            if var workingSession {
+                try? sessionStore.removeLatestSegment(in: &workingSession)
+                if workingSession.session.segments.isEmpty {
+                    try? sessionStore.discardSession(workingSession)
+                } else {
+                    try? sessionStore.updateState(
+                        previousRecoverableState,
+                        in: &workingSession
+                    )
+                }
+            }
+
             statusMessage = error.localizedDescription
         }
     }
 
-    private func stopRecordingTask(discardOutput: Bool, restartAfterStop: Bool) async {
-        guard let recorder else { return }
+    private func stopRecordingTask(
+        discardOutput: Bool,
+        restartAfterStop: Bool,
+        uploadAfterStop: Bool,
+        awaitUploadAfterStop: Bool
+    ) async -> Bool {
+        guard let recorder else { return false }
+        guard var currentSession else { return false }
 
         isBusy = true
         statusMessage = discardOutput ? "Restarting..." : "Stopping recording..."
         defer { isBusy = false }
 
         do {
-            let outputURL = try await recorder.stop(discardOutput: discardOutput)
-
+            let segmentURL = try await recorder.stop(discardOutput: discardOutput)
             self.recorder = nil
             recordingState = .idle
 
             if discardOutput {
+                try? sessionStore.discardSession(currentSession)
+                self.currentSession = nil
+                currentSessionWasRecovered = false
                 lastRecordingURL = nil
                 statusMessage = "Previous recording discarded."
             } else {
-                lastRecordingURL = outputURL
-                statusMessage = "Saved \(outputURL.lastPathComponent)"
-                // Kick off the upload. Progress and terminal state
-                // are surfaced via uploadState, which
-                // ControlPanelView observes. The local file is
-                // never deleted regardless of upload outcome.
-                Task { [uploader] in
-                    await uploader.uploadRecording(at: outputURL)
+                let inspection = try await assembler.inspectSegment(at: segmentURL)
+                try sessionStore.markLatestSegmentStopped(
+                    in: &currentSession,
+                    cleanStop: true,
+                    durationSeconds: inspection.durationSeconds,
+                    hasVideo: inspection.hasVideo,
+                    hasAudio: inspection.hasAudio
+                )
+                try sessionStore.updateState(.finalizing, in: &currentSession)
+
+                let finalURL: URL
+                if !currentSessionWasRecovered && currentSession.session.segments.count == 1 {
+                    finalURL = try sessionStore.promoteSingleSegmentToFinalLocation(
+                        from: currentSession
+                    )
+                } else {
+                    finalURL = try await assembler.assembleSession(
+                        currentSession,
+                        store: sessionStore
+                    )
+                }
+
+                try? sessionStore.cleanupSessionDirectory(for: currentSession)
+                self.currentSession = nil
+                currentSessionWasRecovered = false
+                lastRecordingURL = finalURL
+                statusMessage = uploadAfterStop
+                    ? "Saved \(finalURL.lastPathComponent). Uploading..."
+                    : "Saved \(finalURL.lastPathComponent)"
+
+                if uploadAfterStop, awaitUploadAfterStop {
+                    let uploadSucceeded = await uploader.uploadRecording(
+                        at: finalURL
+                    )
+                    if !uploadSucceeded {
+                        statusMessage =
+                            "Saved \(finalURL.lastPathComponent), but upload failed."
+                        return false
+                    }
+                } else if uploadAfterStop {
+                    Task { [uploader] in
+                        await uploader.uploadRecording(at: finalURL)
+                    }
                 }
             }
 
             if restartAfterStop {
                 await startRecordingTask()
             }
+            return true
         } catch {
             self.recorder = nil
+            self.currentSession = nil
+            currentSessionWasRecovered = false
             recordingState = .idle
             statusMessage = error.localizedDescription
+            return false
         }
+    }
+
+    private func finalizeRecoveredSession(
+        _ recoverableSession: RecordingSessionStore.SessionHandle
+    ) async {
+        isBusy = true
+        statusMessage = "Recovering interrupted recording..."
+        defer { isBusy = false }
+
+        var recoverableSession = recoverableSession
+
+        do {
+            try sessionStore.updateState(.finalizing, in: &recoverableSession)
+            let finalURL = try await assembler.assembleSession(
+                recoverableSession,
+                store: sessionStore
+            )
+            try? sessionStore.cleanupSessionDirectory(for: recoverableSession)
+            lastRecordingURL = finalURL
+            statusMessage = "Recovered \(finalURL.lastPathComponent)"
+
+            Task { [uploader] in
+                await uploader.uploadRecording(at: finalURL)
+            }
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    private func presentRecoveryPrompt(
+        for recoverableSession: RecordingSessionStore.SessionHandle,
+        attachedTo window: NSWindow
+    ) async -> RecoveryDecision {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Interrupted recording found"
+        alert.informativeText =
+            """
+            koom found an unfinished recording (\(recoverableSession.session.finalFilename)).
+
+            You can resume it, finish the partial recording now, keep it for later, or discard it.
+            """
+        alert.addButton(withTitle: "Resume Recording")
+        alert.addButton(withTitle: "Finish Partial")
+        alert.addButton(withTitle: "Not Now")
+        alert.addButton(withTitle: "Discard")
+
+        return await withCheckedContinuation { continuation in
+            alert.beginSheetModal(for: window) { response in
+                switch response {
+                case .alertFirstButtonReturn:
+                    continuation.resume(returning: .resume)
+                case .alertSecondButtonReturn:
+                    continuation.resume(returning: .finishPartial)
+                case .alertThirdButtonReturn:
+                    continuation.resume(returning: .notNow)
+                default:
+                    continuation.resume(returning: .discard)
+                }
+            }
+        }
+    }
+
+    private func applySelections(
+        from recoverableSession: RecordingSessionStore.SessionHandle
+    ) -> Bool {
+        refreshHardware()
+
+        guard
+            let restoredDisplayID = resolveDisplayID(
+                for: recoverableSession.session.display
+            )
+        else {
+            statusMessage = "Reconnect the original display to resume this interrupted recording, or choose Finish Partial instead."
+            return false
+        }
+
+        selectedDisplayID = restoredDisplayID
+        displaySelectionDidChange()
+
+        if let savedCameraID = recoverableSession.session.cameraID,
+           cameras.contains(where: { $0.id == savedCameraID }) {
+            selectedCameraID = savedCameraID
+        } else {
+            selectedCameraID = ""
+        }
+        cameraSelectionDidChange()
+
+        if let savedMicrophoneID = recoverableSession.session.microphoneID,
+           microphones.contains(where: { $0.id == savedMicrophoneID }) {
+            selectedMicrophoneID = savedMicrophoneID
+        } else {
+            selectedMicrophoneID = ""
+        }
+        microphoneSelectionDidChange()
+
+        return true
+    }
+
+    private func resolveDisplayID(
+        for snapshot: RecordingSessionStore.RecordingSession.DisplaySnapshot
+    ) -> CGDirectDisplayID? {
+        if let exactMatch = displays.first(where: { $0.id == snapshot.id }) {
+            return exactMatch.id
+        }
+
+        return displays.first(where: {
+            $0.name == snapshot.name &&
+                Int($0.size.width) == snapshot.width &&
+                Int($0.size.height) == snapshot.height
+        })?.id
+    }
+
+    private func currentDisplaySnapshot(
+    ) -> RecordingSessionStore.RecordingSession.DisplaySnapshot? {
+        guard let selectedDisplay = displays.first(where: { $0.id == selectedDisplayID }) else {
+            return nil
+        }
+
+        return .init(
+            id: selectedDisplay.id,
+            name: selectedDisplay.name,
+            width: Int(selectedDisplay.size.width),
+            height: Int(selectedDisplay.size.height)
+        )
     }
 
     private func requestPermissions() async -> Bool {
@@ -416,22 +700,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func makeOutputURL() -> URL {
+    private func makeOutputFilename() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-
-        let baseDirectory =
-            FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
-        let recordingsDirectory = baseDirectory.appendingPathComponent("koom", isDirectory: true)
-
-        try? FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
-
-        let url =
-            recordingsDirectory
-            .appendingPathComponent("koom_\(formatter.string(from: Date()))")
-            .appendingPathExtension("mp4")
-        AppLog.info("Next recording path: \(url.path)")
-        return url
+        return "koom_\(formatter.string(from: Date())).mp4"
     }
 }

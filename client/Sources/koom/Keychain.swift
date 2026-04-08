@@ -87,7 +87,8 @@ enum Keychain {
             throw KeychainError.loadFailed(status)
         }
         guard let data = result as? Data,
-              let value = String(data: data, encoding: .utf8) else {
+            let value = String(data: data, encoding: .utf8)
+        else {
             throw KeychainError.corruptedData
         }
         return value

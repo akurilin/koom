@@ -35,7 +35,8 @@ enum KoomConfig {
     static var backendURL: URL? {
         get {
             guard let raw = defaults.string(forKey: backendURLKey),
-                  !raw.isEmpty else {
+                !raw.isEmpty
+            else {
                 return nil
             }
             return URL(string: raw)
@@ -85,7 +86,8 @@ enum KoomConfig {
     static var isFullyConfigured: Bool {
         guard backendURL != nil else { return false }
         guard let secret = (try? loadAdminSecret()),
-              !secret.isEmpty else {
+            !secret.isEmpty
+        else {
             return false
         }
         return true

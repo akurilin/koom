@@ -33,7 +33,8 @@ actor Transcriber {
     func transcribe(audioArray: [Float]) async throws -> String {
         let kit = try await ensureKit()
         let results = try await kit.transcribe(audioArray: audioArray)
-        let joined = results
+        let joined =
+            results
             .map(\.text)
             .joined(separator: " ")
         return joined.trimmingCharacters(in: .whitespacesAndNewlines)

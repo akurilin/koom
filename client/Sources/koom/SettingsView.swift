@@ -86,9 +86,10 @@ struct SettingsView: View {
 
         let trimmedURL = backendURLString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmedURL),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              url.host != nil else {
+            let scheme = url.scheme?.lowercased(),
+            scheme == "http" || scheme == "https",
+            url.host != nil
+        else {
             errorMessage = "Backend URL must be a valid http:// or https:// URL."
             return
         }
@@ -117,6 +118,7 @@ struct SettingsView: View {
         }
 
         savedAt = Date()
-        AppLog.info("Settings saved. Backend: \(normalized.absoluteString), admin secret \(secret.isEmpty ? "cleared" : "set (\(secret.count) chars)").")
+        AppLog.info(
+            "Settings saved. Backend: \(normalized.absoluteString), admin secret \(secret.isEmpty ? "cleared" : "set (\(secret.count) chars)").")
     }
 }

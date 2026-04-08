@@ -1,5 +1,5 @@
-import Foundation
 import CoreGraphics
+import Foundation
 
 @MainActor
 final class AppSettingsStore {

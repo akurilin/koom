@@ -11,6 +11,8 @@
     "lint": "npm run lint -w web",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "swift:format": "swift format format --in-place --recursive client/Sources",
+    "swift:lint": "swift format lint --recursive client/Sources",
     "shellcheck": "git ls-files -z '*.sh' '*.bash' | xargs -0 shellcheck",
     "r2:setup": "tsx scripts/r2-setup.ts",
     "r2:setup:test": "tsx scripts/r2-setup-test.ts",

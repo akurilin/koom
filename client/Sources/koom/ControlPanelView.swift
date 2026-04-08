@@ -104,9 +104,10 @@ struct ControlPanelView: View {
         }
         .padding(16)
         .frame(width: 360, height: 380)
-        .background(WindowAccessor { window in
-            model.configureControlWindow(window)
-        })
+        .background(
+            WindowAccessor { window in
+                model.configureControlWindow(window)
+            })
     }
 }
 

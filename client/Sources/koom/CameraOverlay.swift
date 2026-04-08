@@ -1,5 +1,5 @@
-@preconcurrency import AppKit
 @preconcurrency import AVFoundation
+@preconcurrency import AppKit
 import SwiftUI
 
 final class CameraPreviewManager: @unchecked Sendable {

@@ -1,5 +1,5 @@
-@preconcurrency import AppKit
 @preconcurrency import AVFoundation
+@preconcurrency import AppKit
 import CoreGraphics
 
 @MainActor
@@ -278,7 +278,9 @@ final class AppModel: ObservableObject {
         }
 
         cameraPreviewManager.setCamera(uniqueID: selectedCameraID.isEmpty ? nil : selectedCameraID)
-        AppLog.info("Active camera: \(selectedCameraID.isEmpty ? "none" : selectedCameraID), microphone: \(selectedMicrophoneID.isEmpty ? "none" : selectedMicrophoneID)")
+        AppLog.info(
+            "Active camera: \(selectedCameraID.isEmpty ? "none" : selectedCameraID), microphone: \(selectedMicrophoneID.isEmpty ? "none" : selectedMicrophoneID)"
+        )
     }
 
     private func updateOverlay() {
@@ -418,13 +420,15 @@ final class AppModel: ObservableObject {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
 
-        let baseDirectory = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
+        let baseDirectory =
+            FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
         let recordingsDirectory = baseDirectory.appendingPathComponent("koom", isDirectory: true)
 
         try? FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
 
-        let url = recordingsDirectory
+        let url =
+            recordingsDirectory
             .appendingPathComponent("koom_\(formatter.string(from: Date()))")
             .appendingPathExtension("mp4")
         AppLog.info("Next recording path: \(url.path)")

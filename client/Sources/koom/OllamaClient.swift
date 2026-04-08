@@ -52,8 +52,14 @@ struct OllamaClient: Sendable {
 
         struct Options: Encodable {
             let temperature: Double
-            // Ollama uses snake_case for some option keys.
-            let num_predict: Int
+            /// Swift-side name stays lowerCamelCase; serialized to
+            /// Ollama's `num_predict` key via `CodingKeys` below.
+            let numPredict: Int
+
+            enum CodingKeys: String, CodingKey {
+                case temperature
+                case numPredict = "num_predict"
+            }
         }
     }
 
@@ -81,7 +87,7 @@ struct OllamaClient: Sendable {
             // sanitize it. 40 turned out to be too tight on
             // gemma4:e4b when a short transcript tempted the model
             // to narrate before writing the title.
-            options: .init(temperature: 0.2, num_predict: 120)
+            options: .init(temperature: 0.2, numPredict: 120)
         )
 
         var request = URLRequest(url: baseURL.appendingPathComponent("api/generate"))

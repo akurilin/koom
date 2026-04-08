@@ -61,7 +61,9 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     }
 
     func start() async throws {
-        AppLog.info("Recorder starting. Display ID: \(configuration.displayID), microphone: \(configuration.microphoneID ?? "none"), output: \(configuration.outputURL.path)")
+        AppLog.info(
+            "Recorder starting. Display ID: \(configuration.displayID), microphone: \(configuration.microphoneID ?? "none"), output: \(configuration.outputURL.path)"
+        )
         if FileManager.default.fileExists(atPath: configuration.outputURL.path) {
             try FileManager.default.removeItem(at: configuration.outputURL)
         }
@@ -318,9 +320,10 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         let domain = nsError.map { "domain=\($0.domain)" } ?? "domain=unknown"
         let code = nsError.map { "code=\($0.code)" } ?? "code=unknown"
         let underlying = nsError?.userInfo[NSUnderlyingErrorKey] as? NSError
-        let underlyingDescription = underlying.map {
-            " underlyingDomain=\($0.domain) underlyingCode=\($0.code) underlyingDescription=\($0.localizedDescription)"
-        } ?? ""
+        let underlyingDescription =
+            underlying.map {
+                " underlyingDomain=\($0.domain) underlyingCode=\($0.code) underlyingDescription=\($0.localizedDescription)"
+            } ?? ""
 
         return "status=\(writer.status.rawValue) \(domain) \(code) \(baseDescription)\(underlyingDescription)"
     }
@@ -401,7 +404,8 @@ private final class MicrophoneCapture: NSObject, @unchecked Sendable {
 
         let input = try AVCaptureDeviceInput(device: device)
         let normalizedAudioFormat = Self.normalizedAudioFormat(for: device)
-        audioOutput.audioSettings = Self.normalizedOutputSettings(sampleRate: normalizedAudioFormat.sampleRate, channelCount: normalizedAudioFormat.channelCount)
+        audioOutput.audioSettings = Self.normalizedOutputSettings(
+            sampleRate: normalizedAudioFormat.sampleRate, channelCount: normalizedAudioFormat.channelCount)
         sourceFormatHint = Self.makeSourceFormatHint(sampleRate: normalizedAudioFormat.sampleRate, channelCount: normalizedAudioFormat.channelCount)
         session.beginConfiguration()
 
@@ -416,7 +420,9 @@ private final class MicrophoneCapture: NSObject, @unchecked Sendable {
         }
 
         session.commitConfiguration()
-        AppLog.info("Configured microphone capture for device \(deviceID) with capture settings \(ScreenRecorder.formatSettingsDescription(audioOutput.audioSettings))")
+        AppLog.info(
+            "Configured microphone capture for device \(deviceID) with capture settings \(ScreenRecorder.formatSettingsDescription(audioOutput.audioSettings))"
+        )
     }
 
     private static func normalizedAudioFormat(for device: AVCaptureDevice) -> (sampleRate: Double, channelCount: Int) {

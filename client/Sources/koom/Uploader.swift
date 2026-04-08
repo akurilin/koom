@@ -1,5 +1,5 @@
-@preconcurrency import AppKit
 @preconcurrency import AVFoundation
+@preconcurrency import AppKit
 import Foundation
 
 /// State machine for an in-flight or completed **single-file**
@@ -251,7 +251,7 @@ final class Uploader {
                     "Catch-up failed on \(fileURL.lastPathComponent): \(failure.message)"
                 )
                 emit(.idle)
-                // Intentionally continue to the next file.
+            // Intentionally continue to the next file.
             }
         }
 
@@ -407,7 +407,8 @@ final class Uploader {
         let secret: String
         do {
             guard let loaded = try KoomConfig.loadAdminSecret(),
-                  !loaded.isEmpty else {
+                !loaded.isEmpty
+            else {
                 return nil
             }
             secret = loaded
@@ -451,7 +452,7 @@ final class Uploader {
     private static func scanLocalRecordings() -> [URL] {
         let baseDirectory =
             FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
-                ?? FileManager.default.homeDirectoryForCurrentUser
+            ?? FileManager.default.homeDirectoryForCurrentUser
         let recordingsDirectory = baseDirectory.appendingPathComponent(
             "koom",
             isDirectory: true
@@ -467,7 +468,8 @@ final class Uploader {
             return []
         }
 
-        return entries
+        return
+            entries
             .filter { $0.pathExtension.lowercased() == "mp4" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }

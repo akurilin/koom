@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 
 set -euo pipefail
 
@@ -43,6 +43,7 @@ fi
 
 child_pid=""
 
+# shellcheck disable=SC2329  # invoked indirectly via the `trap` below
 cleanup() {
     local exit_code=$?
 

@@ -1,0 +1,11 @@
+# Run formatters/linters/shellcheck on staged files only.
+npx lint-staged || exit 1
+
+# Scan staged content for secrets. Requires gitleaks on PATH.
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "error: gitleaks is not installed on PATH." >&2
+  echo "install it with: brew install gitleaks" >&2
+  exit 1
+fi
+
+gitleaks git --pre-commit --staged --redact --no-banner --exit-code 1

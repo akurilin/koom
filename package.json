@@ -7,6 +7,11 @@
     "web"
   ],
   "scripts": {
+    "prepare": "husky",
+    "lint": "npm run lint -w web",
+    "format": "npm run format -w web",
+    "format:check": "npm run format:check -w web",
+    "shellcheck": "git ls-files -z '*.sh' '*.bash' | xargs -0 shellcheck",
     "r2:setup": "tsx scripts/r2-setup.ts",
     "r2:setup:test": "tsx scripts/r2-setup-test.ts",
     "doctor": "tsx scripts/doctor.ts",
@@ -21,6 +26,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }

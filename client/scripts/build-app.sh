@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 
 set -euo pipefail
 
@@ -38,11 +38,27 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Portable replacement for zsh's ${var:A} modifier: resolves symlinks on the
+# parent directory via `cd && pwd -P`, which works on both macOS (BSD) and
+# Linux without needing GNU realpath's --canonicalize-missing.
+canonicalize_path() {
+    local target="$1"
+    local parent base
+    parent=$(dirname -- "$target")
+    base=$(basename -- "$target")
+    if [[ -d "$parent" ]]; then
+        printf '%s/%s\n' "$(cd "$parent" && pwd -P)" "$base"
+    else
+        printf '%s\n' "$target"
+    fi
+}
+
 safe_remove_dir() {
     local target_path="$1"
-    local canonical_root="${ROOT_DIR:A}"
-    local canonical_target="${target_path:A}"
-    local allowed_build_dir="${canonical_root}/.build"
+    local canonical_root canonical_target allowed_build_dir
+    canonical_root=$(cd "$ROOT_DIR" && pwd -P)
+    canonical_target=$(canonicalize_path "$target_path")
+    allowed_build_dir="$canonical_root/.build"
 
     if [[ ! -f "$canonical_root/Package.swift" ]]; then
         echo "Refusing to clean because Package.swift was not found at $canonical_root" >&2

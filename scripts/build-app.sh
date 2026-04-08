@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 #
 # Root wrapper for the macOS client build.
 # Delegates to client/scripts/build-app.sh so the existing top-level

@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 #
 # Root wrapper for running the macOS client.
 # Delegates to client/scripts/run.sh so the existing top-level command

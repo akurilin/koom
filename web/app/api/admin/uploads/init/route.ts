@@ -17,7 +17,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import { requireAdminBearer } from "@/lib/auth/admin";
+import { requireAdmin } from "@/lib/auth/admin";
 import { getDb } from "@/lib/db/client";
 import { generatePresignedPutUrl, recordingObjectKey } from "@/lib/r2/client";
 
@@ -38,7 +38,7 @@ interface ValidatedInit {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const authError = requireAdminBearer(request);
+  const authError = await requireAdmin(request);
   if (authError) return authError;
 
   let raw: InitRequestBody;

@@ -75,3 +75,57 @@ export async function getCompletedRecordingById(
   if (!row) return null;
   return hydrate(row);
 }
+
+/**
+ * List every complete recording, newest-first. Used by the admin
+ * `/app/recordings` page and its backing API route. Excludes
+ * pending rows for the same reason `getCompletedRecordingById`
+ * does: pending rows don't have a valid R2 object yet, so they
+ * can't be played or shared.
+ *
+ * The listing query is covered by the
+ * recordings_status_created_at_idx index created in the initial
+ * migration, so it's cheap even with thousands of rows.
+ *
+ * No server-side pagination — at single-user scale the full list
+ * is small and client-side sorting is simpler. If koom ever
+ * grows past a few hundred recordings we'd add LIMIT / OFFSET or
+ * a keyset cursor here.
+ */
+export async function listAllCompletedRecordings(): Promise<Recording[]> {
+  const { rows } = await getDb().query<RecordingRow>(
+    `SELECT id, created_at, title, original_filename,
+            duration_seconds, size_bytes, content_type,
+            bucket, object_key
+       FROM recordings
+      WHERE status = 'complete'
+      ORDER BY created_at DESC`,
+  );
+  return rows.map(hydrate);
+}
+
+/**
+ * Delete a recording row by id. Returns true if a row was
+ * removed, false if no matching row existed (so the caller can
+ * return 404). Does not touch R2 — the caller is responsible for
+ * removing the stored object first.
+ */
+export async function deleteRecordingById(id: string): Promise<boolean> {
+  const result = await getDb().query(`DELETE FROM recordings WHERE id = $1`, [
+    id,
+  ]);
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
+ * Check whether a recording row exists, ignoring its status.
+ * Used by the admin delete endpoint to return a clean 404 for
+ * unknown ids before attempting the R2 delete.
+ */
+export async function recordingExists(id: string): Promise<boolean> {
+  const { rows } = await getDb().query<{ exists: boolean }>(
+    `SELECT 1 AS exists FROM recordings WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  return rows.length > 0;
+}

@@ -2,33 +2,42 @@
  * Admin authentication for API routes.
  *
  * V1 uses a single deployment-wide shared secret (KOOM_ADMIN_SECRET)
- * as the only credential. Two transports are planned:
+ * as the only credential, with two accepted transports:
  *
- *   1. Authorization: Bearer <secret>  (used by the desktop client)
- *   2. Signed session cookie            (for the browser admin UI)
+ *   1. Authorization: Bearer <secret>   (desktop client, tests,
+ *                                        anything that prefers a
+ *                                        stateless credential)
+ *   2. Signed session cookie             (browser admin UI after
+ *                                        logging in via /app/login)
  *
- * Only the bearer-header path is implemented in this round because
- * the upload flow only needs that. Cookie sessions land in a later
- * round alongside the /app/login page.
+ * Both transports validate against the same `KOOM_ADMIN_SECRET`.
+ * The session cookie's encryption key is derived from that same
+ * secret (see ./session), so rotating the admin secret rotates
+ * both transports simultaneously.
+ *
+ * Route handlers call `requireAdmin(request)` at the top. It
+ * returns `null` if either transport is valid, or a ready-to-
+ * return 401 Response that the handler can propagate directly.
+ * The typical pattern:
+ *
+ *     const authError = await requireAdmin(request);
+ *     if (authError) return authError;
+ *     // ... proceed with handler logic
  */
 
 import { timingSafeEqual } from "node:crypto";
 
+import { isAdminSessionValid } from "./session";
+
 /**
- * Check the Authorization: Bearer header against KOOM_ADMIN_SECRET.
+ * Check the incoming request against both auth transports. Returns
+ * `null` if at least one transport presents a valid credential,
+ * otherwise a 401 Response.
  *
- * Returns `null` on success. On failure, returns a ready-to-return
- * Response the route handler can propagate directly:
- *
- *   const authError = requireAdminBearer(request);
- *   if (authError) return authError;
- *
- * Uses constant-time comparison to avoid leaking information about
- * the secret through timing side-channels. The attack surface on a
- * single-tenant shared-secret setup is tiny, but doing the right
- * thing costs nothing.
+ * This is async because the session path has to read the cookie
+ * store from `next/headers`, which is an async API in Next.js 15+.
  */
-export function requireAdminBearer(request: Request): Response | null {
+export async function requireAdmin(request: Request): Promise<Response | null> {
   const expected = process.env.KOOM_ADMIN_SECRET;
   if (!expected) {
     return Response.json(
@@ -37,17 +46,27 @@ export function requireAdminBearer(request: Request): Response | null {
     );
   }
 
+  // Bearer header path — cheapest check, runs synchronously.
+  if (hasValidBearer(request, expected)) {
+    return null;
+  }
+
+  // Session cookie path — reads cookies via next/headers.
+  if (await isAdminSessionValid()) {
+    return null;
+  }
+
+  return unauthorized();
+}
+
+function hasValidBearer(request: Request, expected: string): boolean {
   const header = request.headers.get("authorization");
   if (!header || !header.toLowerCase().startsWith("bearer ")) {
-    return unauthorized();
+    return false;
   }
-
   const provided = header.slice("bearer ".length).trim();
-  if (!provided || !constantTimeEqual(provided, expected)) {
-    return unauthorized();
-  }
-
-  return null;
+  if (!provided) return false;
+  return constantTimeEqual(provided, expected);
 }
 
 function unauthorized(): Response {
@@ -57,9 +76,6 @@ function unauthorized(): Response {
 function constantTimeEqual(a: string, b: string): boolean {
   const aBuf = Buffer.from(a, "utf-8");
   const bBuf = Buffer.from(b, "utf-8");
-  // timingSafeEqual requires equal lengths; bail out early if they
-  // differ but do it in a way that still reveals nothing beyond the
-  // fact the lengths differ.
   if (aBuf.length !== bBuf.length) return false;
   return timingSafeEqual(aBuf, bBuf);
 }

@@ -22,7 +22,7 @@
  * monotonic upload id or timestamp cursor).
  */
 
-import { requireAdminBearer } from "@/lib/auth/admin";
+import { requireAdmin } from "@/lib/auth/admin";
 import { getDb } from "@/lib/db/client";
 
 interface DiffRequestBody {
@@ -30,7 +30,7 @@ interface DiffRequestBody {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const authError = requireAdminBearer(request);
+  const authError = await requireAdmin(request);
   if (authError) return authError;
 
   let raw: DiffRequestBody;

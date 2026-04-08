@@ -3,6 +3,17 @@
  * so `process.env` is populated by the time any route handler module
  * gets imported.
  *
+ * Loads `web/.env.test.local` (NOT `web/.env.local`) so every
+ * integration test runs against the isolated Cloudflare R2 test
+ * bucket (koom-recordings-test) rather than production. This gives
+ * the same environment isolation Playwright will use in the E2E
+ * round and means a test bug cannot wipe production data.
+ *
+ * The env file is created + populated by `npm run r2:setup:test`.
+ * If it's missing when tests start, we error loudly with a pointer
+ * to that script rather than silently falling back to something
+ * else.
+ *
  * We don't use `@next/env` here: in the Vitest context it doesn't
  * reliably mutate `process.env` before the test modules run. A tiny
  * hand-rolled parser is both simpler and matches the pattern our
@@ -10,22 +21,27 @@
  * use.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const thisDir = resolve(fileURLToPath(import.meta.url), "..");
-const envLocalPath = resolve(thisDir, "..", ".env.local");
+const envTestLocalPath = resolve(thisDir, "..", ".env.test.local");
 
-if (!existsSync(envLocalPath)) {
+if (!existsSync(envTestLocalPath)) {
   throw new Error(
-    `web/.env.local not found at ${envLocalPath}. ` +
-      `Tests need real credentials — copy web/.env.example to web/.env.local ` +
-      `and fill it in, then re-run.`,
+    `web/.env.test.local not found at ${envTestLocalPath}.\n\n` +
+      `Tests run against an isolated Cloudflare R2 test bucket\n` +
+      `(koom-recordings-test) to avoid any risk of modifying production\n` +
+      `data. Before running tests, create the test bucket and populate\n` +
+      `the credentials file by running:\n\n` +
+      `    npm run r2:setup:test\n\n` +
+      `This is a one-time setup. It's idempotent and can be re-run\n` +
+      `safely if you ever need to refresh the test credentials.`,
   );
 }
 
-const content = readFileSync(envLocalPath, "utf-8");
+const content = readFileSync(envTestLocalPath, "utf-8");
 
 for (const rawLine of content.split("\n")) {
   const line = rawLine.trim();

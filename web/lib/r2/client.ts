@@ -12,6 +12,7 @@
  */
 
 import {
+  DeleteObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
@@ -119,6 +120,24 @@ export async function headRecordingObject(
     if (isNotFoundError(err)) return null;
     throw err;
   }
+}
+
+/**
+ * Delete the R2 object backing a recording. Idempotent: the S3
+ * DeleteObject operation succeeds even if the object does not
+ * exist, so callers don't need a pre-check. Used by the admin
+ * delete endpoint; the caller is responsible for removing the
+ * database row separately.
+ */
+export async function deleteRecordingObject(
+  recordingId: string,
+): Promise<void> {
+  await getR2Client().send(
+    new DeleteObjectCommand({
+      Bucket: requireBucket(),
+      Key: recordingObjectKey(recordingId),
+    }),
+  );
 }
 
 function isNotFoundError(err: unknown): boolean {

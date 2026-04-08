@@ -24,7 +24,10 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { DELETE as recordingDELETE } from "@/app/api/admin/recordings/[id]/route";
+import {
+  DELETE as recordingDELETE,
+  PATCH as recordingPATCH,
+} from "@/app/api/admin/recordings/[id]/route";
 import { GET as recordingsGET } from "@/app/api/admin/recordings/route";
 
 const { Client: PgClient } = pg;
@@ -376,5 +379,198 @@ describe("DELETE /api/admin/recordings/[id]", () => {
     // delete an already-deleted object.
     createdR2Keys.length = 0;
     createdIds.length = 0;
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// PATCH /api/admin/recordings/[id]
+// ────────────────────────────────────────────────────────────────────
+
+describe("PATCH /api/admin/recordings/[id]", () => {
+  const createdIds: string[] = [];
+
+  afterEach(async () => {
+    if (createdIds.length > 0) {
+      await deleteRows(createdIds);
+      createdIds.length = 0;
+    }
+  });
+
+  async function readTitle(id: string): Promise<string | null> {
+    const client = new PgClient({
+      connectionString: requireEnv("DATABASE_URL"),
+    });
+    await client.connect();
+    try {
+      const { rows } = await client.query<{ title: string | null }>(
+        "SELECT title FROM recordings WHERE id = $1",
+        [id],
+      );
+      return rows[0]?.title ?? null;
+    } finally {
+      await client.end();
+    }
+  }
+
+  it("returns 401 without an Authorization header", async () => {
+    const id = randomUUID();
+    const res = await recordingPATCH(
+      new Request(`http://localhost/api/admin/recordings/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "hello" }),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 for an id that does not exist", async () => {
+    const id = randomUUID();
+    const res = await recordingPATCH(
+      new Request(`http://localhost/api/admin/recordings/${id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({ title: "nope" }),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a body that does not include a title field", async () => {
+    const id = randomUUID();
+    await insertRecording({
+      id,
+      status: "complete",
+      originalFilename: `koom_patch_missing_${Date.now()}.mp4`,
+    });
+    createdIds.push(id);
+
+    const res = await recordingPATCH(
+      new Request(`http://localhost/api/admin/recordings/${id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({}),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a non-string, non-null title", async () => {
+    const id = randomUUID();
+    await insertRecording({
+      id,
+      status: "complete",
+      originalFilename: `koom_patch_badtype_${Date.now()}.mp4`,
+    });
+    createdIds.push(id);
+
+    const res = await recordingPATCH(
+      new Request(`http://localhost/api/admin/recordings/${id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({ title: 42 }),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("writes a trimmed title onto the row", async () => {
+    const id = randomUUID();
+    await insertRecording({
+      id,
+      status: "complete",
+      title: null,
+      originalFilename: `koom_patch_ok_${Date.now()}.mp4`,
+    });
+    createdIds.push(id);
+
+    const res = await recordingPATCH(
+      new Request(`http://localhost/api/admin/recordings/${id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({ title: "  Kickoff meeting notes  " }),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as { ok: boolean; title: string | null };
+    expect(body.ok).toBe(true);
+    expect(body.title).toBe("Kickoff meeting notes");
+
+    expect(await readTitle(id)).toBe("Kickoff meeting notes");
+  });
+
+  it("treats an empty/whitespace title as a clear", async () => {
+    const id = randomUUID();
+    await insertRecording({
+      id,
+      status: "complete",
+      title: "Old title",
+      originalFilename: `koom_patch_clear_${Date.now()}.mp4`,
+    });
+    createdIds.push(id);
+
+    const res = await recordingPATCH(
+      new Request(`http://localhost/api/admin/recordings/${id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({ title: "   " }),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as { ok: boolean; title: string | null };
+    expect(body.title).toBeNull();
+    expect(await readTitle(id)).toBeNull();
+  });
+
+  it("accepts explicit null to clear the title", async () => {
+    const id = randomUUID();
+    await insertRecording({
+      id,
+      status: "complete",
+      title: "Will be cleared",
+      originalFilename: `koom_patch_null_${Date.now()}.mp4`,
+    });
+    createdIds.push(id);
+
+    const res = await recordingPATCH(
+      new Request(`http://localhost/api/admin/recordings/${id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({ title: null }),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(200);
+    expect(await readTitle(id)).toBeNull();
+  });
+
+  it("allows patching a pending (mid-upload) row so the auto-titler can land early", async () => {
+    const id = randomUUID();
+    await insertRecording({
+      id,
+      status: "pending",
+      title: null,
+      originalFilename: `koom_patch_pending_${Date.now()}.mp4`,
+    });
+    createdIds.push(id);
+
+    const res = await recordingPATCH(
+      new Request(`http://localhost/api/admin/recordings/${id}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({ title: "Generated early" }),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(200);
+    expect(await readTitle(id)).toBe("Generated early");
   });
 });

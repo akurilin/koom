@@ -63,6 +63,15 @@ struct KoomAPI {
         let missing: [String]
     }
 
+    struct UpdateTitleRequest: Encodable {
+        let title: String?
+    }
+
+    struct UpdateTitleResponse: Decodable {
+        let ok: Bool
+        let title: String?
+    }
+
     // MARK: - Errors
 
     enum APIError: LocalizedError {
@@ -145,6 +154,23 @@ struct KoomAPI {
         )
     }
 
+    /// Overwrite (or clear) the `title` column of a recording row.
+    /// Pass `nil` to clear. Used by the auto-titler to land a
+    /// short generated title as soon as Whisper + Ollama finish,
+    /// even if the upload itself is still in flight.
+    func updateRecordingTitle(
+        recordingId: String,
+        title: String?
+    ) async throws -> UpdateTitleResponse {
+        let body = UpdateTitleRequest(title: title)
+        return try await send(
+            method: "PATCH",
+            path: "api/admin/recordings/\(recordingId)",
+            body: body,
+            responseType: UpdateTitleResponse.self
+        )
+    }
+
     /// Upload the file at `fileURL` to the given presigned URL via
     /// PUT. Progress is reported to `progressHandler` as a value in
     /// [0.0, 1.0]. This call does NOT add the `Authorization` header
@@ -199,8 +225,22 @@ struct KoomAPI {
         body: Request,
         responseType: Response.Type
     ) async throws -> Response {
+        try await send(
+            method: "POST",
+            path: path,
+            body: body,
+            responseType: responseType
+        )
+    }
+
+    private func send<Request: Encodable, Response: Decodable>(
+        method: String,
+        path: String,
+        body: Request,
+        responseType: Response.Type
+    ) async throws -> Response {
         var request = URLRequest(url: backendURL.appendingPathComponent(path))
-        request.httpMethod = "POST"
+        request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(
             "Bearer \(adminSecret)",

@@ -118,6 +118,28 @@ export async function deleteRecordingById(id: string): Promise<boolean> {
 }
 
 /**
+ * Overwrite the `title` column of a recording row. Returns true if
+ * a row was updated, false if no matching row existed (so the
+ * caller can return 404).
+ *
+ * Pass `null` to clear an existing title. Status is deliberately
+ * ignored — both pending and complete rows are updatable so that
+ * the desktop client's auto-titler can land a title the moment
+ * Whisper + Ollama finish, even if the upload itself is still in
+ * flight.
+ */
+export async function updateRecordingTitle(
+  id: string,
+  title: string | null,
+): Promise<boolean> {
+  const result = await getDb().query(
+    `UPDATE recordings SET title = $2 WHERE id = $1`,
+    [id, title],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+/**
  * Check whether a recording row exists, ignoring its status.
  * Used by the admin delete endpoint to return a clean 404 for
  * unknown ids before attempting the R2 delete.

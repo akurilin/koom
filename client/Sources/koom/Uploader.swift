@@ -45,6 +45,15 @@ private struct UploadFailure: Error {
     let message: String
 }
 
+/// Success payload for `performUpload`. The recording id is
+/// surfaced so the post-recording auto-titler can land a generated
+/// title on the row via PATCH once both the upload and Whisper +
+/// Ollama have finished.
+private struct UploadOutcome: Sendable {
+    let recordingId: String
+    let shareURL: URL
+}
+
 /// Orchestrates upload flows against the koom backend.
 ///
 /// Two public entry points:
@@ -78,17 +87,68 @@ final class Uploader {
     /// the closure via `Task { @MainActor in ... }`.
     var onStateChange: (@Sendable (UploadState) -> Void)?
 
+    /// Long-lived auto-titler. Built once from the environment so
+    /// the underlying `Transcriber` actor keeps its loaded
+    /// WhisperKit model warm across recordings. `nil` when
+    /// `KOOM_AUTOTITLE_ENABLED=false` or the Ollama URL is
+    /// malformed — in that case the upload flow behaves exactly
+    /// as it did before this feature existed.
+    private let autotitler: Autotitler? = Autotitler.makeFromEnvironment()
+
     // MARK: Single-file upload (post-recording)
 
     func uploadRecording(at fileURL: URL) async {
         emit(.preparing)
-        let result = await performUpload(at: fileURL)
+
+        // Kick off the upload and the auto-title pipeline in
+        // parallel. Whisper transcription is the long pole for
+        // short recordings, so running them concurrently gives us
+        // a chance at landing the generated title before the user
+        // sees the share URL. If auto-titling finishes after the
+        // upload, we PATCH the title onto the already-created row.
+        // A failure in either branch does not taint the other —
+        // autotitle is entirely best-effort.
+        let autotitler = self.autotitler
+        async let uploadResult = performUpload(at: fileURL)
+        async let titleOpt: String? = Self.runAutotitle(
+            autotitler: autotitler,
+            fileURL: fileURL
+        )
+
+        let (result, title) = await (uploadResult, titleOpt)
+
         switch result {
-        case .success(let shareURL):
-            openAndPasteShareURL(shareURL)
-            emit(.completed(shareURL: shareURL))
+        case .success(let outcome):
+            if let title, !title.isEmpty {
+                await patchTitle(recordingId: outcome.recordingId, title: title)
+            }
+            openAndPasteShareURL(outcome.shareURL)
+            emit(.completed(shareURL: outcome.shareURL))
         case .failure(let failure):
             emit(.failed(message: failure.message))
+        }
+    }
+
+    private static func runAutotitle(
+        autotitler: Autotitler?,
+        fileURL: URL
+    ) async -> String? {
+        guard let autotitler else { return nil }
+        return await autotitler.generateTitle(for: fileURL)
+    }
+
+    private func patchTitle(recordingId: String, title: String) async {
+        guard let api = makeAPIClient() else { return }
+        do {
+            _ = try await api.updateRecordingTitle(
+                recordingId: recordingId,
+                title: title
+            )
+            AppLog.info("Autotitle: stored title for \(recordingId): \(title)")
+        } catch {
+            AppLog.error(
+                "Autotitle: failed to PATCH title for \(recordingId): \(error.localizedDescription)"
+            )
         }
     }
 
@@ -223,7 +283,7 @@ final class Uploader {
     /// finalizing. Does NOT emit the terminal `.completed` or
     /// `.failed` states — that's the caller's job — and does NOT
     /// perform the clipboard/browser side effects.
-    private func performUpload(at fileURL: URL) async -> Result<URL, UploadFailure> {
+    private func performUpload(at fileURL: URL) async -> Result<UploadOutcome, UploadFailure> {
         guard let api = makeAPIClient() else {
             return .failure(
                 UploadFailure(
@@ -321,7 +381,12 @@ final class Uploader {
         }
 
         AppLog.info("Upload complete: \(shareURL.absoluteString)")
-        return .success(shareURL)
+        return .success(
+            UploadOutcome(
+                recordingId: initResponse.recordingId,
+                shareURL: shareURL
+            )
+        )
     }
 
     /// Copies the share URL to the system pasteboard and opens it

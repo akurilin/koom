@@ -17,6 +17,7 @@
  *   - Postgres reachable via DATABASE_URL
  *   - recordings table exists with expected columns
  *   - Round-trip INSERT / SELECT / DELETE of a throwaway row
+ *   - Ollama reachable and the auto-title model is pulled (non-fatal)
  *
  * Vercel checks land in a later round.
  */
@@ -57,6 +58,13 @@ const R2_REQUIRED_ENV_VARS = [
 const POSTGRES_REQUIRED_ENV_VARS = ["DATABASE_URL"] as const;
 
 const SOFT_ENV_VARS = ["KOOM_PUBLIC_BASE_URL", "KOOM_ADMIN_SECRET"] as const;
+
+// Auto-title defaults must stay in sync with Autotitler.swift on the
+// client. The doctor reads overrides from its own process env (not
+// from web/.env.local) because those env vars are consumed by the
+// desktop client at runtime, not by the web backend.
+const DEFAULT_OLLAMA_URL = "http://localhost:11434";
+const DEFAULT_OLLAMA_MODEL = "gemma4:e4b";
 
 // Columns we expect to find on the `recordings` table. Keep in sync
 // with supabase/migrations/*_create_recordings.sql.
@@ -239,6 +247,10 @@ async function main(): Promise<void> {
   } else {
     await runPostgresChecks(env);
   }
+
+  // ── Section: Auto-title (Ollama) ──────────────────────────────────
+  logSection("Auto-title (Ollama)");
+  await runOllamaChecks();
 
   // ── Section: Vercel (optional) ────────────────────────────────────
   logSection("Vercel");
@@ -570,6 +582,104 @@ async function runPostgresChecks(env: Record<string, string>): Promise<void> {
         // ignore — the connection may already be gone
       }
     }
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Auto-title (Ollama) checks
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * Verify the local Ollama server is reachable and that the model the
+ * desktop client is configured to use for auto-titling has been
+ * pulled. These checks are intentionally non-fatal: auto-titling is
+ * a nice-to-have and the operator may deliberately run without it.
+ * Failures here are reported as warnings, not errors, and the doctor
+ * exits 0 as long as everything else passed.
+ */
+async function runOllamaChecks(): Promise<void> {
+  const enabledRaw = process.env.KOOM_AUTOTITLE_ENABLED ?? "true";
+  const disabled = ["false", "0", "no", "off"].includes(
+    enabledRaw.toLowerCase(),
+  );
+  if (disabled) {
+    skip(
+      "Ollama reachable",
+      `KOOM_AUTOTITLE_ENABLED=${enabledRaw}; auto-title pipeline is disabled`,
+    );
+    return;
+  }
+
+  const ollamaUrlRaw = process.env.KOOM_OLLAMA_URL ?? DEFAULT_OLLAMA_URL;
+  const ollamaModel = process.env.KOOM_OLLAMA_MODEL ?? DEFAULT_OLLAMA_MODEL;
+
+  let ollamaUrl: URL;
+  try {
+    ollamaUrl = new URL(ollamaUrlRaw);
+  } catch {
+    warn(
+      "Ollama reachable",
+      `KOOM_OLLAMA_URL=${ollamaUrlRaw} is not a valid URL. The client will fall back to ${DEFAULT_OLLAMA_URL}.`,
+    );
+    return;
+  }
+
+  // Ollama exposes GET /api/tags — returns { models: [...] } and
+  // only requires the server to be up. This is the cheapest way to
+  // both check reachability and enumerate available models in one
+  // round-trip.
+  const tagsUrl = new URL("api/tags", ollamaUrl);
+  let tagsJson: { models?: Array<{ name?: unknown }> };
+  try {
+    const res = await fetch(tagsUrl, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) {
+      warn(
+        "Ollama reachable",
+        `GET ${tagsUrl.href} returned HTTP ${res.status}.\n` +
+          `Start Ollama with 'ollama serve' (or the app) to enable auto-titling.`,
+      );
+      return;
+    }
+    tagsJson = (await res.json()) as typeof tagsJson;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    warn(
+      "Ollama reachable",
+      `Could not reach ${tagsUrl.href}: ${msg}\n` +
+        `Start Ollama with 'ollama serve' (or the app) to enable auto-titling.\n` +
+        `This check is non-fatal — the upload flow still works without it.`,
+    );
+    return;
+  }
+
+  pass("Ollama reachable", `(${ollamaUrl.origin})`);
+
+  // Ollama model names can round-trip with or without the ":latest"
+  // tag depending on how they were pulled, so accept either as a
+  // match. Every other case is a real miss.
+  const modelNames = (tagsJson.models ?? [])
+    .map((m) => (typeof m.name === "string" ? m.name : null))
+    .filter((n): n is string => n !== null);
+
+  const hasModel =
+    modelNames.includes(ollamaModel) ||
+    modelNames.includes(`${ollamaModel}:latest`) ||
+    (ollamaModel.endsWith(":latest") &&
+      modelNames.includes(ollamaModel.slice(0, -":latest".length)));
+
+  if (hasModel) {
+    pass(`Ollama model '${ollamaModel}' is pulled`);
+  } else {
+    warn(
+      `Ollama model '${ollamaModel}' is pulled`,
+      `Model not found in /api/tags. Pull it with:\n` +
+        `    ollama pull ${ollamaModel}\n` +
+        `Known models: ${modelNames.length > 0 ? modelNames.join(", ") : "(none)"}`,
+    );
   }
 }
 

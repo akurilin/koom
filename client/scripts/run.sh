@@ -33,7 +33,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-APP_PATH="$("$ROOT_DIR/scripts/build-app.sh" "${BUILD_ARGS[@]}")"
+# macOS still ships bash 3.2, where expanding an empty array as
+# "${arr[@]}" under `set -u` is treated as an unbound variable
+# (fixed in bash 4.4+). Branch so the "no flags" invocation —
+# which is the common case — doesn't trip over that.
+if [[ ${#BUILD_ARGS[@]} -gt 0 ]]; then
+    APP_PATH="$("$ROOT_DIR/scripts/build-app.sh" "${BUILD_ARGS[@]}")"
+else
+    APP_PATH="$("$ROOT_DIR/scripts/build-app.sh")"
+fi
 APP_EXECUTABLE="$APP_PATH/Contents/MacOS/koom"
 
 if [[ ! -x "$APP_EXECUTABLE" ]]; then

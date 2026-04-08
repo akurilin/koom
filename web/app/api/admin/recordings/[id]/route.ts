@@ -1,13 +1,13 @@
 /**
- * DELETE /api/admin/recordings/[id]
+ * Admin-only endpoints for a single recording:
  *
- * Admin-only delete endpoint. Removes both the R2 object and the
- * Postgres row for a recording.
+ *   DELETE /api/admin/recordings/[id]   — remove R2 object + row
+ *   PATCH  /api/admin/recordings/[id]   — update editable metadata
  *
- * Auth is the unified requireAdmin helper (bearer header OR
+ * Both use the unified `requireAdmin` helper (bearer header OR
  * session cookie).
  *
- * Order of operations matters:
+ * DELETE order of operations matters:
  *
  *   1. Verify the row exists (so we can return 404 cleanly).
  *   2. Delete the R2 object.
@@ -22,14 +22,32 @@
  * S3 DeleteObject is idempotent — it succeeds even when the
  * target key does not exist — so retry-after-partial-failure is
  * safe.
+ *
+ * PATCH is scoped to editable metadata only. For v1 that's just
+ * the `title` column, written by both the desktop auto-titler and
+ * (in a future round) a user-facing rename affordance.
  */
 
 import { requireAdmin } from "@/lib/auth/admin";
-import { deleteRecordingById, recordingExists } from "@/lib/db/queries";
+import {
+  deleteRecordingById,
+  recordingExists,
+  updateRecordingTitle,
+} from "@/lib/db/queries";
 import { deleteRecordingObject } from "@/lib/r2/client";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
+}
+
+// Cap titles at something sensible so we don't let a runaway LLM
+// output a 50 kB title into the database. The Swift client clamps
+// to 10 words client-side, so this is a belt-and-suspenders guard
+// for any other caller of the PATCH endpoint.
+const TITLE_MAX_LENGTH = 200;
+
+interface PatchRequestBody {
+  title?: unknown;
 }
 
 export async function DELETE(
@@ -86,4 +104,70 @@ export async function DELETE(
   }
 
   return Response.json({ ok: true });
+}
+
+export async function PATCH(
+  request: Request,
+  ctx: RouteContext,
+): Promise<Response> {
+  const authError = await requireAdmin(request);
+  if (authError) return authError;
+
+  const { id } = await ctx.params;
+  if (!id) {
+    return Response.json({ error: "recording id required" }, { status: 400 });
+  }
+
+  let raw: PatchRequestBody;
+  try {
+    raw = (await request.json()) as PatchRequestBody;
+  } catch {
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
+  }
+
+  // v1 only accepts `title`. If the field is absent entirely,
+  // there is nothing to update and the caller is confused.
+  if (!("title" in raw)) {
+    return Response.json(
+      { error: "body must include a 'title' field" },
+      { status: 400 },
+    );
+  }
+
+  let title: string | null;
+  if (raw.title === null) {
+    title = null;
+  } else if (typeof raw.title === "string") {
+    const trimmed = raw.title.trim();
+    if (trimmed.length > TITLE_MAX_LENGTH) {
+      return Response.json(
+        {
+          error: `title must be ${TITLE_MAX_LENGTH} characters or fewer`,
+        },
+        { status: 400 },
+      );
+    }
+    // Treat an empty/whitespace-only string as an explicit clear,
+    // which matches how the init route normalizes titles.
+    title = trimmed === "" ? null : trimmed;
+  } else {
+    return Response.json(
+      { error: "title must be a string or null" },
+      { status: 400 },
+    );
+  }
+
+  let updated: boolean;
+  try {
+    updated = await updateRecordingTitle(id, title);
+  } catch (err) {
+    console.error("[admin/recordings/patch] DB update failed:", err);
+    return Response.json({ error: "database error" }, { status: 500 });
+  }
+
+  if (!updated) {
+    return Response.json({ error: "recording not found" }, { status: 404 });
+  }
+
+  return Response.json({ ok: true, title });
 }

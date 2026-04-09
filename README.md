@@ -76,6 +76,7 @@ supabase/
   config.toml            local stack configuration
 scripts/
   doctor.ts              read-only verification sweep across the full stack
+  r2-orphans.ts          audit or delete orphaned recording objects in R2
   r2-setup.ts            provisions the production R2 bucket + credentials
   r2-setup-test.ts       provisions the isolated E2E test bucket
   build-app.sh, run.sh   thin wrappers that delegate into client/scripts
@@ -120,20 +121,26 @@ npm run dev -w web
 
 `npm run doctor` is the authoritative "is this environment actually usable?" check. It's always safe to re-run and exercises the database, R2 credentials, and HTTP range support that browser `<video>` scrubbing depends on.
 
+`npm run r2:orphans` audits the shared R2 bucket for `recordings/{id}/...` objects that no longer have a matching row in the configured database set. It is dry-run by default; add `-- --delete` to remove confirmed orphans, and add `-- --prod-db-url ...` or `-- --prod-env-file ...` when you want to union a production database into the check.
+
 ## Development
 
 | Task                               | Command                   |
 | ---------------------------------- | ------------------------- |
+| Clean rebuildable web caches       | `npm run web:clean`       |
 | Lint the web workspace             | `npm run lint`            |
 | Check formatting (Prettier)        | `npm run format:check`    |
 | Auto-fix formatting                | `npm run format`          |
 | Lint Swift sources                 | `npm run swift:lint`      |
 | Auto-fix Swift formatting          | `npm run swift:format`    |
 | ShellCheck every tracked `.sh`     | `npm run shellcheck`      |
+| Audit orphaned R2 recording files  | `npm run r2:orphans`      |
 | Web unit + integration tests       | `npm test -w web`         |
 | Web end-to-end tests (Playwright)  | `npm run test:e2e -w web` |
 | Build the macOS client bundle      | `./scripts/build-app.sh`  |
 | Run the macOS client in foreground | `./scripts/run.sh`        |
+
+`npm run web:clean` removes the web workspace's rebuildable artifacts (`web/.next`, `web/node_modules/.vite`, and Playwright/Vitest output directories). It refuses to run while a live `next dev` process still owns the workspace.
 
 A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, `swift format`, ShellCheck, and gitleaks against staged changes before any commit lands. Swift sources use Apple's official `swift-format` (ships with the Swift 6 toolchain) against the repo-level `.swift-format` config. The rest of the checks also run in GitHub Actions on push and pull requests, plus a full-history gitleaks scan.
 

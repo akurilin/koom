@@ -63,39 +63,45 @@ const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
 
 interface Props {
   initialRecordings: RecordingListItem[];
+  showBulkDelete: boolean;
 }
 
-export function RecordingsList({ initialRecordings }: Props) {
+export function RecordingsList({ initialRecordings, showBulkDelete }: Props) {
   const router = useRouter();
   const [recordings, setRecordings] = useState(initialRecordings);
   const [sortKey, setSortKey] = useState<SortKey>("date-desc");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const sorted = useMemo(
     () => sortRecordings(recordings, sortKey),
     [recordings, sortKey],
   );
+  const isMutating = deletingId !== null || isDeletingAll;
+
+  async function deleteRecording(recordingId: string): Promise<void> {
+    const res = await fetch(`/api/admin/recordings/${recordingId}`, {
+      method: "DELETE",
+    });
+    if (res.ok) return;
+
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+    };
+    throw new Error(body.error ?? `Delete failed (HTTP ${res.status})`);
+  }
 
   async function handleDelete(recordingId: string, filename: string) {
     const confirmed = window.confirm(
-      `Delete "${filename}"? This permanently removes the video from R2 and the database.`,
+      `Delete "${filename}"? This permanently removes the video, thumbnail, and database row.`,
     );
     if (!confirmed) return;
 
     setErrorMessage(null);
     setDeletingId(recordingId);
     try {
-      const res = await fetch(`/api/admin/recordings/${recordingId}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as {
-          error?: string;
-        };
-        setErrorMessage(body.error ?? `Delete failed (HTTP ${res.status})`);
-        return;
-      }
+      await deleteRecording(recordingId);
       // Remove from local state so the card disappears immediately.
       setRecordings((prev) =>
         prev.filter((r) => r.recordingId !== recordingId),
@@ -104,6 +110,47 @@ export function RecordingsList({ initialRecordings }: Props) {
       setErrorMessage(err instanceof Error ? err.message : "Delete failed");
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  async function handleDeleteAll() {
+    if (recordings.length === 0) return;
+
+    const noun = recordings.length === 1 ? "recording" : "recordings";
+    const confirmed = window.confirm(
+      `Hey are you sure you want to delete all ${recordings.length} ${noun}? This permanently removes every video, thumbnail, and database row.`,
+    );
+    if (!confirmed) return;
+
+    setErrorMessage(null);
+    setIsDeletingAll(true);
+
+    const failures: string[] = [];
+    const targets = [...recordings];
+    try {
+      for (const recording of targets) {
+        setDeletingId(recording.recordingId);
+        try {
+          await deleteRecording(recording.recordingId);
+          setRecordings((prev) =>
+            prev.filter((r) => r.recordingId !== recording.recordingId),
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Delete failed";
+          failures.push(`${recording.originalFilename}: ${message}`);
+        }
+      }
+    } finally {
+      setDeletingId(null);
+      setIsDeletingAll(false);
+    }
+
+    if (failures.length > 0) {
+      setErrorMessage(
+        failures.length === 1
+          ? `Delete all finished with 1 failure: ${failures[0]}`
+          : `Delete all finished with ${failures.length} failures. First failure: ${failures[0]}`,
+      );
     }
   }
 
@@ -132,7 +179,7 @@ export function RecordingsList({ initialRecordings }: Props) {
             {recordings.length === 1 ? "recording" : "recordings"}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-end gap-3">
           <label htmlFor="sort-select" className="text-sm text-zinc-400">
             Sort by
           </label>
@@ -141,7 +188,8 @@ export function RecordingsList({ initialRecordings }: Props) {
             data-testid="sort-select"
             value={sortKey}
             onChange={(e) => setSortKey(e.target.value as SortKey)}
-            className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-100 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+            disabled={isMutating}
+            className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-100 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {SORT_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -149,11 +197,23 @@ export function RecordingsList({ initialRecordings }: Props) {
               </option>
             ))}
           </select>
+          {showBulkDelete && (
+            <button
+              type="button"
+              data-testid="delete-all-button"
+              onClick={handleDeleteAll}
+              disabled={isMutating || recordings.length === 0}
+              className="rounded-md border border-red-800/70 bg-red-950/40 px-3 py-1.5 text-sm text-red-200 hover:border-red-700 hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isDeletingAll ? "Deleting all…" : "Delete all recordings"}
+            </button>
+          )}
           <button
             type="button"
             data-testid="logout-button"
             onClick={handleLogout}
-            className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 hover:border-zinc-500 hover:text-zinc-100"
+            disabled={isMutating}
+            className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Log out
           </button>
@@ -183,11 +243,13 @@ export function RecordingsList({ initialRecordings }: Props) {
           className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3"
           data-testid="recordings-grid"
         >
-          {sorted.map((recording) => (
+          {sorted.map((recording, index) => (
             <RecordingCard
               key={recording.recordingId}
               recording={recording}
               isDeleting={deletingId === recording.recordingId}
+              isDisabled={isMutating}
+              shouldEagerLoadThumbnail={index < 3}
               onDelete={() =>
                 handleDelete(recording.recordingId, recording.originalFilename)
               }
@@ -202,10 +264,18 @@ export function RecordingsList({ initialRecordings }: Props) {
 interface CardProps {
   recording: RecordingListItem;
   isDeleting: boolean;
+  isDisabled: boolean;
+  shouldEagerLoadThumbnail: boolean;
   onDelete: () => void;
 }
 
-function RecordingCard({ recording, isDeleting, onDelete }: CardProps) {
+function RecordingCard({
+  recording,
+  isDeleting,
+  isDisabled,
+  shouldEagerLoadThumbnail,
+  onDelete,
+}: CardProps) {
   const [thumbnailFailed, setThumbnailFailed] = useState(false);
 
   // Append #t=0.1 to force the <video> element to seek to the
@@ -247,6 +317,7 @@ function RecordingCard({ recording, isDeleting, onDelete }: CardProps) {
             width={640}
             height={360}
             unoptimized
+            loading={shouldEagerLoadThumbnail ? "eager" : "lazy"}
             sizes="(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
             className="aspect-video w-full object-cover"
             onError={() => setThumbnailFailed(true)}
@@ -286,7 +357,7 @@ function RecordingCard({ recording, isDeleting, onDelete }: CardProps) {
           type="button"
           data-testid="delete-button"
           onClick={onDelete}
-          disabled={isDeleting}
+          disabled={isDisabled}
           className="rounded border border-red-900/60 px-2 py-1 text-xs text-red-400 hover:border-red-700 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isDeleting ? "Deleting…" : "Delete"}

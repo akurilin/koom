@@ -33,6 +33,11 @@ export default async function RecordingsPage(): Promise<ReactElement> {
     redirect("/app/login");
   }
 
+  // Non-production escape hatch for local development and test
+  // environments. Keep the bulk-delete control out of deployed
+  // production surfaces.
+  const showBulkDelete = process.env.NODE_ENV !== "production";
+
   const recordings = await listAllCompletedRecordings();
   const items: RecordingListItem[] = recordings.map((r) => ({
     recordingId: r.id,
@@ -48,7 +53,10 @@ export default async function RecordingsPage(): Promise<ReactElement> {
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100">
-      <RecordingsList initialRecordings={items} />
+      <RecordingsList
+        initialRecordings={items}
+        showBulkDelete={showBulkDelete}
+      />
     </main>
   );
 }

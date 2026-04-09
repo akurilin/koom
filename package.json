@@ -9,6 +9,7 @@
   "scripts": {
     "prepare": "husky",
     "lint": "npm run lint -w web",
+    "web:clean": "npm run clean -w web",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "swift:format": "swift format format --in-place --recursive client/Sources",
@@ -16,6 +17,7 @@
     "shellcheck": "git ls-files -z '*.sh' '*.bash' | xargs -0 shellcheck",
     "r2:setup": "tsx scripts/r2-setup.ts",
     "r2:setup:test": "tsx scripts/r2-setup-test.ts",
+    "r2:orphans": "tsx scripts/r2-orphans.ts",
     "doctor": "tsx scripts/doctor.ts",
     "db:start": "npx -y supabase@2.87.2 start",
     "db:stop": "npx -y supabase@2.87.2 stop",

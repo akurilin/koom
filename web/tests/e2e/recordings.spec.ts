@@ -92,6 +92,7 @@ test("admin recordings happy path", async ({ page }) => {
     // and the page header to appear.
     await expect(page).toHaveURL(/\/app\/recordings(\?.*)?$/);
     await expect(page.getByTestId("recordings-header")).toBeVisible();
+    await expect(page.getByTestId("delete-all-button")).toBeVisible();
 
     // ─────────────────────────────────────────────────────────────
     // 3. The three seeded cards are visible (alongside whatever
@@ -167,13 +168,26 @@ test("admin recordings happy path", async ({ page }) => {
     await expect(cardForFilename(page, filenameShort)).toBeVisible();
 
     // ─────────────────────────────────────────────────────────────
-    // 7. Log out → bounced back to /app/login.
+    // 7. Delete the remaining seeded recordings with the
+    //    non-production bulk-delete control.
+    // ─────────────────────────────────────────────────────────────
+    page.once("dialog", (dialog) => {
+      void dialog.accept();
+    });
+
+    await page.getByTestId("delete-all-button").click();
+    await expect(cardForFilename(page, filenameLong)).toHaveCount(0);
+    await expect(cardForFilename(page, filenameShort)).toHaveCount(0);
+    seeded = [];
+
+    // ─────────────────────────────────────────────────────────────
+    // 8. Log out → bounced back to /app/login.
     // ─────────────────────────────────────────────────────────────
     await page.getByTestId("logout-button").click();
     await expect(page).toHaveURL(/\/app\/login(\?.*)?$/);
 
     // ─────────────────────────────────────────────────────────────
-    // 8. Try to visit /app/recordings again → bounced to login.
+    // 9. Try to visit /app/recordings again → bounced to login.
     // ─────────────────────────────────────────────────────────────
     await page.goto("/app/recordings");
     await expect(page).toHaveURL(/\/app\/login(\?.*)?$/);

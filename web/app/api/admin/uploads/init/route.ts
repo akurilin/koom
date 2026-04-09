@@ -182,8 +182,11 @@ function validateInitBody(
 }
 
 function buildShareUrl(recordingId: string): string {
-  const base = process.env.KOOM_PUBLIC_BASE_URL?.replace(/\/$/, "") ?? "";
-  return `${base}/r/${recordingId}`;
+  const base = process.env.KOOM_PUBLIC_BASE_URL;
+  if (!base) {
+    throw new Error("KOOM_PUBLIC_BASE_URL is not set");
+  }
+  return `${base.replace(/\/$/, "")}/r/${recordingId}`;
 }
 
 function jsonError(status: number, message: string): Response {

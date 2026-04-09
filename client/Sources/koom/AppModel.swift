@@ -84,7 +84,11 @@ final class AppModel: ObservableObject {
 
         uploader.onStateChange = { @Sendable [weak self] state in
             Task { @MainActor in
-                self?.uploadState = state
+                guard let self else { return }
+                self.uploadState = state
+                if let uploadStatusMessage = self.uploadStatusMessage(for: state) {
+                    self.statusMessage = uploadStatusMessage
+                }
             }
         }
 
@@ -297,6 +301,42 @@ final class AppModel: ObservableObject {
 
         case .idle:
             break
+        }
+    }
+
+    private func uploadStatusMessage(for state: UploadState) -> String? {
+        switch state {
+        case .idle:
+            return nil
+        case .preparing:
+            return "Preparing upload…"
+        case .optimizing:
+            return "Optimizing upload copy with ffmpeg…"
+        case .initializing:
+            return "Starting upload…"
+        case .uploading(let progress):
+            return "Uploading recording (\(Int(progress * 100))%)…"
+        case .finalizing:
+            return "Finalizing upload…"
+        case .autoTitling(let stage):
+            switch stage {
+            case .extractingAudio:
+                return
+                    "Upload finished. Extracting microphone audio for transcription…"
+            case .transcribing(let modelName):
+                return
+                    "Upload finished. Transcribing narration with Whisper (\(modelName))…"
+            case .generatingTitle(let modelName):
+                return
+                    "Upload finished. Generating a short title summary with Ollama (\(modelName))…"
+            case .savingGeneratedTitle:
+                return
+                    "Upload finished. Saving the generated title to the backend…"
+            }
+        case .completed:
+            return "Upload complete. Share URL copied and opened."
+        case .failed(let message):
+            return "Upload failed: \(message)"
         }
     }
 

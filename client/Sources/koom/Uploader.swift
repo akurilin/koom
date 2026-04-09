@@ -16,8 +16,16 @@ enum UploadState: Equatable, Sendable {
     case initializing
     case uploading(progress: Double)
     case finalizing
+    case autoTitling(stage: AutoTitleStage)
     case completed(shareURL: URL, summary: UploadCompletionSummary)
     case failed(message: String)
+}
+
+enum AutoTitleStage: Equatable, Sendable {
+    case extractingAudio
+    case transcribing(modelName: String)
+    case generatingTitle(modelName: String)
+    case savingGeneratedTitle
 }
 
 /// State machine for the **batch catch-up** flow — uploading every
@@ -69,6 +77,33 @@ private struct UploadOutcome: Sendable {
     let recordingId: String
     let shareURL: URL
     let summary: UploadCompletionSummary
+}
+
+private actor AutoTitleStatusRelay {
+    private let onStateChange: (@Sendable (UploadState) -> Void)?
+    private var latestStage: AutoTitleStage?
+    private var isVisible = false
+    private var isGenerating = true
+
+    init(onStateChange: (@Sendable (UploadState) -> Void)?) {
+        self.onStateChange = onStateChange
+    }
+
+    func update(_ stage: AutoTitleStage) {
+        latestStage = stage
+        guard isVisible else { return }
+        onStateChange?(.autoTitling(stage: stage))
+    }
+
+    func showIfStillGenerating() {
+        isVisible = true
+        guard isGenerating, let latestStage else { return }
+        onStateChange?(.autoTitling(stage: latestStage))
+    }
+
+    func markGenerationFinished() {
+        isGenerating = false
+    }
 }
 
 /// Orchestrates upload flows against the koom backend.
@@ -129,17 +164,26 @@ final class Uploader {
         // A failure in either branch does not taint the other —
         // autotitle is entirely best-effort.
         let autotitler = self.autotitler
-        async let uploadResult = performUpload(at: fileURL)
-        async let titleOpt: String? = Self.runAutotitle(
-            autotitler: autotitler,
-            fileURL: fileURL
-        )
-
-        let (result, title) = await (uploadResult, titleOpt)
+        let autoTitleRelay = AutoTitleStatusRelay(onStateChange: onStateChange)
+        let titleTask = Task<String?, Never> {
+            let title = await Self.runAutotitle(
+                autotitler: autotitler,
+                fileURL: fileURL,
+                onProgress: { stage in
+                    await autoTitleRelay.update(stage)
+                }
+            )
+            await autoTitleRelay.markGenerationFinished()
+            return title
+        }
+        let result = await performUpload(at: fileURL)
 
         switch result {
         case .success(let outcome):
+            await autoTitleRelay.showIfStillGenerating()
+            let title = await titleTask.value
             if let title, !title.isEmpty {
+                emit(.autoTitling(stage: .savingGeneratedTitle))
                 await patchTitle(recordingId: outcome.recordingId, title: title)
             }
             openAndPasteShareURL(outcome.shareURL)
@@ -151,6 +195,7 @@ final class Uploader {
             )
             return true
         case .failure(let failure):
+            _ = await titleTask.value
             emit(.failed(message: failure.message))
             return false
         }
@@ -158,10 +203,14 @@ final class Uploader {
 
     private static func runAutotitle(
         autotitler: Autotitler?,
-        fileURL: URL
+        fileURL: URL,
+        onProgress: @Sendable @escaping (AutoTitleStage) async -> Void
     ) async -> String? {
         guard let autotitler else { return nil }
-        return await autotitler.generateTitle(for: fileURL)
+        return await autotitler.generateTitle(
+            for: fileURL,
+            onProgress: onProgress
+        )
     }
 
     private func patchTitle(recordingId: String, title: String) async {

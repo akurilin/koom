@@ -175,6 +175,15 @@ private struct UploadStatusView: View {
             }
             .padding(.top, 4)
 
+        case .autoTitling(let stage):
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(autoTitleDescription(stage))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
+
         case .completed(let shareURL, let summary):
             VStack(alignment: .leading, spacing: 4) {
                 Text(
@@ -228,6 +237,23 @@ private struct UploadStatusView: View {
         let savingsPercent = Int((summary.savingsRatio * 100).rounded())
         return
             "Uploaded size: \(uploadedSize) from \(localSize) (\(savingsPercent)% smaller)."
+    }
+
+    private func autoTitleDescription(_ stage: AutoTitleStage) -> String {
+        switch stage {
+        case .extractingAudio:
+            return
+                "Upload finished. Extracting microphone audio for transcription…"
+        case .transcribing(let modelName):
+            return
+                "Upload finished. Transcribing narration with Whisper (\(modelName))…"
+        case .generatingTitle(let modelName):
+            return
+                "Upload finished. Generating a short title summary with Ollama (\(modelName))…"
+        case .savingGeneratedTitle:
+            return
+                "Upload finished. Saving the generated title to the backend…"
+        }
     }
 }
 

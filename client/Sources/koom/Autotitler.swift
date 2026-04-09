@@ -9,14 +9,18 @@ import Foundation
 /// model still downloading, Ollama not running, empty transcript,
 /// LLM refused to answer) logs and returns `nil`, leaving the
 /// recording's `title` column untouched in the database. The user
-/// can always rename a recording later in the admin UI, so we
-/// deliberately avoid surfacing these failures in the UI or
-/// introducing any "auto-title pending" state.
+/// can always rename a recording later in the admin UI, so failures
+/// remain best-effort and non-blocking. The client does, however,
+/// surface coarse progress messages so the user can see when the
+/// post-upload title pipeline is transcribing narration or asking
+/// the local Ollama model for a summary/title.
 ///
 /// One `Autotitler` is safe to share across recordings and across
 /// concurrent tasks because the only stateful piece (the
 /// `Transcriber` actor) already serializes access internally.
 struct Autotitler: Sendable {
+    let whisperModelName: String
+    let ollamaModelName: String
     let transcriber: Transcriber
     let ollamaClient: OllamaClient
 
@@ -49,6 +53,8 @@ struct Autotitler: Sendable {
         )
 
         return Autotitler(
+            whisperModelName: whisperModel,
+            ollamaModelName: ollamaModel,
             transcriber: Transcriber(modelName: whisperModel),
             ollamaClient: OllamaClient(baseURL: ollamaURL, model: ollamaModel)
         )
@@ -57,10 +63,14 @@ struct Autotitler: Sendable {
     /// Runs the full pipeline on the finalized recording at
     /// `fileURL` and returns a short title, or `nil` if any stage
     /// failed or produced nothing usable. Never throws.
-    func generateTitle(for fileURL: URL) async -> String? {
+    func generateTitle(
+        for fileURL: URL,
+        onProgress: @Sendable (AutoTitleStage) async -> Void
+    ) async -> String? {
         let filename = fileURL.lastPathComponent
 
         // Stage 1: pull mic audio into 16 kHz mono float PCM.
+        await onProgress(.extractingAudio)
         AppLog.info("Autotitle: extracting audio from \(filename).")
         guard let pcm = await AudioExtractor.extractMono16kFloatPCM(from: fileURL) else {
             AppLog.info("Autotitle: no usable audio track in \(filename); skipping.")
@@ -76,6 +86,7 @@ struct Autotitler: Sendable {
         // Stage 2: Whisper transcription.
         let transcript: String
         do {
+            await onProgress(.transcribing(modelName: whisperModelName))
             AppLog.info("Autotitle: transcribing \(filename).")
             transcript = try await transcriber.transcribe(audioArray: pcm)
         } catch {
@@ -92,6 +103,7 @@ struct Autotitler: Sendable {
 
         // Stage 3: Ollama summarization.
         do {
+            await onProgress(.generatingTitle(modelName: ollamaModelName))
             AppLog.info("Autotitle: summarizing transcript for \(filename) via Ollama.")
             let title = try await ollamaClient.generateTitle(from: trimmedTranscript)
             AppLog.info("Autotitle: generated title for \(filename): \(title)")

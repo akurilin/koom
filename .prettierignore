@@ -8,6 +8,11 @@ web/out/
 web/test-results/
 client/.build/
 
+# Supabase CLI state (already in supabase/.gitignore; keep prettier
+# from scanning it too so `format:check` stays quiet after `db push`).
+supabase/.temp/
+supabase/.branches/
+
 # Lockfiles and generated files
 package-lock.json
 web/next-env.d.ts

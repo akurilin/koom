@@ -15,6 +15,9 @@
 
 ## Database Migrations
 
+- **All schema changes — local and remote — go through the Supabase CLI. Never run `CREATE TABLE`, `ALTER TABLE`, `DROP ...`, or any other DDL against a koom database via raw `psql`, Supabase Studio's SQL editor, or any other out-of-band path.** Raw-SQL changes skip `supabase_migrations.schema_migrations`, which puts the local and remote migration state out of sync and breaks the next `supabase db push`. The only exception is genuine break-glass recovery, and that should be called out explicitly in the handoff.
+- The canonical workflow is: `npm run db:migration:new <slug>` to scaffold the timestamped file → edit the SQL → `npm run db:reset` to apply locally and confirm it works → commit the migration file → `npx -y supabase@2.87.2 db push -p '<password>'` to apply to the linked remote project.
+- Read-only inspection with `psql` (e.g. `\d recordings`, `SELECT ...`) is fine and encouraged for debugging. The rule is specifically about **mutations**.
 - Follow the style and conventions of the official PostgreSQL manual for all migration SQL: uppercase keywords, lowercase `snake_case` identifiers, canonical type names (`TEXT`, `BIGINT`, `TIMESTAMPTZ`, `REAL`), and aligned column definitions. When in doubt about formatting a construct, check how the Postgres docs format the equivalent.
 - Migration files live in `supabase/migrations/` and use the `YYYYMMDDHHMMSS_short_description.sql` naming scheme so the Supabase CLI applies them in order. Each file should start with a comment block describing the intent of the migration and any non-obvious decisions.
 

@@ -57,6 +57,10 @@ export function recordingObjectKey(recordingId: string): string {
   return `recordings/${recordingId}/video.mp4`;
 }
 
+export function recordingThumbnailObjectKey(recordingId: string): string {
+  return `recordings/${recordingId}/thumbnail-v1.jpg`;
+}
+
 /**
  * Build the public playback URL for a recording. Served by R2's
  * managed `.r2.dev` subdomain (or a custom domain in production),
@@ -69,6 +73,14 @@ export function recordingPublicUrl(recordingId: string): string {
     throw new Error("R2_PUBLIC_BASE_URL not set");
   }
   return `${base.replace(/\/$/, "")}/${recordingObjectKey(recordingId)}`;
+}
+
+export function recordingThumbnailPublicUrl(recordingId: string): string {
+  const base = process.env.R2_PUBLIC_BASE_URL;
+  if (!base) {
+    throw new Error("R2_PUBLIC_BASE_URL not set");
+  }
+  return `${base.replace(/\/$/, "")}/${recordingThumbnailObjectKey(recordingId)}`;
 }
 
 /**
@@ -132,12 +144,28 @@ export async function headRecordingObject(
 export async function deleteRecordingObject(
   recordingId: string,
 ): Promise<void> {
+  await deleteObject(recordingObjectKey(recordingId));
+}
+
+export async function putRecordingThumbnail(
+  recordingId: string,
+  body: Uint8Array,
+): Promise<void> {
   await getR2Client().send(
-    new DeleteObjectCommand({
+    new PutObjectCommand({
       Bucket: requireBucket(),
-      Key: recordingObjectKey(recordingId),
+      Key: recordingThumbnailObjectKey(recordingId),
+      Body: body,
+      ContentType: "image/jpeg",
+      CacheControl: "public, max-age=31536000, immutable",
     }),
   );
+}
+
+export async function deleteRecordingThumbnailObject(
+  recordingId: string,
+): Promise<void> {
+  await deleteObject(recordingThumbnailObjectKey(recordingId));
 }
 
 function isNotFoundError(err: unknown): boolean {
@@ -150,5 +178,14 @@ function isNotFoundError(err: unknown): boolean {
     e.name === "NotFound" ||
     e.name === "NoSuchKey" ||
     e.$metadata?.httpStatusCode === 404
+  );
+}
+
+async function deleteObject(key: string): Promise<void> {
+  await getR2Client().send(
+    new DeleteObjectCommand({
+      Bucket: requireBucket(),
+      Key: key,
+    }),
   );
 }

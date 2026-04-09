@@ -28,6 +28,7 @@ import {
   DELETE as recordingDELETE,
   PATCH as recordingPATCH,
 } from "@/app/api/admin/recordings/[id]/route";
+import { PUT as thumbnailPUT } from "@/app/api/admin/recordings/[id]/thumbnail/route";
 import { GET as recordingsGET } from "@/app/api/admin/recordings/route";
 
 const { Client: PgClient } = pg;
@@ -226,6 +227,7 @@ describe("GET /api/admin/recordings", () => {
         createdAt: string;
         originalFilename: string;
         sizeBytes: number;
+        thumbnailUrl: string;
         videoUrl: string;
       }>;
     };
@@ -234,7 +236,7 @@ describe("GET /api/admin/recordings", () => {
     // other rows from other test runs that happen in parallel
     // (it shouldn't today, but we want this to remain robust).
     const ours = body.recordings.filter((r) =>
-      [oldId, newId, pendingId].includes(r.recordingId),
+      ([oldId, newId, pendingId] as string[]).includes(r.recordingId),
     );
 
     expect(ours.map((r) => r.recordingId)).toEqual([newId, oldId]);
@@ -245,6 +247,102 @@ describe("GET /api/admin/recordings", () => {
     expect(ours[0]!.videoUrl).toBe(
       `${publicBase}/recordings/${newId}/video.mp4`,
     );
+    expect(ours[0]!.thumbnailUrl).toBe(
+      `${publicBase}/recordings/${newId}/thumbnail-v1.jpg`,
+    );
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────
+// PUT /api/admin/recordings/[id]/thumbnail
+// ────────────────────────────────────────────────────────────────────
+
+describe("PUT /api/admin/recordings/[id]/thumbnail", () => {
+  const createdIds: string[] = [];
+  const createdR2Keys: string[] = [];
+
+  afterEach(async () => {
+    if (createdIds.length > 0) {
+      await deleteRows(createdIds);
+      createdIds.length = 0;
+    }
+    if (createdR2Keys.length > 0) {
+      const bucket = requireEnv("R2_BUCKET");
+      for (const key of createdR2Keys) {
+        await deleteR2Object(bucket, key);
+      }
+      createdR2Keys.length = 0;
+    }
+  });
+
+  it("returns 401 without an Authorization header", async () => {
+    const id = randomUUID();
+    const res = await thumbnailPUT(
+      new Request(`http://localhost/api/admin/recordings/${id}/thumbnail`, {
+        method: "PUT",
+        headers: { "Content-Type": "image/jpeg" },
+        body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 404 for an id that does not exist", async () => {
+    const id = randomUUID();
+    const res = await thumbnailPUT(
+      new Request(`http://localhost/api/admin/recordings/${id}/thumbnail`, {
+        method: "PUT",
+        headers: {
+          Authorization: authHeaders().Authorization,
+          "Content-Type": "image/jpeg",
+        },
+        body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("stores the sidecar thumbnail in R2", async () => {
+    const id = randomUUID();
+    const bucket = requireEnv("R2_BUCKET");
+    const objectKey = `recordings/${id}/thumbnail-v1.jpg`;
+
+    await insertRecording({
+      id,
+      status: "complete",
+      originalFilename: `koom_thumbnail_${Date.now()}.mp4`,
+    });
+    createdIds.push(id);
+    createdR2Keys.push(objectKey);
+
+    const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+    const res = await thumbnailPUT(
+      new Request(`http://localhost/api/admin/recordings/${id}/thumbnail`, {
+        method: "PUT",
+        headers: {
+          Authorization: authHeaders().Authorization,
+          "Content-Type": "image/jpeg",
+        },
+        body: jpegBytes,
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as { ok: boolean; thumbnailUrl: string };
+    expect(body.ok).toBe(true);
+    expect(body.thumbnailUrl).toBe(
+      `${requireEnv("R2_PUBLIC_BASE_URL").replace(/\/$/, "")}/recordings/${id}/thumbnail-v1.jpg`,
+    );
+
+    const s3 = makeS3Client();
+    const head = await s3.send(
+      new HeadObjectCommand({ Bucket: bucket, Key: objectKey }),
+    );
+    expect(head.ContentLength).toBe(jpegBytes.length);
+    expect(head.ContentType).toBe("image/jpeg");
   });
 });
 
@@ -293,10 +391,11 @@ describe("DELETE /api/admin/recordings/[id]", () => {
     expect(res.status).toBe(404);
   });
 
-  it("removes both the database row and the R2 object", async () => {
+  it("removes the database row, the R2 video, and the sidecar thumbnail", async () => {
     const id = randomUUID();
     const bucket = requireEnv("R2_BUCKET");
     const objectKey = `recordings/${id}/video.mp4`;
+    const thumbnailKey = `recordings/${id}/thumbnail-v1.jpg`;
 
     // Seed a real R2 object for this recording so the DELETE
     // path exercises a non-trivial HEAD/DELETE cycle.
@@ -317,9 +416,18 @@ describe("DELETE /api/admin/recordings/[id]", () => {
         ContentType: "video/mp4",
       }),
     );
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: thumbnailKey,
+        Body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
+        ContentType: "image/jpeg",
+      }),
+    );
     // Safety net: add to cleanup in case the DELETE route fails
     // and leaves the object behind.
     createdR2Keys.push(objectKey);
+    createdR2Keys.push(thumbnailKey);
 
     // Sanity: confirm the object really is there before we ask
     // the route to delete it.
@@ -373,6 +481,28 @@ describe("DELETE /api/admin/recordings/[id]", () => {
       }
     }
     expect(headNotFound).toBe(true);
+
+    let thumbnailNotFound = false;
+    try {
+      await s3.send(
+        new HeadObjectCommand({ Bucket: bucket, Key: thumbnailKey }),
+      );
+    } catch (err) {
+      const e = err as {
+        name?: string;
+        $metadata?: { httpStatusCode?: number };
+      };
+      if (
+        e.name === "NotFound" ||
+        e.name === "NoSuchKey" ||
+        e.$metadata?.httpStatusCode === 404
+      ) {
+        thumbnailNotFound = true;
+      } else {
+        throw err;
+      }
+    }
+    expect(thumbnailNotFound).toBe(true);
 
     // Since the DELETE succeeded, drop the cleanup entry — the
     // afterEach would otherwise log a spurious warning trying to

@@ -17,7 +17,10 @@ import type { ReactElement } from "react";
 
 import { isAdminSessionValid } from "@/lib/auth/session";
 import { listAllCompletedRecordings } from "@/lib/db/queries";
-import { recordingPublicUrl } from "@/lib/r2/client";
+import {
+  recordingPublicUrl,
+  recordingThumbnailPublicUrl,
+} from "@/lib/r2/client";
 
 import { RecordingsList, type RecordingListItem } from "./recordings-list";
 
@@ -39,6 +42,7 @@ export default async function RecordingsPage(): Promise<ReactElement> {
     sizeBytes: r.sizeBytes,
     durationSeconds: r.durationSeconds,
     contentType: r.contentType,
+    thumbnailUrl: recordingThumbnailPublicUrl(r.id),
     videoUrl: recordingPublicUrl(r.id),
   }));
 

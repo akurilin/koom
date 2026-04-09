@@ -10,10 +10,11 @@
  * DELETE order of operations matters:
  *
  *   1. Verify the row exists (so we can return 404 cleanly).
- *   2. Delete the R2 object.
+ *   2. Delete the R2 video object and best-effort delete the
+ *      thumbnail sidecar object.
  *   3. Delete the row.
  *
- * Step 2 before step 3 means a partial failure (R2 delete succeeds
+ * Step 2 before step 3 means a partial failure (video delete succeeds
  * but row delete fails) leaves the row pointing at a missing
  * object — the UI will show a broken recording and the user can
  * retry the DELETE. Step 3 before step 2 would risk orphaning
@@ -34,7 +35,10 @@ import {
   recordingExists,
   updateRecordingTitle,
 } from "@/lib/db/queries";
-import { deleteRecordingObject } from "@/lib/r2/client";
+import {
+  deleteRecordingObject,
+  deleteRecordingThumbnailObject,
+} from "@/lib/r2/client";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -84,8 +88,16 @@ export async function DELETE(
   } catch (err) {
     console.error("[admin/recordings/delete] R2 delete failed:", err);
     return Response.json(
-      { error: "failed to delete R2 object" },
+      { error: "failed to delete R2 video object" },
       { status: 500 },
+    );
+  }
+  try {
+    await deleteRecordingThumbnailObject(id);
+  } catch (err) {
+    console.warn(
+      "[admin/recordings/delete] thumbnail cleanup failed; continuing:",
+      err,
     );
   }
 

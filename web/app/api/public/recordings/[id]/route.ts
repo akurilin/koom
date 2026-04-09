@@ -14,7 +14,10 @@
  */
 
 import { getCompletedRecordingById } from "@/lib/db/queries";
-import { recordingPublicUrl } from "@/lib/r2/client";
+import {
+  recordingPublicUrl,
+  recordingThumbnailPublicUrl,
+} from "@/lib/r2/client";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -46,6 +49,7 @@ export async function GET(
     recordingId: recording.id,
     createdAt: recording.createdAt.toISOString(),
     title: recording.title,
+    thumbnailUrl: recordingThumbnailPublicUrl(recording.id),
     videoUrl: recordingPublicUrl(recording.id),
     durationSeconds: recording.durationSeconds,
     sizeBytes: recording.sizeBytes,

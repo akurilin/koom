@@ -72,6 +72,11 @@ struct KoomAPI {
         let title: String?
     }
 
+    struct UploadThumbnailResponse: Decodable {
+        let ok: Bool
+        let thumbnailUrl: String
+    }
+
     // MARK: - Errors
 
     enum APIError: LocalizedError {
@@ -169,6 +174,54 @@ struct KoomAPI {
             body: body,
             responseType: UpdateTitleResponse.self
         )
+    }
+
+    /// Upload a sidecar JPEG thumbnail for an existing recording.
+    /// The desktop client generates this locally from the finalized
+    /// MP4 and sends it to the web backend, which stores it in R2 at
+    /// the deterministic thumbnail key next to the video object.
+    func uploadRecordingThumbnail(
+        recordingId: String,
+        jpegData: Data
+    ) async throws -> UploadThumbnailResponse {
+        var request = URLRequest(
+            url: backendURL.appendingPathComponent(
+                "api/admin/recordings/\(recordingId)/thumbnail"
+            )
+        )
+        request.httpMethod = "PUT"
+        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        request.setValue(
+            "Bearer \(adminSecret)",
+            forHTTPHeaderField: "Authorization"
+        )
+        request.httpBody = jpegData
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.network(error)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        if http.statusCode == 401 {
+            throw APIError.unauthorized
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            throw APIError.badStatus(code: http.statusCode, body: bodyText)
+        }
+
+        do {
+            return try JSONDecoder().decode(UploadThumbnailResponse.self, from: data)
+        } catch {
+            throw APIError.invalidResponse
+        }
     }
 
     /// Upload the file at `fileURL` to the given presigned URL via

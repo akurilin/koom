@@ -18,7 +18,10 @@
 
 import { requireAdmin } from "@/lib/auth/admin";
 import { listAllCompletedRecordings } from "@/lib/db/queries";
-import { recordingPublicUrl } from "@/lib/r2/client";
+import {
+  recordingPublicUrl,
+  recordingThumbnailPublicUrl,
+} from "@/lib/r2/client";
 
 export async function GET(request: Request): Promise<Response> {
   const authError = await requireAdmin(request);
@@ -35,6 +38,7 @@ export async function GET(request: Request): Promise<Response> {
         sizeBytes: r.sizeBytes,
         durationSeconds: r.durationSeconds,
         contentType: r.contentType,
+        thumbnailUrl: recordingThumbnailPublicUrl(r.id),
         videoUrl: recordingPublicUrl(r.id),
       })),
     });

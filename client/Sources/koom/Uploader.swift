@@ -155,14 +155,13 @@ final class Uploader {
     func uploadRecording(at fileURL: URL) async -> Bool {
         emit(.preparing)
 
-        // Kick off the upload and the auto-title pipeline in
-        // parallel. Whisper transcription is the long pole for
-        // short recordings, so running them concurrently gives us
-        // a chance at landing the generated title before the user
-        // sees the share URL. If auto-titling finishes after the
-        // upload, we PATCH the title onto the already-created row.
-        // A failure in either branch does not taint the other —
-        // autotitle is entirely best-effort.
+        // Kick off the upload, local auto-title pipeline, and local
+        // thumbnail extraction in parallel. Whisper transcription is
+        // the long pole for short recordings, so running it alongside
+        // the upload gives us a chance at landing the generated title
+        // before the user sees the share URL. The thumbnail path is
+        // also best-effort and operates on the finalized MP4 in
+        // ~/Movies/koom/, which this uploader never deletes.
         let autotitler = self.autotitler
         let autoTitleRelay = AutoTitleStatusRelay(onStateChange: onStateChange)
         let titleTask = Task<String?, Never> {
@@ -176,11 +175,18 @@ final class Uploader {
             await autoTitleRelay.markGenerationFinished()
             return title
         }
+        async let thumbnailData: Data? = Self.runThumbnail(fileURL: fileURL)
         let result = await performUpload(at: fileURL)
 
         switch result {
         case .success(let outcome):
             await autoTitleRelay.showIfStillGenerating()
+            if let thumbnailData = await thumbnailData {
+                await uploadThumbnail(
+                    recordingId: outcome.recordingId,
+                    jpegData: thumbnailData
+                )
+            }
             let title = await titleTask.value
             if let title, !title.isEmpty {
                 emit(.autoTitling(stage: .savingGeneratedTitle))
@@ -196,6 +202,7 @@ final class Uploader {
             return true
         case .failure(let failure):
             _ = await titleTask.value
+            _ = await thumbnailData
             emit(.failed(message: failure.message))
             return false
         }
@@ -213,6 +220,10 @@ final class Uploader {
         )
     }
 
+    private static func runThumbnail(fileURL: URL) async -> Data? {
+        await ThumbnailGenerator.generateJPEGData(from: fileURL)
+    }
+
     private func patchTitle(recordingId: String, title: String) async {
         guard let api = makeAPIClient() else { return }
         do {
@@ -224,6 +235,23 @@ final class Uploader {
         } catch {
             AppLog.error(
                 "Autotitle: failed to PATCH title for \(recordingId): \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func uploadThumbnail(recordingId: String, jpegData: Data) async {
+        guard let api = makeAPIClient() else { return }
+        do {
+            let response = try await api.uploadRecordingThumbnail(
+                recordingId: recordingId,
+                jpegData: jpegData
+            )
+            AppLog.info(
+                "Thumbnail: stored sidecar JPEG for \(recordingId): \(response.thumbnailUrl)"
+            )
+        } catch {
+            AppLog.error(
+                "Thumbnail: failed to upload JPEG for \(recordingId): \(error.localizedDescription)"
             )
         }
     }
@@ -316,8 +344,14 @@ final class Uploader {
             let result = await performUpload(at: fileURL)
 
             switch result {
-            case .success:
+            case .success(let outcome):
                 successCount += 1
+                if let thumbnailData = await Self.runThumbnail(fileURL: fileURL) {
+                    await uploadThumbnail(
+                        recordingId: outcome.recordingId,
+                        jpegData: thumbnailData
+                    )
+                }
                 // Drop the per-file progress UI between files so it
                 // re-animates from 0% on the next one.
                 emit(.idle)

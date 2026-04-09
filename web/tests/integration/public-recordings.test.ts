@@ -82,6 +82,7 @@ describe("GET /api/public/recordings/[id]", () => {
       recordingId: string;
       createdAt: string;
       title: string | null;
+      thumbnailUrl: string;
       videoUrl: string;
       durationSeconds: number | null;
       sizeBytes: number;
@@ -98,6 +99,9 @@ describe("GET /api/public/recordings/[id]", () => {
     // videoUrl should point at the R2 public base with the expected key
     const publicBase = requireEnv("R2_PUBLIC_BASE_URL").replace(/\/$/, "");
     expect(body.videoUrl).toBe(`${publicBase}/recordings/${id}/video.mp4`);
+    expect(body.thumbnailUrl).toBe(
+      `${publicBase}/recordings/${id}/thumbnail-v1.jpg`,
+    );
   });
 
   it("returns 404 for an id that does not exist", async () => {

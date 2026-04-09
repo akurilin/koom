@@ -88,7 +88,7 @@ docs/
 - Node.js 20+ for the web app and operator scripts
 - A Cloudflare account (R2 free tier is enough to start)
 - A Supabase project — or Docker, for the local Supabase stack via `npm run db:start`
-- Optional: [Ollama](https://ollama.com) running locally if you want the auto-titler (`brew install ollama && ollama pull gemma4:e4b`). The upload flow works unchanged without it.
+- Optional: [Ollama](https://ollama.com) if you want the auto-titler (`brew install ollama && ollama pull gemma4:e4b`). `./scripts/run.sh` now preflights the configured Ollama endpoint, auto-starts `ollama serve` for the default local URL when needed, restarts a stale local `ollama serve` once if warmup fails, and refuses to launch by default if the model still is not ready. Set `KOOM_AUTOTITLE_ENABLED=false` to disable the feature entirely or `KOOM_OLLAMA_REQUIRE_READY=false` to allow a degraded launch.
 - Optional local tooling so the pre-commit hook can run: `brew install gitleaks shellcheck`
 
 The macOS client also needs Screen Recording permission, Camera permission (if using the face overlay), and Microphone permission (if recording narration).
@@ -181,13 +181,16 @@ Stages, all in-process on the macOS client:
 3. **Summarize.** The transcript is sent to a local Ollama model via `POST http://localhost:11434/api/generate` with `think: false` (important — reasoning-capable models like `gemma4:e4b` otherwise route their output into a separate `thinking` field and return an empty `response`). The client asks for a 4–10 word title and sanitizes it (strips `Title:` prefixes, smart/straight quotes, trailing punctuation, clamps to 10 words).
 4. **Persist.** The title is `PATCH`ed onto the `recordings` row via `PATCH /api/admin/recordings/[id]`. Pending rows (upload still in flight) are also allowed to take a title so the auto-titler can land early on fast uploads.
 
-All four environment variables are optional. Defaults are hard-coded in `Autotitler.swift`:
+All five environment variables are optional. Defaults are hard-coded in `Autotitler.swift`:
 
-| Variable                 | Default                   | Purpose                                                     |
-| ------------------------ | ------------------------- | ----------------------------------------------------------- |
-| `KOOM_AUTOTITLE_ENABLED` | `true`                    | Set to `false`/`0`/`no`/`off` to skip the pipeline entirely |
-| `KOOM_WHISPER_MODEL`     | `openai_whisper-small.en` | Any model WhisperKit publishes on HuggingFace               |
-| `KOOM_OLLAMA_URL`        | `http://localhost:11434`  | Ollama HTTP base URL                                        |
-| `KOOM_OLLAMA_MODEL`      | `gemma4:e4b`              | Any model you've `ollama pull`ed locally                    |
+| Variable                    | Default                   | Purpose                                                                                                    |
+| --------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `KOOM_AUTOTITLE_ENABLED`    | `true`                    | Set to `false`/`0`/`no`/`off` to skip the pipeline entirely                                                |
+| `KOOM_WHISPER_MODEL`        | `openai_whisper-small.en` | Any model WhisperKit publishes on HuggingFace                                                              |
+| `KOOM_OLLAMA_URL`           | `http://localhost:11434`  | Ollama HTTP base URL                                                                                       |
+| `KOOM_OLLAMA_MODEL`         | `gemma4:e4b`              | Any model you've `ollama pull`ed locally                                                                   |
+| `KOOM_OLLAMA_REQUIRE_READY` | `true`                    | Set to `false`/`0`/`no`/`off` to let `./scripts/run.sh` launch in degraded mode when Ollama is unavailable |
 
-`npm run doctor` has an "Auto-title (Ollama)" section that verifies Ollama is reachable and the configured model has been pulled. Both checks are non-fatal: failures become warnings so the rest of the doctor sweep still runs.
+`./scripts/run.sh` now performs the stronger local-dev preflight: if `KOOM_AUTOTITLE_ENABLED` is on, it verifies that Ollama is reachable, the configured model is pulled, and the model can answer a tiny warmup request. For the default local URL it will try to start `ollama serve` automatically before giving up, and if the server is reachable but returns a model-load failure it will restart local Ollama once and retry. By default a failed preflight aborts app launch; set `KOOM_OLLAMA_REQUIRE_READY=false` to allow a degraded launch instead.
+
+`npm run doctor` still has an "Auto-title (Ollama)" section that verifies Ollama is reachable and the configured model has been pulled. Those checks remain non-fatal so the rest of the doctor sweep still runs.

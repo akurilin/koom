@@ -1,17 +1,16 @@
 /**
  * Interactive admin recordings list.
  *
- * Renders a grid of recording cards with first-frame video
- * previews, a sort dropdown, a delete button per card, and a
- * logout button.
+ * Renders a grid of recording cards with sidecar JPEG thumbnails
+ * when available, falling back to first-frame video previews, plus
+ * a sort dropdown, a delete button per card, and a logout button.
  *
- * The first-frame preview trick: append `#t=0.1` to the video URL
- * and set `preload="metadata"`. The browser only downloads the
- * moov atom (file header) to render a seek-frame thumbnail at the
- * 100 ms mark. Because our recordings are produced with
- * `+faststart`, the moov lives at the start of the file and the
- * metadata fetch is small regardless of total file size. No
- * server-side thumbnail generation needed.
+ * Preferred preview path: load the sidecar JPEG that the desktop
+ * client can upload next to the video in R2. If it 404s or fails to
+ * decode, fall back to the first-frame preview trick: append
+ * `#t=0.1` to the video URL and set `preload="metadata"`. Because
+ * recordings are produced with `+faststart`, the metadata fetch is
+ * small regardless of total file size.
  *
  * Sort is done entirely client-side. At single-tenant scale the
  * full list fits in memory comfortably; we'd add server-side
@@ -28,6 +27,7 @@
 
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -40,6 +40,7 @@ export interface RecordingListItem {
   sizeBytes: number;
   durationSeconds: number | null;
   contentType: string;
+  thumbnailUrl: string;
   videoUrl: string;
 }
 
@@ -205,6 +206,8 @@ interface CardProps {
 }
 
 function RecordingCard({ recording, isDeleting, onDelete }: CardProps) {
+  const [thumbnailFailed, setThumbnailFailed] = useState(false);
+
   // Append #t=0.1 to force the <video> element to seek to the
   // 100 ms mark and render the first frame instead of a black
   // square. preload="metadata" downloads just the moov atom so
@@ -225,17 +228,30 @@ function RecordingCard({ recording, isDeleting, onDelete }: CardProps) {
         className="block bg-black"
         aria-label={`Watch ${displayTitle}`}
       >
-        <video
-          src={previewSrc}
-          preload="metadata"
-          muted
-          playsInline
-          className="aspect-video w-full object-cover"
-        >
-          <p className="p-4 text-xs text-zinc-400">
-            Your browser cannot play this {recording.contentType} file.
-          </p>
-        </video>
+        {thumbnailFailed ? (
+          <video
+            src={previewSrc}
+            preload="metadata"
+            muted
+            playsInline
+            className="aspect-video w-full object-cover"
+          >
+            <p className="p-4 text-xs text-zinc-400">
+              Your browser cannot play this {recording.contentType} file.
+            </p>
+          </video>
+        ) : (
+          <Image
+            src={recording.thumbnailUrl}
+            alt=""
+            width={640}
+            height={360}
+            unoptimized
+            sizes="(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
+            className="aspect-video w-full object-cover"
+            onError={() => setThumbnailFailed(true)}
+          />
+        )}
       </Link>
 
       <div className="px-4 py-3">

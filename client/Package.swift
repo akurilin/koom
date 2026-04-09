@@ -5,13 +5,13 @@ import PackageDescription
 let package = Package(
     name: "koom",
     platforms: [
-        .macOS(.v14),
+        .macOS(.v14)
     ],
     products: [
         .executable(
             name: "koom",
             targets: ["koom"]
-        ),
+        )
     ],
     dependencies: [
         // Local transcription via OpenAI Whisper weights, run in-process
@@ -20,25 +20,27 @@ let package = Package(
         .package(
             url: "https://github.com/argmaxinc/WhisperKit",
             .upToNextMajor(from: "0.9.0")
-        ),
+        )
     ],
     targets: [
         .executableTarget(
             name: "koom",
             dependencies: [
-                .product(name: "WhisperKit", package: "WhisperKit"),
+                .product(name: "WhisperKit", package: "WhisperKit")
             ],
             path: "Sources/koom",
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreGraphics"),
+                .linkedFramework("ImageIO"),
                 .linkedFramework("CoreMedia"),
                 .linkedFramework("CoreVideo"),
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("Security"),
                 .linkedFramework("SwiftUI"),
+                .linkedFramework("UniformTypeIdentifiers"),
             ]
-        ),
+        )
     ]
 )

@@ -36,6 +36,8 @@ export default {
   ],
   "**/*.{ts,tsx,js,jsx,mjs,cjs,json,md,mdx,css,yml,yaml}": "prettier --write",
   "**/*.{sh,bash}": "shellcheck",
+  "supabase/migrations/*.sql": (files) =>
+    `npx --no-install squawk ${quoteFiles(files)}`,
   "client/**/*.swift": (files) => {
     const quoted = quoteFiles(files);
     return [

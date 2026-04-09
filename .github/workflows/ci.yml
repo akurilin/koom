@@ -49,6 +49,9 @@ jobs:
       - name: ShellCheck
         run: npm run shellcheck
 
+      - name: Squawk (migrations)
+        run: npm run sql:lint
+
   gitleaks:
     name: gitleaks
     runs-on: ubuntu-latest

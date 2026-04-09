@@ -15,6 +15,7 @@
     "swift:format": "swift format format --in-place --recursive client/Sources",
     "swift:lint": "swift format lint --recursive client/Sources",
     "shellcheck": "git ls-files -z '*.sh' '*.bash' | xargs -0 shellcheck",
+    "sql:lint": "git ls-files -z 'supabase/migrations/*.sql' | xargs -0 squawk",
     "r2:setup": "tsx scripts/r2-setup.ts",
     "r2:setup:test": "tsx scripts/r2-setup-test.ts",
     "r2:orphans": "tsx scripts/r2-orphans.ts",
@@ -32,6 +33,7 @@
     "@types/node": "^22.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
+    "squawk-cli": "^2.46.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }

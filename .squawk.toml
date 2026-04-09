@@ -1,0 +1,26 @@
+# squawk — Postgres migration linter (https://squawkhq.com)
+#
+# koom runs Supabase migrations, which wraps each .sql file in an
+# implicit BEGIN/COMMIT. Tell squawk so it understands that
+# CREATE INDEX CONCURRENTLY is impossible (it can't run in a
+# transaction) and to reason about statements as if they were all
+# committed together.
+assume_in_transaction = true
+
+# Pin the analysis to the exact major version of Postgres that
+# Supabase Cloud currently runs. Keeps rule output stable when
+# squawk updates its version-specific checks.
+pg_version = "17.0"
+
+# Rules explicitly disabled for koom, with reasons. Flip anything
+# off this list back on if the assumptions behind it stop holding.
+#
+#   require-timeout-settings
+#     Forces every migration to start with
+#     `SET lock_timeout = '...'; SET statement_timeout = '...';`.
+#     It's the right discipline for a busy production DB where a
+#     stuck migration can wedge the whole app — but koom is
+#     single-tenant with near-empty tables and every migration runs
+#     in milliseconds. Re-enable once lock contention becomes a real
+#     concern.
+excluded_rules = ["require-timeout-settings"]

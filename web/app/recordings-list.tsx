@@ -160,7 +160,7 @@ export function RecordingsList({ initialRecordings, showBulkDelete }: Props) {
     } catch {
       // Swallow — we're about to redirect anyway.
     }
-    router.replace("/app/login");
+    router.replace("/login");
     router.refresh();
   }
 

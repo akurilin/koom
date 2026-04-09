@@ -1,7 +1,7 @@
 /**
  * Client-side login form. Submits the admin secret to the
  * /api/admin/session endpoint built in round D-2, and redirects
- * to /app/recordings on success.
+ * to / on success.
  *
  * Uses `router.replace` + `router.refresh` on success so the
  * browser back button doesn't return to the login page after
@@ -52,7 +52,7 @@ export function LoginForm() {
       // Success. Replace the history entry so back-button doesn't
       // return to login, and refresh so the destination server
       // component re-reads the cookie store.
-      router.replace("/app/recordings");
+      router.replace("/");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");

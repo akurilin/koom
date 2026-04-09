@@ -1,7 +1,7 @@
 /**
  * GET /api/admin/recordings
  *
- * Admin-only list endpoint powering the `/app/recordings` page.
+ * Admin-only list endpoint powering the authenticated `/` page.
  * Returns every complete recording newest-first, with enough
  * metadata to render a list with previews and to click through to
  * the public watch page.

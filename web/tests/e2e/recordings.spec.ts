@@ -71,11 +71,10 @@ test("admin recordings happy path", async ({ page }) => {
     const filenameShort = "koom_e2e_z_short.mp4";
 
     // ─────────────────────────────────────────────────────────────
-    // 1. Unauthenticated visit to /app/recordings → bounced to
-    //    /app/login.
+    // 1. Unauthenticated visit to / → bounced to /login.
     // ─────────────────────────────────────────────────────────────
-    await page.goto("/app/recordings");
-    await expect(page).toHaveURL(/\/app\/login(\?.*)?$/);
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/login(\?.*)?$/);
 
     // The login form is on screen.
     await expect(page.getByTestId("admin-secret-input")).toBeVisible();
@@ -88,9 +87,9 @@ test("admin recordings happy path", async ({ page }) => {
     await page.getByTestId("login-button").click();
 
     // After successful login the client component does
-    // router.replace('/app/recordings'). Wait for the navigation
+    // router.replace('/'). Wait for the navigation
     // and the page header to appear.
-    await expect(page).toHaveURL(/\/app\/recordings(\?.*)?$/);
+    await expect(page).toHaveURL(/\/(\?.*)?$/);
     await expect(page.getByTestId("recordings-header")).toBeVisible();
     await expect(page.getByTestId("delete-all-button")).toBeVisible();
 
@@ -142,7 +141,7 @@ test("admin recordings happy path", async ({ page }) => {
     await expect(page).toHaveURL(/\/r\/[0-9a-f-]+(\?.*)?$/);
 
     await page.goBack();
-    await expect(page).toHaveURL(/\/app\/recordings(\?.*)?$/);
+    await expect(page).toHaveURL(/\/(\?.*)?$/);
     await expect(page.getByTestId("recordings-header")).toBeVisible();
 
     // ─────────────────────────────────────────────────────────────
@@ -181,16 +180,16 @@ test("admin recordings happy path", async ({ page }) => {
     seeded = [];
 
     // ─────────────────────────────────────────────────────────────
-    // 8. Log out → bounced back to /app/login.
+    // 8. Log out → bounced back to /login.
     // ─────────────────────────────────────────────────────────────
     await page.getByTestId("logout-button").click();
-    await expect(page).toHaveURL(/\/app\/login(\?.*)?$/);
+    await expect(page).toHaveURL(/\/login(\?.*)?$/);
 
     // ─────────────────────────────────────────────────────────────
-    // 9. Try to visit /app/recordings again → bounced to login.
+    // 9. Try to visit / again → bounced to login.
     // ─────────────────────────────────────────────────────────────
-    await page.goto("/app/recordings");
-    await expect(page).toHaveURL(/\/app\/login(\?.*)?$/);
+    await page.goto("/");
+    await expect(page).toHaveURL(/\/login(\?.*)?$/);
   } finally {
     await cleanupSeeded(seeded).catch((err) => {
       console.warn("[teardown] cleanupSeeded failed:", err);

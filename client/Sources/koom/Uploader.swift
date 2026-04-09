@@ -16,16 +16,18 @@ enum UploadState: Equatable, Sendable {
     case initializing
     case uploading(progress: Double)
     case finalizing
-    case autoTitling(stage: AutoTitleStage)
+    case postProcessing(stage: PostUploadStage)
     case completed(shareURL: URL, summary: UploadCompletionSummary)
     case failed(message: String)
 }
 
-enum AutoTitleStage: Equatable, Sendable {
+enum PostUploadStage: Equatable, Sendable {
     case extractingAudio
     case transcribing(modelName: String)
     case generatingTitle(modelName: String)
     case savingGeneratedTitle
+    case generatingThumbnail
+    case uploadingThumbnail
 }
 
 /// State machine for the **batch catch-up** flow — uploading every
@@ -79,9 +81,9 @@ private struct UploadOutcome: Sendable {
     let summary: UploadCompletionSummary
 }
 
-private actor AutoTitleStatusRelay {
+private actor PostProcessingStatusRelay {
     private let onStateChange: (@Sendable (UploadState) -> Void)?
-    private var latestStage: AutoTitleStage?
+    private var latestStage: PostUploadStage?
     private var isVisible = false
     private var isGenerating = true
 
@@ -89,16 +91,16 @@ private actor AutoTitleStatusRelay {
         self.onStateChange = onStateChange
     }
 
-    func update(_ stage: AutoTitleStage) {
+    func update(_ stage: PostUploadStage) {
         latestStage = stage
         guard isVisible else { return }
-        onStateChange?(.autoTitling(stage: stage))
+        onStateChange?(.postProcessing(stage: stage))
     }
 
     func showIfStillGenerating() {
         isVisible = true
         guard isGenerating, let latestStage else { return }
-        onStateChange?(.autoTitling(stage: latestStage))
+        onStateChange?(.postProcessing(stage: latestStage))
     }
 
     func markGenerationFinished() {
@@ -163,16 +165,18 @@ final class Uploader {
         // also best-effort and operates on the finalized MP4 in
         // ~/Movies/koom/, which this uploader never deletes.
         let autotitler = self.autotitler
-        let autoTitleRelay = AutoTitleStatusRelay(onStateChange: onStateChange)
+        let postProcessingRelay = PostProcessingStatusRelay(
+            onStateChange: onStateChange
+        )
         let titleTask = Task<String?, Never> {
             let title = await Self.runAutotitle(
                 autotitler: autotitler,
                 fileURL: fileURL,
                 onProgress: { stage in
-                    await autoTitleRelay.update(stage)
+                    await postProcessingRelay.update(stage)
                 }
             )
-            await autoTitleRelay.markGenerationFinished()
+            await postProcessingRelay.markGenerationFinished()
             return title
         }
         async let thumbnailData: Data? = Self.runThumbnail(fileURL: fileURL)
@@ -180,17 +184,19 @@ final class Uploader {
 
         switch result {
         case .success(let outcome):
-            await autoTitleRelay.showIfStillGenerating()
+            await postProcessingRelay.showIfStillGenerating()
+            let title = await titleTask.value
+            if let title, !title.isEmpty {
+                emit(.postProcessing(stage: .savingGeneratedTitle))
+                await patchTitle(recordingId: outcome.recordingId, title: title)
+            }
+            emit(.postProcessing(stage: .generatingThumbnail))
             if let thumbnailData = await thumbnailData {
+                emit(.postProcessing(stage: .uploadingThumbnail))
                 await uploadThumbnail(
                     recordingId: outcome.recordingId,
                     jpegData: thumbnailData
                 )
-            }
-            let title = await titleTask.value
-            if let title, !title.isEmpty {
-                emit(.autoTitling(stage: .savingGeneratedTitle))
-                await patchTitle(recordingId: outcome.recordingId, title: title)
             }
             openAndPasteShareURL(outcome.shareURL)
             emit(
@@ -211,7 +217,7 @@ final class Uploader {
     private static func runAutotitle(
         autotitler: Autotitler?,
         fileURL: URL,
-        onProgress: @Sendable @escaping (AutoTitleStage) async -> Void
+        onProgress: @Sendable @escaping (PostUploadStage) async -> Void
     ) async -> String? {
         guard let autotitler else { return nil }
         return await autotitler.generateTitle(
@@ -346,7 +352,9 @@ final class Uploader {
             switch result {
             case .success(let outcome):
                 successCount += 1
+                emit(.postProcessing(stage: .generatingThumbnail))
                 if let thumbnailData = await Self.runThumbnail(fileURL: fileURL) {
+                    emit(.postProcessing(stage: .uploadingThumbnail))
                     await uploadThumbnail(
                         recordingId: outcome.recordingId,
                         jpegData: thumbnailData

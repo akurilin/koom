@@ -318,7 +318,7 @@ final class AppModel: ObservableObject {
             return "Uploading recording (\(Int(progress * 100))%)…"
         case .finalizing:
             return "Finalizing upload…"
-        case .autoTitling(let stage):
+        case .postProcessing(let stage):
             switch stage {
             case .extractingAudio:
                 return
@@ -332,6 +332,12 @@ final class AppModel: ObservableObject {
             case .savingGeneratedTitle:
                 return
                     "Upload finished. Saving the generated title to the backend…"
+            case .generatingThumbnail:
+                return
+                    "Upload finished. Generating a JPEG thumbnail from the recording…"
+            case .uploadingThumbnail:
+                return
+                    "Upload finished. Uploading the generated thumbnail…"
             }
         case .completed:
             return "Upload complete. Share URL copied and opened."

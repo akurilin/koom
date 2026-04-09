@@ -175,10 +175,10 @@ private struct UploadStatusView: View {
             }
             .padding(.top, 4)
 
-        case .autoTitling(let stage):
+        case .postProcessing(let stage):
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text(autoTitleDescription(stage))
+                Text(postProcessingDescription(stage))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -239,7 +239,7 @@ private struct UploadStatusView: View {
             "Uploaded size: \(uploadedSize) from \(localSize) (\(savingsPercent)% smaller)."
     }
 
-    private func autoTitleDescription(_ stage: AutoTitleStage) -> String {
+    private func postProcessingDescription(_ stage: PostUploadStage) -> String {
         switch stage {
         case .extractingAudio:
             return
@@ -253,6 +253,12 @@ private struct UploadStatusView: View {
         case .savingGeneratedTitle:
             return
                 "Upload finished. Saving the generated title to the backend…"
+        case .generatingThumbnail:
+            return
+                "Upload finished. Generating a JPEG thumbnail from the recording…"
+        case .uploadingThumbnail:
+            return
+                "Upload finished. Uploading the generated thumbnail…"
         }
     }
 }

@@ -65,7 +65,7 @@ struct Autotitler: Sendable {
     /// failed or produced nothing usable. Never throws.
     func generateTitle(
         for fileURL: URL,
-        onProgress: @Sendable (AutoTitleStage) async -> Void
+        onProgress: @Sendable (PostUploadStage) async -> Void
     ) async -> String? {
         let filename = fileURL.lastPathComponent
 

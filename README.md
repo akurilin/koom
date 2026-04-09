@@ -122,6 +122,7 @@ npm run dev -w web
 
 | Task                               | Command                   |
 | ---------------------------------- | ------------------------- |
+| Clean rebuildable web caches       | `npm run web:clean`       |
 | Lint the web workspace             | `npm run lint`            |
 | Check formatting (Prettier)        | `npm run format:check`    |
 | Auto-fix formatting                | `npm run format`          |
@@ -132,6 +133,8 @@ npm run dev -w web
 | Web end-to-end tests (Playwright)  | `npm run test:e2e -w web` |
 | Build the macOS client bundle      | `./scripts/build-app.sh`  |
 | Run the macOS client in foreground | `./scripts/run.sh`        |
+
+`npm run web:clean` removes the web workspace's rebuildable artifacts (`web/.next`, `web/node_modules/.vite`, and Playwright/Vitest output directories). It refuses to run while a live `next dev` process still owns the workspace.
 
 A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, `swift format`, ShellCheck, and gitleaks against staged changes before any commit lands. Swift sources use Apple's official `swift-format` (ships with the Swift 6 toolchain) against the repo-level `.swift-format` config. The rest of the checks also run in GitHub Actions on push and pull requests, plus a full-history gitleaks scan.
 

@@ -9,6 +9,7 @@
   "scripts": {
     "prepare": "husky",
     "lint": "npm run lint -w web",
+    "web:clean": "npm run clean -w web",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "swift:format": "swift format format --in-place --recursive client/Sources",

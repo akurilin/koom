@@ -4,6 +4,7 @@
   "private": true,
   "description": "Koom web app and backend API routes.",
   "scripts": {
+    "clean": "node ../scripts/clean-web-cache.js",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

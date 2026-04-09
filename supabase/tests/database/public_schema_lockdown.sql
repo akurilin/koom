@@ -167,13 +167,64 @@ END $$;
 -- ────────────────────────────────────────────────────────────
 -- 5. No RLS policies are defined on any table in public.
 -- ────────────────────────────────────────────────────────────
--- koom deliberately uses zero RLS policies — the only
--- intended data path is the direct `pg` pool as `postgres`,
--- which has BYPASSRLS. A policy showing up here almost always
--- means someone copy-pasted a Supabase tutorial snippet that
--- assumed a different access model. If a policy is genuinely
--- desired in the future, update this check to allowlist the
--- specific policy name rather than permitting any policy.
+-- This check is deliberately strict: ANY policy on ANY table
+-- in public is treated as a failure. Read this whole comment
+-- before changing or removing the rule — the strictness is a
+-- tradeoff, not an oversight.
+--
+-- Why zero policies is the chosen default:
+--
+--   koom's only intended data path is the direct `pg` pool
+--   connection as `postgres`, which holds BYPASSRLS. In that
+--   model, RLS policies on public tables serve no purpose —
+--   the app never consults them (because BYPASSRLS), and the
+--   API role-switches (anon / authenticated) are already
+--   denied by default because they have zero grants (covered
+--   by invariants 2, 3, and 4 above). A policy showing up in
+--   this environment is therefore almost always one of:
+--
+--     a) Dead code from a copy-pasted Supabase tutorial that
+--        assumed the canonical "frontend talks to PostgREST,
+--        RLS gates access" model, or
+--     b) A live attempt to expose a table to PostgREST
+--        without taking the explicit opt-in path
+--        (DISABLE ROW LEVEL SECURITY + explicit GRANT in the
+--        same migration file that creates the table).
+--
+--   Both cases should fail loudly. The strict check catches
+--   both before they ship.
+--
+-- What this costs us:
+--
+--   The canonical Supabase access pattern — where tables ARE
+--   exposed via PostgREST and RLS policies gate per-row
+--   access — is not available in koom without explicitly
+--   relaxing this check. That's the tradeoff: we lose
+--   Supabase's default ergonomics in exchange for a single,
+--   auditable security invariant that cannot silently drift.
+--
+-- How to legitimately relax this check when you need to:
+--
+--   If a future feature genuinely needs policy-based access
+--   control (for example, you add a specific view that SHOULD
+--   be PostgREST-readable with row-level filtering), the
+--   correct response is NOT to delete the check or loosen the
+--   IS NOT NULL test. It's to update the WHERE clause below
+--   to allowlist the specific (schema, table, policy) tuples
+--   that are intended to exist, e.g.:
+--
+--       WHERE schemaname = 'public'
+--         AND (schemaname, tablename, policyname) NOT IN (
+--             ('public', 'exposed_view', 'anon_can_read_rows')
+--             -- add more named exceptions here as needed
+--         )
+--
+--   Keeping the allowlist inside this file — rather than
+--   deleting the check — preserves the "every public-schema
+--   policy is a named, reviewable, and grep-able decision"
+--   property. Future agents and humans reading the file will
+--   see exactly which policies are intentional and which are
+--   drift.
 
 DO $$
 DECLARE
@@ -191,7 +242,7 @@ BEGIN
      WHERE schemaname = 'public';
 
     IF offending IS NOT NULL THEN
-        RAISE EXCEPTION 'lockdown: RLS policies found in public (koom uses none by design): %', offending;
+        RAISE EXCEPTION 'lockdown: RLS policies found in public (koom uses none by design, see check 5 comment block for the tradeoff and how to allowlist specific policies): %', offending;
     END IF;
 END $$;
 

@@ -21,6 +21,14 @@
 - Follow the style and conventions of the official PostgreSQL manual for all migration SQL: uppercase keywords, lowercase `snake_case` identifiers, canonical type names (`TEXT`, `BIGINT`, `TIMESTAMPTZ`, `REAL`), and aligned column definitions. When in doubt about formatting a construct, check how the Postgres docs format the equivalent.
 - Migration files live in `supabase/migrations/` and use the `YYYYMMDDHHMMSS_short_description.sql` naming scheme so the Supabase CLI applies them in order. Each file should start with a comment block describing the intent of the migration and any non-obvious decisions.
 
+## Database Access Model (Supabase lockdown)
+
+- **koom deliberately does not use Supabase's auto-exposed APIs.** PostgREST, pg_graphql, Supabase Auth, Storage, and Realtime are all either dropped, neutralized, or left empty. The Next.js app connects to Postgres directly through the `pg` pool as the table-owning `postgres` role (which holds `BYPASSRLS`) and that is the only intended data path. If you ever have the urge to "just hit PostgREST from the browser for this one thing," stop and ask first — it breaks the security model.
+- **Every new `public.*` table is automatically locked down at creation time** by the DDL event trigger installed in `supabase/migrations/20260409193257_lock_down_public_access.sql`. The trigger runs `ALTER TABLE ... ENABLE ROW LEVEL SECURITY` on every new table in `public`, and the same migration flipped `ALTER DEFAULT PRIVILEGES` so new tables land without the `anon`/`authenticated` grants Supabase would otherwise auto-attach. Result: any new table is deny-by-default against the API role-switches without any per-migration discipline.
+- **To deliberately opt a future table INTO PostgREST** (e.g. if you ever want a genuinely public read path), do it explicitly in the same migration that creates the table: after `CREATE TABLE public.foo (...)`, add `ALTER TABLE public.foo DISABLE ROW LEVEL SECURITY;` (or write a policy) and `GRANT SELECT ON TABLE public.foo TO anon, authenticated;`. The exposure must be a conscious, reviewable choice — that's the whole point of inverting the default.
+- **Do not remove or rename `koom_lock_down_new_public_table()` or `koom_lock_down_new_public_tables`** without a replacement in the same migration. Losing the trigger silently re-opens the footgun. The `koom_` prefix distinguishes these from upstream Supabase-owned event triggers (`graphql_watch_*`, `pgrst_*`, `issue_*`); if you ever copy an updated version of Supabase's official `rls_auto_enable` pattern to modernize our implementation, remember to re-apply the `koom_` prefix before pushing.
+- **`pg_graphql` is intentionally dropped** in that same migration. If a future requirement genuinely needs GraphQL, reinstall with `CREATE EXTENSION pg_graphql;` in a new migration and document why the exposure is desirable; don't quietly re-add it.
+
 ## Commands
 
 - Build app bundle: `./scripts/build-app.sh`

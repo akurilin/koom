@@ -7,7 +7,7 @@
     "web"
   ],
   "scripts": {
-    "prepare": "husky",
+    "prepare": "husky || true",
     "lint": "npm run lint -w web",
     "web:clean": "npm run clean -w web",
     "format": "prettier --write .",

@@ -24,7 +24,8 @@
     "db:stop": "npx -y supabase@2.87.2 stop",
     "db:status": "npx -y supabase@2.87.2 status",
     "db:reset": "npx -y supabase@2.87.2 db reset",
-    "db:migration:new": "npx -y supabase@2.87.2 migration new"
+    "db:migration:new": "npx -y supabase@2.87.2 migration new",
+    "db:verify": "psql \"${DATABASE_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres}\" -v ON_ERROR_STOP=1 -f supabase/tests/database/public_schema_lockdown.sql"
   },
   "engines": {
     "node": ">=20"

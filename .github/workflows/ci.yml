@@ -160,6 +160,34 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Pre-create Supabase-flavored roles
+        shell: bash
+        # The `tests` job uses a vanilla postgres:16 service
+        # container, which doesn't have the Supabase-specific
+        # roles (`anon`, `authenticated`, `service_role`) that
+        # our migrations reference in REVOKE / ALTER DEFAULT
+        # PRIVILEGES statements. Create them as empty NOLOGIN
+        # roles so Supabase-flavored DDL applies cleanly. The
+        # roles have no login capability, so they're purely
+        # grant targets — no security implications for the
+        # ephemeral test DB.
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+                  CREATE ROLE anon NOLOGIN;
+              END IF;
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+                  CREATE ROLE authenticated NOLOGIN;
+              END IF;
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+                  CREATE ROLE service_role NOLOGIN BYPASSRLS;
+              END IF;
+          END $$;
+          SQL
+
       - name: Apply database migrations
         shell: bash
         run: |
@@ -168,6 +196,9 @@ jobs:
             echo "applying $f"
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
           done
+
+      - name: Verify public schema lockdown invariants
+        run: npm run db:verify
 
       - name: Write web/.env.test.local from CI env
         shell: bash

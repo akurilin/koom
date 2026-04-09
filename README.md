@@ -20,6 +20,7 @@ Loom is great, but you don't actually own your recordings, you pay monthly, and 
 - **Deliberately narrow scope.** Single-tenant, one admin secret, no teams, no comments, no stored transcripts, no search beyond a simple list. The whole stack fits in your head.
 - **Cheap steady state.** Vercel Hobby + Supabase free tier + R2 free tier. The only variable cost is R2 storage above 10 GB.
 - **Private auto-titles.** Recordings get a short descriptive title generated locally via WhisperKit + Ollama — the audio never leaves your machine, and the feature is an opt-out, not an extra subscription.
+- **Local thumbnails.** Recordings also get a sidecar JPEG generated on-device and uploaded next to the video in R2, so list views can use a lightweight image instead of seeking into the MP4 whenever the thumbnail is available.
 
 v1 intentionally leaves a lot out: no accounts, no comments, no stored transcripts or captions, no transcoding, no custom domains. See [`docs/monorepo-backend-plan.md`](docs/monorepo-backend-plan.md) for the full decision record.
 
@@ -46,9 +47,9 @@ Deployment targets:
 1. The macOS client records to `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4` and keeps the local copy permanently. Recording is staged through a fragmented MP4 session so a crash mid-capture can be recovered on the next launch (see [Crash recovery](#crash-recovery)).
 2. On completion, the client asks `POST /api/admin/uploads/init` for a presigned R2 `PUT` URL and writes a `pending` row to Postgres.
 3. The client `PUT`s the file straight to R2 — bytes never flow through Vercel.
-4. In parallel with step 3, the local auto-titler extracts the mic track via `AVAssetReader`, transcribes it in-process with WhisperKit, and asks a local Ollama model for a short title. Nothing leaves the machine, and every stage is best-effort — a missing mic or an Ollama that isn't running just leaves the title blank.
-5. `POST /api/admin/uploads/complete` `HEAD`s the object to confirm it landed, flips the row to `complete`, and returns the share URL. If the auto-titler produced a title by then, the client `PATCH`es it onto the row.
-6. The client copies the share URL to the clipboard and opens it. Anyone with the link can watch at `/r/[id]` (with `?t=` timestamp deep-linking).
+4. In parallel with step 3, local post-upload processing kicks off on the Mac. The auto-titler extracts the mic track via `AVAssetReader`, transcribes it in-process with WhisperKit, and asks a local Ollama model for a short title. The thumbnail generator also grabs a JPEG still frame from the finalized MP4. Nothing leaves the machine except the derived title/thumbnail artifacts you choose to upload back into your own stack.
+5. `POST /api/admin/uploads/complete` `HEAD`s the object to confirm it landed, flips the row to `complete`, and returns the share URL. If the auto-titler produced a title, the client `PATCH`es it onto the row. If thumbnail generation succeeded, the client uploads the JPEG to `PUT /api/admin/recordings/[id]/thumbnail`, and the backend stores it in R2 at `recordings/{id}/thumbnail-v1.jpg`.
+6. The client copies the share URL to the clipboard and opens it. Anyone with the link can watch at `/r/[id]` (with `?t=` timestamp deep-linking). The recordings list APIs expose `thumbnailUrl`; list views prefer that sidecar JPEG and fall back to `videoUrl#t=0.1` if no thumbnail exists.
 
 The Next.js app holds all R2 and Postgres credentials. The desktop client only knows the web URL and the admin secret; every interaction with R2 is gated by short-lived presigned URLs.
 
@@ -88,7 +89,7 @@ docs/
 - Node.js 20+ for the web app and operator scripts
 - A Cloudflare account (R2 free tier is enough to start)
 - A Supabase project — or Docker, for the local Supabase stack via `npm run db:start`
-- Optional: [Ollama](https://ollama.com) if you want the auto-titler (`brew install ollama && ollama pull gemma4:e4b`). `./scripts/run.sh` now preflights the configured Ollama endpoint, auto-starts `ollama serve` for the default local URL when needed, restarts a stale local `ollama serve` once if warmup fails, and refuses to launch by default if the model still is not ready. Set `KOOM_AUTOTITLE_ENABLED=false` to disable the feature entirely or `KOOM_OLLAMA_REQUIRE_READY=false` to allow a degraded launch.
+- Optional: [Ollama](https://ollama.com) if you want local title generation (`brew install ollama && ollama pull gemma4:e4b`). koom uses Ollama as the local LLM that turns Whisper transcripts into short recording titles. `./scripts/run.sh` now preflights the configured Ollama endpoint, auto-starts `ollama serve` for the default local URL when needed, restarts a stale local `ollama serve` once if warmup fails, and refuses to launch by default if the model still is not ready. Set `KOOM_AUTOTITLE_ENABLED=false` to disable the feature entirely or `KOOM_OLLAMA_REQUIRE_READY=false` to allow a degraded launch.
 - Optional local tooling so the pre-commit hook can run: `brew install gitleaks shellcheck`
 
 The macOS client also needs Screen Recording permission, Camera permission (if using the face overlay), and Microphone permission (if recording narration).
@@ -113,6 +114,7 @@ npm run doctor
 npm run dev -w web
 
 # 6. build and run the macOS client
+#    (preflights Ollama by default when local title generation is enabled)
 ./scripts/run.sh
 ```
 
@@ -172,7 +174,7 @@ Under the hood:
 
 ## Auto-titling
 
-Recordings that otherwise would have stayed untitled get a short descriptive title generated on the same machine that did the recording — no cloud APIs, no third-party telemetry, no server-side worker. The pipeline runs once per recording and every stage is best-effort: any failure (no mic track, Ollama offline, empty transcript) logs a line and leaves the `title` column `NULL`. The upload flow is otherwise untouched.
+Recordings that otherwise would have stayed untitled get a short descriptive title generated on the same machine that did the recording — no cloud APIs, no third-party telemetry, no server-side worker. The pipeline runs once per recording during post-upload processing. The title-generation steps themselves remain best-effort: any failure (no mic track, Ollama request failure, empty transcript) logs a line and leaves the `title` column `NULL`. In the normal `./scripts/run.sh` workflow, though, Ollama readiness is preflighted up front and app launch fails by default if auto-titling is enabled but the configured model is not actually ready.
 
 Stages, all in-process on the macOS client:
 
@@ -194,3 +196,16 @@ All five environment variables are optional. Defaults are hard-coded in `Autotit
 `./scripts/run.sh` now performs the stronger local-dev preflight: if `KOOM_AUTOTITLE_ENABLED` is on, it verifies that Ollama is reachable, the configured model is pulled, and the model can answer a tiny warmup request. For the default local URL it will try to start `ollama serve` automatically before giving up, and if the server is reachable but returns a model-load failure it will restart local Ollama once and retry. By default a failed preflight aborts app launch; set `KOOM_OLLAMA_REQUIRE_READY=false` to allow a degraded launch instead.
 
 `npm run doctor` still has an "Auto-title (Ollama)" section that verifies Ollama is reachable and the configured model has been pulled. Those checks remain non-fatal so the rest of the doctor sweep still runs.
+
+## Thumbnail generation
+
+Each completed recording also gets a best-effort JPEG thumbnail generated locally on the macOS client. This stays intentionally simple: no queue, no worker, no background cloud media pipeline.
+
+Stages, all on the macOS client:
+
+1. **Extract.** `AVAssetImageGenerator` reads a still frame from the finalized MP4 and encodes it as JPEG. No `ffmpeg`, no full-file re-download from R2, and no mutation of the source recording.
+2. **Upload.** The client sends that JPEG to `PUT /api/admin/recordings/[id]/thumbnail`.
+3. **Store.** The web backend writes the sidecar object to Cloudflare R2 at `recordings/{id}/thumbnail-v1.jpg`.
+4. **Render.** Admin/public recording payloads expose `thumbnailUrl`, and list views use that image first, falling back to `videoUrl#t=0.1` if the sidecar JPEG is missing.
+
+Like auto-titling, thumbnail generation is best-effort. A thumbnail failure never blocks the MP4 upload, never prevents the share URL from opening, and never deletes or mutates the local recording.

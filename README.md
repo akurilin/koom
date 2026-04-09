@@ -75,6 +75,7 @@ supabase/
   config.toml            local stack configuration
 scripts/
   doctor.ts              read-only verification sweep across the full stack
+  r2-orphans.ts          audit or delete orphaned recording objects in R2
   r2-setup.ts            provisions the production R2 bucket + credentials
   r2-setup-test.ts       provisions the isolated E2E test bucket
   build-app.sh, run.sh   thin wrappers that delegate into client/scripts
@@ -118,6 +119,8 @@ npm run dev -w web
 
 `npm run doctor` is the authoritative "is this environment actually usable?" check. It's always safe to re-run and exercises the database, R2 credentials, and HTTP range support that browser `<video>` scrubbing depends on.
 
+`npm run r2:orphans` audits the shared R2 bucket for `recordings/{id}/...` objects that no longer have a matching row in the configured database set. It is dry-run by default; add `-- --delete` to remove confirmed orphans, and add `-- --prod-db-url ...` or `-- --prod-env-file ...` when you want to union a production database into the check.
+
 ## Development
 
 | Task                               | Command                   |
@@ -129,6 +132,7 @@ npm run dev -w web
 | Lint Swift sources                 | `npm run swift:lint`      |
 | Auto-fix Swift formatting          | `npm run swift:format`    |
 | ShellCheck every tracked `.sh`     | `npm run shellcheck`      |
+| Audit orphaned R2 recording files  | `npm run r2:orphans`      |
 | Web unit + integration tests       | `npm test -w web`         |
 | Web end-to-end tests (Playwright)  | `npm run test:e2e -w web` |
 | Build the macOS client bundle      | `./scripts/build-app.sh`  |

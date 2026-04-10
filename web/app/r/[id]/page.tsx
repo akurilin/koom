@@ -107,6 +107,8 @@ export default async function WatchPage(
           videoUrl={videoUrl}
           contentType={recording.contentType}
           displayTitle={displayTitle}
+          originalFilename={recording.originalFilename}
+          isAdmin={isAdmin}
           createdAt={recording.createdAt.toISOString()}
           durationSeconds={recording.durationSeconds}
           sizeBytes={recording.sizeBytes}

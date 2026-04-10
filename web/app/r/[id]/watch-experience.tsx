@@ -22,6 +22,8 @@ interface WatchExperienceProps {
   videoUrl: string;
   contentType: string;
   displayTitle: string;
+  originalFilename: string;
+  isAdmin: boolean;
   createdAt: string;
   durationSeconds: number | null;
   sizeBytes: number;
@@ -34,6 +36,8 @@ export function WatchExperience({
   videoUrl,
   contentType,
   displayTitle,
+  originalFilename,
+  isAdmin,
   createdAt,
   durationSeconds,
   sizeBytes,
@@ -47,6 +51,71 @@ export function WatchExperience({
     string | null
   >(null);
   const [currentTime, setCurrentTime] = useState(0);
+
+  // Inline title editing (admin only)
+  const [title, setTitle] = useState(displayTitle);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(displayTitle);
+  const [isSavingTitle, setIsSavingTitle] = useState(false);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+
+  const startEditing = useCallback(() => {
+    if (!isAdmin) return;
+    setDraftTitle(title);
+    setIsEditingTitle(true);
+  }, [isAdmin, title]);
+
+  useEffect(() => {
+    if (isEditingTitle && titleInputRef.current) {
+      titleInputRef.current.focus();
+      titleInputRef.current.select();
+    }
+  }, [isEditingTitle]);
+
+  const cancelEditing = useCallback(() => {
+    setIsEditingTitle(false);
+    setDraftTitle(title);
+  }, [title]);
+
+  const saveTitle = useCallback(async () => {
+    const trimmed = draftTitle.trim();
+    const newTitle = trimmed === "" ? null : trimmed;
+    const newDisplay = newTitle ?? originalFilename;
+
+    // No change — just close the editor.
+    if (newDisplay === title) {
+      setIsEditingTitle(false);
+      return;
+    }
+
+    setIsSavingTitle(true);
+    try {
+      const res = await fetch(`/api/admin/recordings/${recordingId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: newTitle }),
+      });
+      if (res.ok) {
+        setTitle(newDisplay);
+        setIsEditingTitle(false);
+      }
+    } finally {
+      setIsSavingTitle(false);
+    }
+  }, [draftTitle, originalFilename, title, recordingId]);
+
+  const handleTitleKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveTitle();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        cancelEditing();
+      }
+    },
+    [saveTitle, cancelEditing],
+  );
 
   // On mount, call the GET comments endpoint to ensure the
   // koom-commenter cookie is set via the Set-Cookie header.
@@ -114,9 +183,72 @@ export function WatchExperience({
           onMarkerClick={seekAndHighlight}
         />
         <div className="mt-6 sm:mt-8">
-          <h1 className="text-xl sm:text-2xl font-medium leading-tight break-words">
-            {displayTitle}
-          </h1>
+          {isEditingTitle ? (
+            <div className="flex items-center gap-2">
+              <input
+                ref={titleInputRef}
+                type="text"
+                value={draftTitle}
+                onChange={(e) => setDraftTitle(e.target.value)}
+                onKeyDown={handleTitleKeyDown}
+                onBlur={cancelEditing}
+                disabled={isSavingTitle}
+                maxLength={200}
+                className="flex-1 min-w-0 text-xl sm:text-2xl font-medium leading-tight bg-zinc-900 text-zinc-100 border border-zinc-700 rounded-md px-3 py-1.5 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
+              />
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={saveTitle}
+                disabled={isSavingTitle}
+                className="shrink-0 p-1.5 rounded-md text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800 transition disabled:opacity-50"
+                aria-label="Save title"
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 18 18"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <polyline points="3.5 9.5 7 13 14.5 5.5" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={cancelEditing}
+                disabled={isSavingTitle}
+                className="shrink-0 p-1.5 rounded-md text-zinc-400 hover:text-red-400 hover:bg-zinc-800 transition disabled:opacity-50"
+                aria-label="Cancel rename"
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 18 18"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <line x1="5" y1="5" x2="13" y2="13" />
+                  <line x1="13" y1="5" x2="5" y2="13" />
+                </svg>
+              </button>
+            </div>
+          ) : (
+            <h1
+              className={`text-xl sm:text-2xl font-medium leading-tight break-words${isAdmin ? " cursor-pointer rounded-md transition hover:bg-zinc-800/60 -mx-2 px-2 py-1" : ""}`}
+              onClick={isAdmin ? startEditing : undefined}
+              title={isAdmin ? "Click to rename" : undefined}
+            >
+              {title}
+            </h1>
+          )}
           <div className="mt-3 text-sm text-zinc-400 flex flex-wrap gap-x-4 gap-y-1">
             <span>{formatDate(createdAt)}</span>
             {durationSeconds !== null && (

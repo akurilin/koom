@@ -212,8 +212,9 @@ struct SettingsView: View {
         optimizeUploads = compressionSettings.optimizeUploads
 
         do {
-            devDraft.adminSecret = try KoomConfig.loadAdminSecret(for: .dev) ?? ""
-            prodDraft.adminSecret = try KoomConfig.loadAdminSecret(for: .prod) ?? ""
+            let adminSecrets = try KoomConfig.loadAdminSecrets()
+            devDraft.adminSecret = adminSecrets.dev
+            prodDraft.adminSecret = adminSecrets.prod
         } catch {
             errorMessage =
                 "Could not read admin secret from Keychain: \(error.localizedDescription)"
@@ -258,8 +259,8 @@ struct SettingsView: View {
                 KoomConfig.backendURL(for: .dev)?.absoluteString ?? ""
             prodDraft.backendURLString =
                 KoomConfig.backendURL(for: .prod)?.absoluteString ?? ""
-            devDraft.adminSecret = try KoomConfig.loadAdminSecret(for: .dev) ?? ""
-            prodDraft.adminSecret = try KoomConfig.loadAdminSecret(for: .prod) ?? ""
+            devDraft.adminSecret = normalizedSecret(devDraft.adminSecret)
+            prodDraft.adminSecret = normalizedSecret(prodDraft.adminSecret)
         } catch {
             errorMessage =
                 "Could not save environment settings: \(error.localizedDescription)"
@@ -305,12 +306,16 @@ struct SettingsView: View {
         _ rawSecret: String,
         for environment: KoomEnvironment
     ) throws {
-        let secret = rawSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = normalizedSecret(rawSecret)
         if secret.isEmpty {
             try KoomConfig.clearAdminSecret(for: environment)
         } else {
             try KoomConfig.saveAdminSecret(secret, for: environment)
         }
+    }
+
+    private func normalizedSecret(_ rawSecret: String) -> String {
+        rawSecret.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func recordingsDirectoryPath(

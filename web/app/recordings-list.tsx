@@ -351,13 +351,7 @@ function RecordingCard({
         </div>
       </div>
 
-      <div className="flex items-center justify-between border-t border-zinc-800 px-4 py-2">
-        <Link
-          href={watchHref}
-          className="text-xs text-sky-400 hover:text-sky-300"
-        >
-          Watch →
-        </Link>
+      <div className="flex items-center justify-end border-t border-zinc-800 px-4 py-2">
         <button
           type="button"
           data-testid="delete-button"

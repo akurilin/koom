@@ -149,6 +149,9 @@ private struct CameraPreviewView: NSViewRepresentable {
 }
 
 private final class CameraPreviewHostView: NSView {
+    private var pendingMirroringWorkItem: DispatchWorkItem?
+    private var remainingMirroringAttempts = 0
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -165,13 +168,57 @@ private final class CameraPreviewHostView: NSView {
         layer as! AVCaptureVideoPreviewLayer
     }
 
+    deinit {
+        pendingMirroringWorkItem?.cancel()
+    }
+
     func applyMirroring() {
-        guard let connection = previewLayer.connection, connection.isVideoMirroringSupported else {
+        if applyMirroringIfPossible() {
+            pendingMirroringWorkItem?.cancel()
+            pendingMirroringWorkItem = nil
+            remainingMirroringAttempts = 0
             return
+        }
+
+        scheduleMirroringRetry()
+    }
+
+    @discardableResult
+    private func applyMirroringIfPossible() -> Bool {
+        guard let connection = previewLayer.connection, connection.isVideoMirroringSupported else {
+            return false
         }
 
         connection.automaticallyAdjustsVideoMirroring = false
         connection.isVideoMirrored = true
+        return true
+    }
+
+    private func scheduleMirroringRetry() {
+        guard pendingMirroringWorkItem == nil else {
+            return
+        }
+
+        remainingMirroringAttempts = max(remainingMirroringAttempts, 20)
+        queueMirroringRetry()
+    }
+
+    private func queueMirroringRetry() {
+        guard remainingMirroringAttempts > 0 else {
+            pendingMirroringWorkItem = nil
+            return
+        }
+
+        remainingMirroringAttempts -= 1
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingMirroringWorkItem = nil
+            if !self.applyMirroringIfPossible() {
+                self.queueMirroringRetry()
+            }
+        }
+        pendingMirroringWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: workItem)
     }
 
     override func layout() {

@@ -69,7 +69,10 @@ export function CommentsPane({
       const trimmedBody = body.trim();
       if (!trimmedBody) return;
 
-      const ts = timestamp === "" ? Math.floor(currentTime) : Number(timestamp);
+      const ts =
+        timestamp === ""
+          ? Math.round(currentTime * 10) / 10
+          : Number(timestamp);
       if (!Number.isFinite(ts) || ts < 0) {
         setError("Invalid timestamp");
         return;
@@ -184,10 +187,10 @@ export function CommentsPane({
               data-testid="comment-timestamp-input"
               type="number"
               min="0"
-              step="1"
+              step="0.1"
               value={timestamp}
               onChange={(e) => setTimestamp(e.target.value)}
-              placeholder={String(Math.floor(currentTime))}
+              placeholder={String(Math.round(currentTime * 10) / 10)}
               className="w-16 bg-zinc-800 text-zinc-100 text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-sky-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
             />
             <span>sec</span>
@@ -294,8 +297,11 @@ function CommentItem({
 }
 
 function formatTimestamp(seconds: number): string {
-  const total = Math.max(0, Math.round(seconds));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
+  const clamped = Math.max(0, seconds);
+  const whole = Math.floor(clamped);
+  const tenths = Math.round((clamped - whole) * 10);
+  const m = Math.floor(whole / 60);
+  const s = whole % 60;
+  const base = `${m}:${s.toString().padStart(2, "0")}`;
+  return tenths > 0 ? `${base}.${tenths}` : base;
 }

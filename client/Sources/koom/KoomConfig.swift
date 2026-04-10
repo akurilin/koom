@@ -17,6 +17,70 @@ import Foundation
 /// fast enough that there's no value in making them async, and the
 /// simpler shape matches how the rest of the app is structured.
 enum KoomConfig {
+    struct AdminSecrets: Equatable {
+        var dev: String
+        var prod: String
+    }
+
+    private struct StoredAdminSecrets: Codable, Equatable {
+        var dev: String?
+        var prod: String?
+
+        subscript(environment: KoomEnvironment) -> String? {
+            get {
+                switch environment {
+                case .dev:
+                    dev
+                case .prod:
+                    prod
+                }
+            }
+            set {
+                switch environment {
+                case .dev:
+                    dev = newValue
+                case .prod:
+                    prod = newValue
+                }
+            }
+        }
+
+        var normalized: StoredAdminSecrets {
+            StoredAdminSecrets(
+                dev: Self.normalize(dev),
+                prod: Self.normalize(prod)
+            )
+        }
+
+        var isEmpty: Bool {
+            dev == nil && prod == nil
+        }
+
+        func exposedValues() -> AdminSecrets {
+            AdminSecrets(
+                dev: dev ?? "",
+                prod: prod ?? ""
+            )
+        }
+
+        private static func normalize(_ secret: String?) -> String? {
+            guard let secret else { return nil }
+            let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
+    private enum ConfigError: LocalizedError {
+        case corruptedAdminSecretsPayload
+
+        var errorDescription: String? {
+            switch self {
+            case .corruptedAdminSecretsPayload:
+                return "Stored admin secrets could not be decoded from Keychain."
+            }
+        }
+    }
+
     private static let activeEnvironmentKey = "com.koom.local.activeEnvironment"
     private static let legacyEnvironmentKey = "com.koom.local.legacyEnvironment"
     private static let legacyBackendURLKey = "com.koom.local.backendURL"
@@ -27,10 +91,13 @@ enum KoomConfig {
     /// the user's system. `account` is `"default"` because koom is
     /// single-user — if we ever add multi-account support, this is
     /// where that distinction would live.
+    private static let bundledKeychainService = "com.koom.local.adminSecrets"
     private static let legacyKeychainService = "com.koom.local.adminSecret"
     private static let keychainAccount = "default"
 
     private static var defaults: UserDefaults { .standard }
+    @MainActor private static var cachedAdminSecrets = StoredAdminSecrets()
+    @MainActor private static var hasCachedAdminSecrets = false
 
     static var activeEnvironment: KoomEnvironment {
         get {
@@ -122,73 +189,54 @@ enum KoomConfig {
 
     /// Returns the stored admin secret, or `nil` if none is stored.
     /// Throws only on unexpected Keychain errors (not on "missing").
+    @MainActor
     static func loadAdminSecret() throws -> String? {
         try loadAdminSecret(for: activeEnvironment)
     }
 
+    @MainActor
     static func loadAdminSecret(
         for environment: KoomEnvironment
     ) throws -> String? {
-        if let secret = try Keychain.load(
-            service: keychainService(for: environment),
-            account: keychainAccount
-        ) {
-            return secret
-        }
+        let secrets = try loadStoredAdminSecrets()
+        return secrets[environment]
+    }
 
-        if environment == legacyEnvironment {
-            return try Keychain.load(
-                service: legacyKeychainService,
-                account: keychainAccount
-            )
-        }
-
-        return nil
+    @MainActor
+    static func loadAdminSecrets() throws -> AdminSecrets {
+        try loadStoredAdminSecrets().exposedValues()
     }
 
     /// Overwrites any existing admin secret with the given value.
     /// Trims whitespace so pasting the secret with a trailing newline
     /// (easy to do from a shell) doesn't silently break auth.
+    @MainActor
     static func saveAdminSecret(_ secret: String) throws {
         try saveAdminSecret(secret, for: activeEnvironment)
     }
 
+    @MainActor
     static func saveAdminSecret(
         _ secret: String,
         for environment: KoomEnvironment
     ) throws {
-        let trimmed = secret.trimmingCharacters(in: .whitespacesAndNewlines)
-        try Keychain.save(
-            service: keychainService(for: environment),
-            account: keychainAccount,
-            value: trimmed
-        )
-        if environment == legacyEnvironment {
-            try Keychain.save(
-                service: legacyKeychainService,
-                account: keychainAccount,
-                value: trimmed
-            )
-        }
+        var secrets = try loadStoredAdminSecrets()
+        secrets[environment] = secret
+        try persistStoredAdminSecrets(secrets)
     }
 
+    @MainActor
     static func clearAdminSecret() throws {
         try clearAdminSecret(for: activeEnvironment)
     }
 
+    @MainActor
     static func clearAdminSecret(
         for environment: KoomEnvironment
     ) throws {
-        try Keychain.delete(
-            service: keychainService(for: environment),
-            account: keychainAccount
-        )
-        if environment == legacyEnvironment {
-            try Keychain.delete(
-                service: legacyKeychainService,
-                account: keychainAccount
-            )
-        }
+        var secrets = try loadStoredAdminSecrets()
+        secrets[environment] = nil
+        try persistStoredAdminSecrets(secrets)
     }
 
     private static func keychainService(
@@ -197,16 +245,135 @@ enum KoomConfig {
         "com.koom.local.adminSecret.\(environment.rawValue)"
     }
 
+    @MainActor
+    private static func loadStoredAdminSecrets() throws -> StoredAdminSecrets {
+        if hasCachedAdminSecrets {
+            return cachedAdminSecrets
+        }
+
+        let secrets = try loadStoredAdminSecretsFromKeychain()
+        cachedAdminSecrets = secrets
+        hasCachedAdminSecrets = true
+        return secrets
+    }
+
+    @MainActor
+    private static func loadStoredAdminSecretsFromKeychain() throws -> StoredAdminSecrets {
+        if let encodedSecrets = try Keychain.load(
+            service: bundledKeychainService,
+            account: keychainAccount
+        ) {
+            return try decodeStoredAdminSecrets(encodedSecrets)
+        }
+
+        let legacySecrets = try loadLegacyStoredAdminSecrets()
+
+        if !legacySecrets.isEmpty {
+            try persistStoredAdminSecrets(
+                legacySecrets,
+                removeLegacyItems: true
+            )
+        }
+
+        return legacySecrets
+    }
+
+    private static func decodeStoredAdminSecrets(
+        _ encodedSecrets: String
+    ) throws -> StoredAdminSecrets {
+        let data = Data(encodedSecrets.utf8)
+
+        do {
+            return try JSONDecoder().decode(
+                StoredAdminSecrets.self,
+                from: data
+            ).normalized
+        } catch {
+            throw ConfigError.corruptedAdminSecretsPayload
+        }
+    }
+
+    private static func loadLegacyStoredAdminSecrets() throws -> StoredAdminSecrets {
+        var secrets = StoredAdminSecrets()
+
+        secrets[.dev] = try Keychain.load(
+            service: keychainService(for: .dev),
+            account: keychainAccount
+        )
+        secrets[.prod] = try Keychain.load(
+            service: keychainService(for: .prod),
+            account: keychainAccount
+        )
+
+        if secrets[legacyEnvironment] == nil {
+            secrets[legacyEnvironment] = try Keychain.load(
+                service: legacyKeychainService,
+                account: keychainAccount
+            )
+        }
+
+        return secrets.normalized
+    }
+
+    @MainActor
+    private static func persistStoredAdminSecrets(
+        _ secrets: StoredAdminSecrets,
+        removeLegacyItems: Bool = true
+    ) throws {
+        let normalizedSecrets = secrets.normalized
+
+        if normalizedSecrets.isEmpty {
+            try Keychain.delete(
+                service: bundledKeychainService,
+                account: keychainAccount
+            )
+        } else {
+            let encodedSecrets = try String(
+                decoding: JSONEncoder().encode(normalizedSecrets),
+                as: UTF8.self
+            )
+            try Keychain.save(
+                service: bundledKeychainService,
+                account: keychainAccount,
+                value: encodedSecrets
+            )
+        }
+
+        if removeLegacyItems {
+            try deleteLegacyAdminSecretItems()
+        }
+
+        cachedAdminSecrets = normalizedSecrets
+        hasCachedAdminSecrets = true
+    }
+
+    private static func deleteLegacyAdminSecretItems() throws {
+        try Keychain.delete(
+            service: keychainService(for: .dev),
+            account: keychainAccount
+        )
+        try Keychain.delete(
+            service: keychainService(for: .prod),
+            account: keychainAccount
+        )
+        try Keychain.delete(
+            service: legacyKeychainService,
+            account: keychainAccount
+        )
+    }
+
     // MARK: Convenience
 
     /// True if both the backend URL and the admin secret are present.
     /// Used for the first-run prompt and for gating the upload path.
     /// Silently returns `false` on any Keychain read error — those
     /// surface elsewhere with a proper error message.
+    @MainActor
     static var isFullyConfigured: Bool {
         isFullyConfigured(for: activeEnvironment)
     }
 
+    @MainActor
     static func isFullyConfigured(
         for environment: KoomEnvironment
     ) -> Bool {

@@ -120,6 +120,21 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func warmBackgroundServices() {
+        Task { [uploader] in
+            let issue = await uploader.prepareForLaunch()
+            guard let issue else { return }
+
+            await MainActor.run {
+                if self.statusMessage == "Ready." {
+                    self.statusMessage =
+                        "Auto-title is unavailable right now. See Troubleshooting > Reveal Logs in Finder."
+                }
+            }
+            AppLog.error("Background services: \(issue)")
+        }
+    }
+
     // MARK: - Catch-up
 
     func catchUpRecordings() {
@@ -329,6 +344,9 @@ final class AppModel: ObservableObject {
             return "Finalizing upload…"
         case .postProcessing(let stage):
             switch stage {
+            case .preparingOllama(let modelName):
+                return
+                    "Upload finished. Preparing Ollama (\(modelName)) for local title generation…"
             case .extractingAudio:
                 return
                     "Upload finished. Extracting microphone audio for transcription…"

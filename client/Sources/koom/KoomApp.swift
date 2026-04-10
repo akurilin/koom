@@ -43,6 +43,12 @@ struct KoomApp: App {
                 }
                 .keyboardShortcut("u", modifiers: [.command, .shift])
             }
+
+            CommandMenu("Troubleshooting") {
+                Button("Reveal Logs in Finder") {
+                    AppLog.revealLogsInFinder()
+                }
+            }
         }
     }
 }

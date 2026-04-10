@@ -15,9 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppLog.info("koom launched.")
+        AppLog.info("Persistent logs: \(AppLog.currentLogURL.path)")
         NSApp.setActivationPolicy(.regular)
         showControlPanel()
         maybePromptForSettings()
+        model.warmBackgroundServices()
         maybeRecoverInterruptedRecording()
     }
 

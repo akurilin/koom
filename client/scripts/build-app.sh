@@ -4,10 +4,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT_DIR/.build"
-APP_PATH="$BUILD_DIR/koom.app"
-EXECUTABLE_PATH="$BUILD_DIR/debug/koom"
+BUILD_CONFIGURATION="debug"
+APP_PATH=""
+EXECUTABLE_PATH=""
 APP_ICON_SOURCE_PATH="$ROOT_DIR/assets/camera-lens-glitch.png"
-APP_ICON_PATH="$APP_PATH/Contents/Resources/AppIcon.icns"
+APP_ICON_PATH=""
 CLEAN_BUILD=false
 DEFAULT_CODESIGN_IDENTITY="koom Local Dev"
 KOOM_CODESIGN_IDENTITY="${KOOM_CODESIGN_IDENTITY:-}"
@@ -18,6 +19,8 @@ Usage: ./scripts/build-app.sh [--clean]
 
 Options:
   --clean    Remove .build before invoking swift build.
+  --release  Build a release bundle instead of the default debug bundle.
+  --debug    Build a debug bundle explicitly.
   --help     Show this help text.
 
 Environment:
@@ -38,6 +41,14 @@ while [[ $# -gt 0 ]]; do
             CLEAN_BUILD=true
             shift
             ;;
+        --release)
+            BUILD_CONFIGURATION="release"
+            shift
+            ;;
+        --debug)
+            BUILD_CONFIGURATION="debug"
+            shift
+            ;;
         --help)
             usage
             exit 0
@@ -49,6 +60,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+APP_PATH="$BUILD_DIR/$BUILD_CONFIGURATION/koom.app"
+EXECUTABLE_PATH="$BUILD_DIR/$BUILD_CONFIGURATION/koom"
+APP_ICON_PATH="$APP_PATH/Contents/Resources/AppIcon.icns"
 
 # Portable replacement for zsh's ${var:A} modifier: resolves symlinks on the
 # parent directory via `cd && pwd -P`, which works on both macOS (BSD) and
@@ -67,17 +82,18 @@ canonicalize_path() {
 
 safe_remove_dir() {
     local target_path="$1"
-    local canonical_root canonical_target allowed_build_dir
+    local canonical_root canonical_target allowed_build_dir allowed_configuration_dir
     canonical_root=$(cd "$ROOT_DIR" && pwd -P)
     canonical_target=$(canonicalize_path "$target_path")
     allowed_build_dir="$canonical_root/.build"
+    allowed_configuration_dir="$allowed_build_dir/$BUILD_CONFIGURATION"
 
     if [[ ! -f "$canonical_root/Package.swift" ]]; then
         echo "Refusing to clean because Package.swift was not found at $canonical_root" >&2
         exit 1
     fi
 
-    if [[ "$canonical_target" != "$allowed_build_dir" ]]; then
+    if [[ "$canonical_target" != "$allowed_build_dir" && "$canonical_target" != "$allowed_configuration_dir" ]]; then
         echo "Refusing to delete unexpected path: $canonical_target" >&2
         exit 1
     fi
@@ -145,7 +161,7 @@ if [[ "$CLEAN_BUILD" == true ]]; then
     safe_remove_dir "$BUILD_DIR"
 fi
 
-swift build -c debug --product koom >&2
+swift build -c "$BUILD_CONFIGURATION" --product koom >&2
 
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 

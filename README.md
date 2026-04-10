@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](https://swift.org)
 [![Next.js 16](https://img.shields.io/badge/Next.js-16-000000?logo=next.js&logoColor=white)](https://nextjs.org)
-[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)](https://developer.apple.com/macos/)
+[![macOS 26+](https://img.shields.io/badge/macOS-26%2B-000000?logo=apple&logoColor=white)](https://developer.apple.com/macos/)
 [![style: prettier](https://img.shields.io/badge/style-prettier-ff69b4.svg)](https://prettier.io)
 [![lint: eslint](https://img.shields.io/badge/lint-eslint-4B32C3.svg)](https://eslint.org)
 
@@ -59,7 +59,7 @@ The Next.js app holds all R2 and Postgres credentials. The desktop client only k
 client/                  macOS Swift package (recorder + uploader)
   Sources/koom/          SwiftUI app, ScreenCaptureKit, upload pipeline
   Package.swift
-  scripts/               build-app.sh, run.sh
+  scripts/               build-app.sh, run.sh, install-app.sh
 web/                     Next.js app (frontend + backend)
   app/                   App Router pages
     r/[id]/              public watch page
@@ -79,18 +79,18 @@ scripts/
   r2-orphans.ts          audit or delete orphaned recording objects in R2
   r2-setup.ts            provisions the production R2 bucket + credentials
   r2-setup-test.ts       provisions the isolated E2E test bucket
-  build-app.sh, run.sh   thin wrappers that delegate into client/scripts
+  build-app.sh, run.sh, install-app.sh   thin wrappers that delegate into client/scripts
 docs/
   monorepo-backend-plan.md   architectural decision record
 ```
 
 ## Requirements
 
-- macOS 14+ for the desktop client (bumped from 13 when WhisperKit landed)
+- macOS 26 Tahoe or later for the desktop client
 - Node.js 20+ for the web app and operator scripts
 - A Cloudflare account (R2 free tier is enough to start)
 - A Supabase project — or Docker, for the local Supabase stack via `npm run db:start`
-- Optional: [Ollama](https://ollama.com) if you want local title generation (`brew install ollama && ollama pull gemma4:e4b`). koom uses Ollama as the local LLM that turns Whisper transcripts into short recording titles. `./scripts/run.sh` now preflights the configured Ollama endpoint, auto-starts `ollama serve` for the default local URL when needed, restarts a stale local `ollama serve` once if warmup fails, and refuses to launch by default if the model still is not ready. Set `KOOM_AUTOTITLE_ENABLED=false` to disable the feature entirely or `KOOM_OLLAMA_REQUIRE_READY=false` to allow a degraded launch.
+- Optional: [Ollama](https://ollama.com) if you want local title generation (`brew install ollama && ollama pull gemma4:e4b`). koom uses Ollama as the local LLM that turns Whisper transcripts into short recording titles. The shipped client defaults to `http://localhost:11434` + `gemma4:e4b`, warms that model in-app at launch, and will auto-start `ollama serve` for the default local URL when it can. Auto-title stays best-effort: the app keeps launching even if Ollama is unavailable, and the failure is logged under `~/Library/Logs/koom/`.
 - Optional local tooling so the pre-commit hook can run: `brew install gitleaks shellcheck`
 
 The macOS client also needs Screen Recording permission, Camera permission (if using the face overlay), and Microphone permission (if recording narration).
@@ -118,9 +118,11 @@ npm run doctor
 # 6. run the web app
 npm run dev -w web
 
-# 7. build and run the macOS client
-#    (preflights Ollama by default when local title generation is enabled)
+# 7. build and run the macOS client for development
 ./scripts/run.sh
+
+# 8. install the signed release app into /Applications
+./scripts/install-app.sh
 ```
 
 `npm run doctor` is the authoritative "is this environment actually usable?" check. It's always safe to re-run and exercises the database, R2 credentials, HTTP range support that browser `<video>` scrubbing depends on, and on macOS it warns if the local desktop-client signing identity is missing or unusable.
@@ -129,24 +131,28 @@ npm run dev -w web
 
 ## Development
 
-| Task                               | Command                   |
-| ---------------------------------- | ------------------------- |
-| Clean rebuildable web caches       | `npm run web:clean`       |
-| Lint the web workspace             | `npm run lint`            |
-| Check formatting (Prettier)        | `npm run format:check`    |
-| Auto-fix formatting                | `npm run format`          |
-| Lint Swift sources                 | `npm run swift:lint`      |
-| Auto-fix Swift formatting          | `npm run swift:format`    |
-| ShellCheck every tracked `.sh`     | `npm run shellcheck`      |
-| Audit orphaned R2 recording files  | `npm run r2:orphans`      |
-| Web unit + integration tests       | `npm test -w web`         |
-| Web end-to-end tests (Playwright)  | `npm run test:e2e -w web` |
-| Build the macOS client bundle      | `./scripts/build-app.sh`  |
-| Run the macOS client in foreground | `./scripts/run.sh`        |
+| Task                                | Command                            |
+| ----------------------------------- | ---------------------------------- |
+| Clean rebuildable web caches        | `npm run web:clean`                |
+| Lint the web workspace              | `npm run lint`                     |
+| Check formatting (Prettier)         | `npm run format:check`             |
+| Auto-fix formatting                 | `npm run format`                   |
+| Lint Swift sources                  | `npm run swift:lint`               |
+| Auto-fix Swift formatting           | `npm run swift:format`             |
+| ShellCheck every tracked `.sh`      | `npm run shellcheck`               |
+| Audit orphaned R2 recording files   | `npm run r2:orphans`               |
+| Web unit + integration tests        | `npm test -w web`                  |
+| Web end-to-end tests (Playwright)   | `npm run test:e2e -w web`          |
+| Build the macOS client bundle       | `./scripts/build-app.sh`           |
+| Build a release macOS client bundle | `./scripts/build-app.sh --release` |
+| Install the signed release app      | `./scripts/install-app.sh`         |
+| Run the macOS client in foreground  | `./scripts/run.sh`                 |
 
 `npm run web:clean` removes the web workspace's rebuildable artifacts (`web/.next`, `web/node_modules/.vite`, and Playwright/Vitest output directories). It refuses to run while a live `next dev` process still owns the workspace.
 
 A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, `swift format`, ShellCheck, and gitleaks against staged changes before any commit lands. Swift sources use Apple's official `swift-format` (ships with the Swift 6 toolchain) against the repo-level `.swift-format` config. The rest of the checks also run in GitHub Actions on push and pull requests, plus a full-history gitleaks scan.
+
+The desktop app writes persistent logs to `~/Library/Logs/koom/koom.log` and keeps one rotated `koom.previous.log`. From the app itself, use **Troubleshooting → Reveal Logs in Finder** to jump straight to that directory.
 
 ## Recording output
 
@@ -185,7 +191,7 @@ Under the hood:
 
 ## Auto-titling
 
-Recordings that otherwise would have stayed untitled get a short descriptive title generated on the same machine that did the recording — no cloud APIs, no third-party telemetry, no server-side worker. The pipeline runs once per recording during post-upload processing. The title-generation steps themselves remain best-effort: any failure (no mic track, Ollama request failure, empty transcript) logs a line and leaves the `title` column `NULL`. In the normal `./scripts/run.sh` workflow, though, Ollama readiness is preflighted up front and app launch fails by default if auto-titling is enabled but the configured model is not actually ready.
+Recordings that otherwise would have stayed untitled get a short descriptive title generated on the same machine that did the recording — no cloud APIs, no third-party telemetry, no server-side worker. The pipeline runs once per recording during post-upload processing. The title-generation steps themselves remain best-effort: any failure (no mic track, Ollama request failure, empty transcript) logs a line and leaves the `title` column `NULL`.
 
 Stages, all in-process on the macOS client:
 
@@ -194,17 +200,14 @@ Stages, all in-process on the macOS client:
 3. **Summarize.** The transcript is sent to a local Ollama model via `POST http://localhost:11434/api/generate` with `think: false` (important — reasoning-capable models like `gemma4:e4b` otherwise route their output into a separate `thinking` field and return an empty `response`). The client asks for a 4–10 word title and sanitizes it (strips `Title:` prefixes, smart/straight quotes, trailing punctuation, clamps to 10 words).
 4. **Persist.** The title is `PATCH`ed onto the `recordings` row via `PATCH /api/admin/recordings/[id]`. Pending rows (upload still in flight) are also allowed to take a title so the auto-titler can land early on fast uploads.
 
-All five environment variables are optional. Defaults are hard-coded in `Autotitler.swift`:
+The shipped client defaults are compiled into `AutotitleConfiguration.swift`:
 
-| Variable                    | Default                   | Purpose                                                                                                    |
-| --------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `KOOM_AUTOTITLE_ENABLED`    | `true`                    | Set to `false`/`0`/`no`/`off` to skip the pipeline entirely                                                |
-| `KOOM_WHISPER_MODEL`        | `openai_whisper-small.en` | Any model WhisperKit publishes on HuggingFace                                                              |
-| `KOOM_OLLAMA_URL`           | `http://localhost:11434`  | Ollama HTTP base URL                                                                                       |
-| `KOOM_OLLAMA_MODEL`         | `gemma4:e4b`              | Any model you've `ollama pull`ed locally                                                                   |
-| `KOOM_OLLAMA_REQUIRE_READY` | `true`                    | Set to `false`/`0`/`no`/`off` to let `./scripts/run.sh` launch in degraded mode when Ollama is unavailable |
+- Whisper model: `openai_whisper-small.en`
+- Ollama URL: `http://localhost:11434`
+- Ollama model: `gemma4:e4b`
+- Auto-title enabled: yes
 
-`./scripts/run.sh` now performs the stronger local-dev preflight: if `KOOM_AUTOTITLE_ENABLED` is on, it verifies that Ollama is reachable, the configured model is pulled, and the model can answer a tiny warmup request. For the default local URL it will try to start `ollama serve` automatically before giving up, and if the server is reachable but returns a model-load failure it will restart local Ollama once and retry. By default a failed preflight aborts app launch; set `KOOM_OLLAMA_REQUIRE_READY=false` to allow a degraded launch instead.
+At launch the app now performs a best-effort Ollama warmup itself. If the configured URL is the default local HTTP endpoint, koom will try to start `ollama serve` automatically before giving up. Missing Ollama or a missing model no longer blocks app launch; the app logs the issue, surfaces a small status warning, and skips auto-title work until Ollama becomes available again.
 
 `npm run doctor` still has an "Auto-title (Ollama)" section that verifies Ollama is reachable and the configured model has been pulled. Those checks remain non-fatal so the rest of the doctor sweep still runs.
 

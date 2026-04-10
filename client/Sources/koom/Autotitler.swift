@@ -3,7 +3,7 @@ import Foundation
 /// Coordinates the local auto-titling pipeline that runs after each
 /// recording finishes:
 ///
-///     mp4 → AudioExtractor → Transcriber → OllamaClient → title
+///     mp4 → AudioExtractor → Transcriber → OllamaRuntime → title
 ///
 /// Every stage is best-effort. Any failure (no audio track, Whisper
 /// model still downloading, Ollama not running, empty transcript,
@@ -12,52 +12,43 @@ import Foundation
 /// can always rename a recording later in the admin UI, so failures
 /// remain best-effort and non-blocking. The client does, however,
 /// surface coarse progress messages so the user can see when the
-/// post-upload title pipeline is transcribing narration or asking
-/// the local Ollama model for a summary/title.
+/// post-upload title pipeline is preparing Ollama, transcribing
+/// narration, or asking the local model for a summary/title.
 ///
 /// One `Autotitler` is safe to share across recordings and across
-/// concurrent tasks because the only stateful piece (the
-/// `Transcriber` actor) already serializes access internally.
+/// concurrent tasks because its two stateful collaborators already
+/// serialize their own work (`Transcriber` as an actor and
+/// `OllamaRuntime` as an actor).
 struct Autotitler: Sendable {
-    let whisperModelName: String
-    let ollamaModelName: String
+    let configuration: AutotitleConfiguration
     let transcriber: Transcriber
-    let ollamaClient: OllamaClient
+    let ollamaRuntime: OllamaRuntime
 
-    /// Reads `KOOM_AUTOTITLE_ENABLED`, `KOOM_WHISPER_MODEL`,
-    /// `KOOM_OLLAMA_URL`, and `KOOM_OLLAMA_MODEL` from the process
-    /// environment and returns a ready-to-use `Autotitler`, or
-    /// `nil` if the feature is explicitly disabled or the Ollama
-    /// URL is malformed (both are operator-configurable knobs, so
-    /// a bad value is a quiet no-op rather than a crash).
-    static func makeFromEnvironment() -> Autotitler? {
-        let env = ProcessInfo.processInfo.environment
+    var whisperModelName: String { configuration.whisperModelName }
+    var ollamaModelName: String { configuration.ollamaModelName }
 
-        let enabledRaw = env["KOOM_AUTOTITLE_ENABLED"] ?? "true"
-        let enabled = !["false", "0", "no", "off"].contains(enabledRaw.lowercased())
-        guard enabled else {
-            AppLog.info("Autotitle: disabled via KOOM_AUTOTITLE_ENABLED=\(enabledRaw).")
+    init(configuration: AutotitleConfiguration) {
+        self.configuration = configuration
+        self.transcriber = Transcriber(modelName: configuration.whisperModelName)
+        self.ollamaRuntime = OllamaRuntime(
+            client: OllamaClient(
+                baseURL: configuration.ollamaBaseURL,
+                model: configuration.ollamaModelName
+            )
+        )
+    }
+
+    static func shippedDefault() -> Autotitler? {
+        let configuration = AutotitleConfiguration.shippedDefault
+        guard configuration.isEnabled else {
+            AppLog.info("Autotitle: disabled in the shipped client configuration.")
             return nil
         }
+        return Autotitler(configuration: configuration)
+    }
 
-        let whisperModel = env["KOOM_WHISPER_MODEL"] ?? "openai_whisper-small.en"
-        let ollamaURLString = env["KOOM_OLLAMA_URL"] ?? "http://localhost:11434"
-        guard let ollamaURL = URL(string: ollamaURLString) else {
-            AppLog.error("Autotitle: KOOM_OLLAMA_URL is not a valid URL: \(ollamaURLString). Disabling auto-titling.")
-            return nil
-        }
-        let ollamaModel = env["KOOM_OLLAMA_MODEL"] ?? "gemma4:e4b"
-
-        AppLog.info(
-            "Autotitle: configured whisper=\(whisperModel) ollama=\(ollamaURLString) model=\(ollamaModel)"
-        )
-
-        return Autotitler(
-            whisperModelName: whisperModel,
-            ollamaModelName: ollamaModel,
-            transcriber: Transcriber(modelName: whisperModel),
-            ollamaClient: OllamaClient(baseURL: ollamaURL, model: ollamaModel)
-        )
+    func preflightForLaunch() async -> String? {
+        await ollamaRuntime.prepareForLaunch()
     }
 
     /// Runs the full pipeline on the finalized recording at
@@ -68,6 +59,14 @@ struct Autotitler: Sendable {
         onProgress: @Sendable (PostUploadStage) async -> Void
     ) async -> String? {
         let filename = fileURL.lastPathComponent
+
+        await onProgress(.preparingOllama(modelName: ollamaModelName))
+        do {
+            try await ollamaRuntime.ensureReady()
+        } catch {
+            AppLog.error("Autotitle: Ollama is not ready for \(filename): \(error.localizedDescription)")
+            return nil
+        }
 
         // Stage 1: pull mic audio into 16 kHz mono float PCM.
         await onProgress(.extractingAudio)
@@ -105,7 +104,9 @@ struct Autotitler: Sendable {
         do {
             await onProgress(.generatingTitle(modelName: ollamaModelName))
             AppLog.info("Autotitle: summarizing transcript for \(filename) via Ollama.")
-            let title = try await ollamaClient.generateTitle(from: trimmedTranscript)
+            let title = try await ollamaRuntime.generateTitle(
+                from: trimmedTranscript
+            )
             AppLog.info("Autotitle: generated title for \(filename): \(title)")
             return title
         } catch {

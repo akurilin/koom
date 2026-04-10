@@ -48,7 +48,17 @@ struct OllamaClient: Sendable {
         // observed on gemma4:e4b in the first end-to-end run.
         // Non-reasoning models simply ignore this field.
         let think: Bool
+        let keepAlive: String?
         let options: Options
+
+        enum CodingKeys: String, CodingKey {
+            case model
+            case prompt
+            case stream
+            case think
+            case keepAlive = "keep_alive"
+            case options
+        }
 
         struct Options: Encodable {
             let temperature: Double
@@ -71,30 +81,152 @@ struct OllamaClient: Sendable {
         let thinking: String?
     }
 
+    private struct TagsResponse: Decodable {
+        let models: [ModelSummary]?
+    }
+
+    private struct ModelSummary: Decodable {
+        let name: String
+    }
+
+    var canAutoStartLocalService: Bool {
+        baseURL.scheme?.lowercased() == "http" && isLoopbackHost
+    }
+
+    var serveHostBinding: String {
+        guard let host = baseURL.host else {
+            return "localhost:11434"
+        }
+        guard let port = baseURL.port else {
+            return host
+        }
+        return "\(host):\(port)"
+    }
+
     /// Asks the configured Ollama model for a short title that
     /// summarizes the given transcript. Trims quotes/whitespace and
     /// clamps to 10 words on the client side so the rest of the app
     /// can treat the returned value as a clean display name.
     func generateTitle(from transcript: String) async throws -> String {
         let prompt = Self.buildTitlePrompt(transcript: transcript)
+        let decoded = try await performGenerateRequest(
+            prompt: prompt,
+            temperature: 0.2,
+            numPredict: 120,
+            keepAlive: nil
+        )
+
+        let cleaned = Self.sanitizeTitle(decoded.response)
+        if cleaned.isEmpty {
+            // Log the raw payload so we can see whether the model
+            // returned nothing at all, returned its content in the
+            // `thinking` channel, or returned something we
+            // aggressively stripped in `sanitizeTitle`. Truncated to
+            // keep the log lines manageable for long outputs.
+            AppLog.error(
+                "Ollama: empty title after sanitize. response=\(Self.truncateForLog(decoded.response)) thinking=\(Self.truncateForLog(decoded.thinking ?? "<none>"))"
+            )
+            throw OllamaError.emptyCompletion
+        }
+        return cleaned
+    }
+
+    func isReachable() async -> Bool {
+        var request = URLRequest(url: tagsURL)
+        request.timeoutInterval = 2
+
+        do {
+            let (_, http) = try await httpData(for: request)
+            return (200...299).contains(http.statusCode)
+        } catch {
+            return false
+        }
+    }
+
+    func isModelPresent() async throws -> Bool {
+        var request = URLRequest(url: tagsURL)
+        request.timeoutInterval = 3
+
+        let (data, _) = try await httpData(for: request)
+        let decoded: TagsResponse
+        do {
+            decoded = try JSONDecoder().decode(TagsResponse.self, from: data)
+        } catch {
+            throw OllamaError.invalidResponse
+        }
+
+        let availableModels = Set(decoded.models?.map(\.name) ?? [])
+        if availableModels.contains(model) || availableModels.contains("\(model):latest") {
+            return true
+        }
+
+        if model.hasSuffix(":latest") {
+            let withoutLatest = String(model.dropLast(":latest".count))
+            return availableModels.contains(withoutLatest)
+        }
+
+        return false
+    }
+
+    func warmModel() async throws {
+        let decoded = try await performGenerateRequest(
+            prompt: "Reply with exactly OK",
+            temperature: 0,
+            numPredict: 8,
+            keepAlive: "15m"
+        )
+        guard !decoded.response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw OllamaError.emptyCompletion
+        }
+    }
+
+    private var tagsURL: URL {
+        baseURL.appendingPathComponent("api/tags")
+    }
+
+    private var generateURL: URL {
+        baseURL.appendingPathComponent("api/generate")
+    }
+
+    private var isLoopbackHost: Bool {
+        guard let host = baseURL.host?.lowercased() else { return false }
+        return host == "localhost" || host == "127.0.0.1"
+    }
+
+    private func performGenerateRequest(
+        prompt: String,
+        temperature: Double,
+        numPredict: Int,
+        keepAlive: String?
+    ) async throws -> GenerateResponse {
         let body = GenerateRequest(
             model: model,
             prompt: prompt,
             stream: false,
             think: false,
-            // 120 tokens is plenty for a 4–10 word title plus any
-            // preamble the model insists on emitting before we
-            // sanitize it. 40 turned out to be too tight on
-            // gemma4:e4b when a short transcript tempted the model
-            // to narrate before writing the title.
-            options: .init(temperature: 0.2, numPredict: 120)
+            keepAlive: keepAlive,
+            options: .init(
+                temperature: temperature,
+                numPredict: numPredict
+            )
         )
 
-        var request = URLRequest(url: baseURL.appendingPathComponent("api/generate"))
+        var request = URLRequest(url: generateURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
 
+        let (data, _) = try await httpData(for: request)
+        do {
+            return try JSONDecoder().decode(GenerateResponse.self, from: data)
+        } catch {
+            throw OllamaError.invalidResponse
+        }
+    }
+
+    private func httpData(
+        for request: URLRequest
+    ) async throws -> (Data, HTTPURLResponse) {
         let data: Data
         let response: URLResponse
         do {
@@ -111,26 +243,7 @@ struct OllamaClient: Sendable {
             throw OllamaError.badStatus(code: http.statusCode, body: bodyText)
         }
 
-        let decoded: GenerateResponse
-        do {
-            decoded = try JSONDecoder().decode(GenerateResponse.self, from: data)
-        } catch {
-            throw OllamaError.invalidResponse
-        }
-
-        let cleaned = Self.sanitizeTitle(decoded.response)
-        if cleaned.isEmpty {
-            // Log the raw payload so we can see whether the model
-            // returned nothing at all, returned its content in the
-            // `thinking` channel, or returned something we
-            // aggressively stripped in `sanitizeTitle`. Truncated to
-            // keep the log lines manageable for long outputs.
-            AppLog.error(
-                "Ollama: empty title after sanitize. response=\(Self.truncateForLog(decoded.response)) thinking=\(Self.truncateForLog(decoded.thinking ?? "<none>"))"
-            )
-            throw OllamaError.emptyCompletion
-        }
-        return cleaned
+        return (data, http)
     }
 
     private static func truncateForLog(_ s: String) -> String {

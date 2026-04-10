@@ -282,7 +282,7 @@ struct ControlPanelView: View {
                         LinearGradient(
                             colors: [
                                 accentRed,
-                                accentRed.opacity(0.94)
+                                accentRed.opacity(0.94),
                             ],
                             startPoint: .top,
                             endPoint: .bottom
@@ -604,6 +604,9 @@ private struct UploadStatusView: View {
 
     private func postProcessingDescription(_ stage: PostUploadStage) -> String {
         switch stage {
+        case .preparingOllama(let modelName):
+            return
+                "Upload finished. Preparing Ollama (\(modelName)) for local title generation…"
         case .extractingAudio:
             return
                 "Upload finished. Extracting microphone audio for transcription…"

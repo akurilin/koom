@@ -22,6 +22,7 @@ enum UploadState: Equatable, Sendable {
 }
 
 enum PostUploadStage: Equatable, Sendable {
+    case preparingOllama(modelName: String)
     case extractingAudio
     case transcribing(modelName: String)
     case generatingTitle(modelName: String)
@@ -142,14 +143,17 @@ final class Uploader {
     /// the closure via `Task { @MainActor in ... }`.
     var onStateChange: (@Sendable (UploadState) -> Void)?
 
-    /// Long-lived auto-titler. Built once from the environment so
-    /// the underlying `Transcriber` actor keeps its loaded
-    /// WhisperKit model warm across recordings. `nil` when
-    /// `KOOM_AUTOTITLE_ENABLED=false` or the Ollama URL is
-    /// malformed — in that case the upload flow behaves exactly
-    /// as it did before this feature existed.
-    private let autotitler: Autotitler? = Autotitler.makeFromEnvironment()
+    /// Long-lived auto-titler. Built once from the shipped client
+    /// defaults so the underlying `Transcriber` actor keeps its
+    /// loaded WhisperKit model warm across recordings. `nil` only
+    /// when auto-title is disabled in the app's compiled defaults.
+    private let autotitler: Autotitler? = Autotitler.shippedDefault()
     private let settingsStore = AppSettingsStore()
+
+    func prepareForLaunch() async -> String? {
+        guard let autotitler else { return nil }
+        return await autotitler.preflightForLaunch()
+    }
 
     // MARK: Single-file upload (post-recording)
 

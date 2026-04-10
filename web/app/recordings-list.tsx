@@ -331,7 +331,12 @@ function RecordingCard({
           data-testid="filename"
           title={displayTitle}
         >
-          {displayTitle}
+          <Link
+            href={watchHref}
+            className="hover:text-sky-400 transition-colors"
+          >
+            {displayTitle}
+          </Link>
         </h2>
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-zinc-400">
           <span data-testid="card-date">{formatDate(recording.createdAt)}</span>

@@ -22,7 +22,10 @@ export default defineConfig({
     // Only pick up files under tests/integration. The tests/e2e
     // directory is owned by Playwright and uses @playwright/test
     // assertions, which would crash the vitest runner.
-    include: ["tests/integration/**/*.{test,spec}.ts"],
+    include: [
+      "tests/unit/**/*.{test,spec}.ts",
+      "tests/integration/**/*.{test,spec}.ts",
+    ],
     exclude: ["tests/e2e/**", "node_modules/**", ".next/**"],
     // Populate process.env from .env.test.local before any route
     // handler modules are imported by the test files.

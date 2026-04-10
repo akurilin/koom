@@ -19,6 +19,7 @@
 import { timingSafeEqual } from "node:crypto";
 
 import { getAdminSession } from "@/lib/auth/session";
+import { jsonError } from "@/lib/http";
 
 interface LoginRequestBody {
   secret?: unknown;
@@ -68,8 +69,4 @@ export async function DELETE(): Promise<Response> {
   const session = await getAdminSession();
   session.destroy();
   return Response.json({ ok: true });
-}
-
-function jsonError(status: number, message: string): Response {
-  return Response.json({ error: message }, { status });
 }

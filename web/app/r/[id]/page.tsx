@@ -22,9 +22,9 @@ import {
 } from "@/lib/db/comments";
 import { getCompletedRecordingById } from "@/lib/db/queries";
 import { recordingPublicUrl } from "@/lib/r2/client";
+import { buildMePayload, serializeComment } from "@/lib/types";
 
 import { WatchExperience } from "./watch-experience";
-import type { CommentData, MeData } from "./comments-pane";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -65,28 +65,10 @@ export default async function WatchPage(
   }
 
   // Fetch comments server-side for the initial render
+  const viewer = { isAdmin, commenterId };
   const rawComments = await listCommentsByRecording(id);
-  const initialComments: CommentData[] = rawComments.map((c) => ({
-    id: c.id,
-    displayName: c.displayName,
-    body: c.body,
-    timestampSeconds: c.timestampSeconds,
-    createdAt: c.createdAt.toISOString(),
-    isAdmin: c.isAdmin,
-    isOwn: c.isAdmin ? isAdmin : c.commenterId === commenterId,
-  }));
-
-  const me: MeData | null =
-    commenterId || isAdmin
-      ? {
-          kind: isAdmin ? "admin" : "anonymous",
-          displayName: isAdmin
-            ? "Admin"
-            : `Guest ${(commenterId ?? "").slice(0, 4)}`,
-          commenterId: isAdmin ? null : commenterId,
-          canDelete: isAdmin,
-        }
-      : null;
+  const initialComments = rawComments.map((c) => serializeComment(c, viewer));
+  const me = buildMePayload(viewer);
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100 px-4 py-8 sm:py-12">

@@ -27,6 +27,7 @@ import {
   type Comment,
 } from "@/lib/db/comments";
 import { getCompletedRecordingById } from "@/lib/db/queries";
+import { buildMePayload, serializeComment } from "@/lib/types";
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -90,22 +91,10 @@ export async function GET(
     return Response.json({ error: "database error" }, { status: 500 });
   }
 
+  const viewer = { isAdmin, commenterId };
   const payload = {
-    comments: comments.map((c) => ({
-      id: c.id,
-      displayName: c.displayName,
-      body: c.body,
-      timestampSeconds: c.timestampSeconds,
-      createdAt: c.createdAt.toISOString(),
-      isAdmin: c.isAdmin,
-      isOwn: c.isAdmin ? isAdmin : c.commenterId === commenterId,
-    })),
-    me: {
-      kind: isAdmin ? "admin" : "anonymous",
-      displayName: isAdmin ? "Admin" : `Guest ${commenterId.slice(0, 4)}`,
-      commenterId: isAdmin ? null : commenterId,
-      canDelete: isAdmin,
-    },
+    comments: comments.map((c) => serializeComment(c, viewer)),
+    me: buildMePayload(viewer),
   };
 
   const res = Response.json(payload);
@@ -178,15 +167,7 @@ export async function POST(
 
   return Response.json(
     {
-      comment: {
-        id: comment.id,
-        displayName: comment.displayName,
-        body: comment.body,
-        timestampSeconds: comment.timestampSeconds,
-        createdAt: comment.createdAt.toISOString(),
-        isAdmin: comment.isAdmin,
-        isOwn: true,
-      },
+      comment: serializeComment(comment, { isAdmin, commenterId }),
     },
     { status: 201 },
   );

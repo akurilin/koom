@@ -9,6 +9,8 @@
 
 "use client";
 
+import { formatTimestamp } from "@/lib/format";
+
 interface TimelineComment {
   id: string;
   timestampSeconds: number;
@@ -52,14 +54,4 @@ export function TimelineMarkers({
         })}
     </div>
   );
-}
-
-function formatTimestamp(seconds: number): string {
-  const clamped = Math.max(0, seconds);
-  const whole = Math.floor(clamped);
-  const tenths = Math.round((clamped - whole) * 10);
-  const m = Math.floor(whole / 60);
-  const s = whole % 60;
-  const base = `${m}:${s.toString().padStart(2, "0")}`;
-  return tenths > 0 ? `${base}.${tenths}` : base;
 }

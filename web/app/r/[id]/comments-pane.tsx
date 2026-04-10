@@ -10,27 +10,10 @@
 
 import { useCallback, useRef, useState } from "react";
 
-// ────────────────────────────────────────────────────────────────
-// Types (duplicated from the API response shape to avoid a shared
-// types package — acceptable at this scale)
-// ────────────────────────────────────────────────────────────────
+import { formatTimestamp } from "@/lib/format";
+import type { CommentData, MeData } from "@/lib/types";
 
-export interface CommentData {
-  id: string;
-  displayName: string;
-  body: string;
-  timestampSeconds: number;
-  createdAt: string;
-  isAdmin: boolean;
-  isOwn: boolean;
-}
-
-export interface MeData {
-  kind: "admin" | "anonymous" | "guest";
-  displayName: string;
-  commenterId: string | null;
-  canDelete: boolean;
-}
+export type { CommentData, MeData };
 
 interface CommentsPaneProps {
   recordingId: string;
@@ -294,14 +277,4 @@ function CommentItem({
       </p>
     </div>
   );
-}
-
-function formatTimestamp(seconds: number): string {
-  const clamped = Math.max(0, seconds);
-  const whole = Math.floor(clamped);
-  const tenths = Math.round((clamped - whole) * 10);
-  const m = Math.floor(whole / 60);
-  const s = whole % 60;
-  const base = `${m}:${s.toString().padStart(2, "0")}`;
-  return tenths > 0 ? `${base}.${tenths}` : base;
 }

@@ -18,10 +18,7 @@
 
 import { requireAdmin } from "@/lib/auth/admin";
 import { listAllCompletedRecordings } from "@/lib/db/queries";
-import {
-  recordingPublicUrl,
-  recordingThumbnailPublicUrl,
-} from "@/lib/r2/client";
+import { toRecordingListItem } from "@/lib/types";
 
 export async function GET(request: Request): Promise<Response> {
   const authError = await requireAdmin(request);
@@ -30,17 +27,7 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const recordings = await listAllCompletedRecordings();
     return Response.json({
-      recordings: recordings.map((r) => ({
-        recordingId: r.id,
-        createdAt: r.createdAt.toISOString(),
-        title: r.title,
-        originalFilename: r.originalFilename,
-        sizeBytes: r.sizeBytes,
-        durationSeconds: r.durationSeconds,
-        contentType: r.contentType,
-        thumbnailUrl: recordingThumbnailPublicUrl(r.id),
-        videoUrl: recordingPublicUrl(r.id),
-      })),
+      recordings: recordings.map(toRecordingListItem),
     });
   } catch (err) {
     console.error("[admin/recordings] listing failed:", err);

@@ -32,17 +32,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
-export interface RecordingListItem {
-  recordingId: string;
-  createdAt: string;
-  title: string | null;
-  originalFilename: string;
-  sizeBytes: number;
-  durationSeconds: number | null;
-  contentType: string;
-  thumbnailUrl: string;
-  videoUrl: string;
-}
+import { formatBytes, formatDate, formatDuration } from "@/lib/format";
+import type { RecordingListItem } from "@/lib/types";
+
+export type { RecordingListItem };
 
 type SortKey =
   | "date-desc"
@@ -399,30 +392,4 @@ function sortRecordings(
     case "size-asc":
       return copy.sort((a, b) => a.sizeBytes - b.sizeBytes);
   }
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function formatDuration(seconds: number): string {
-  const total = Math.max(0, Math.round(seconds));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  if (h > 0) return `${h}:${pad(m)}:${pad(s)}`;
-  return `${m}:${pad(s)}`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }

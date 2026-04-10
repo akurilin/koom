@@ -18,8 +18,13 @@
 import { randomUUID } from "node:crypto";
 
 import { requireAdmin } from "@/lib/auth/admin";
-import { getDb } from "@/lib/db/client";
-import { generatePresignedPutUrl, recordingObjectKey } from "@/lib/r2/client";
+import { deleteRecordingById, insertPendingRecording } from "@/lib/db/queries";
+import { jsonError } from "@/lib/http";
+import {
+  generatePresignedPutUrl,
+  recordingObjectKey,
+  recordingShareUrl,
+} from "@/lib/r2/client";
 
 interface InitRequestBody {
   originalFilename?: unknown;
@@ -67,23 +72,16 @@ export async function POST(request: Request): Promise<Response> {
   // try to clean this up, but at worst we end up with an orphaned
   // pending row that the documented GC job sweeps later.
   try {
-    await getDb().query(
-      `INSERT INTO recordings
-         (id, status, title, original_filename, duration_seconds,
-          size_bytes, content_type, bucket, object_key)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [
-        recordingId,
-        "pending",
-        title,
-        originalFilename,
-        durationSeconds,
-        sizeBytes,
-        contentType,
-        bucket,
-        objectKey,
-      ],
-    );
+    await insertPendingRecording({
+      id: recordingId,
+      title,
+      originalFilename,
+      durationSeconds,
+      sizeBytes,
+      contentType,
+      bucket,
+      objectKey,
+    });
   } catch (err) {
     console.error("[uploads/init] DB insert failed:", err);
     return jsonError(500, "database error");
@@ -97,9 +95,7 @@ export async function POST(request: Request): Promise<Response> {
     // Best-effort cleanup: roll back the row we just inserted so we
     // don't leave an unreachable pending record around.
     try {
-      await getDb().query(`DELETE FROM recordings WHERE id = $1`, [
-        recordingId,
-      ]);
+      await deleteRecordingById(recordingId);
     } catch (cleanupErr) {
       console.error(
         "[uploads/init] rollback after presign failure also failed:",
@@ -109,7 +105,7 @@ export async function POST(request: Request): Promise<Response> {
     return jsonError(500, "failed to generate upload URL");
   }
 
-  const shareUrl = buildShareUrl(recordingId);
+  const shareUrl = recordingShareUrl(recordingId);
 
   return Response.json({
     recordingId,
@@ -179,16 +175,4 @@ function validateInitBody(
     durationSeconds,
     title,
   };
-}
-
-function buildShareUrl(recordingId: string): string {
-  const base = process.env.KOOM_PUBLIC_BASE_URL;
-  if (!base) {
-    throw new Error("KOOM_PUBLIC_BASE_URL is not set");
-  }
-  return `${base.replace(/\/$/, "")}/r/${recordingId}`;
-}
-
-function jsonError(status: number, message: string): Response {
-  return Response.json({ error: message }, { status });
 }

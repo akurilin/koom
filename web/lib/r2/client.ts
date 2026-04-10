@@ -75,6 +75,19 @@ export function recordingPublicUrl(recordingId: string): string {
   return `${base.replace(/\/$/, "")}/${recordingObjectKey(recordingId)}`;
 }
 
+/**
+ * Build the user-facing share URL for a recording (e.g. for the
+ * response to the upload init/complete endpoints). Uses
+ * KOOM_PUBLIC_BASE_URL, not R2_PUBLIC_BASE_URL.
+ */
+export function recordingShareUrl(recordingId: string): string {
+  const base = process.env.KOOM_PUBLIC_BASE_URL;
+  if (!base) {
+    throw new Error("KOOM_PUBLIC_BASE_URL is not set");
+  }
+  return `${base.replace(/\/$/, "")}/r/${recordingId}`;
+}
+
 export function recordingThumbnailPublicUrl(recordingId: string): string {
   const base = process.env.R2_PUBLIC_BASE_URL;
   if (!base) {

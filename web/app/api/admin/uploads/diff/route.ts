@@ -23,7 +23,8 @@
  */
 
 import { requireAdmin } from "@/lib/auth/admin";
-import { getDb } from "@/lib/db/client";
+import { getUploadedFilenames } from "@/lib/db/queries";
+import { jsonError } from "@/lib/http";
 
 interface DiffRequestBody {
   filenames?: unknown;
@@ -67,22 +68,14 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ uploaded: [], missing: [] });
   }
 
-  let rows: { original_filename: string }[];
+  let uploadedSet: Set<string>;
   try {
-    const result = await getDb().query<{ original_filename: string }>(
-      `SELECT DISTINCT original_filename
-         FROM recordings
-        WHERE original_filename = ANY($1)
-          AND status = 'complete'`,
-      [unique],
-    );
-    rows = result.rows;
+    uploadedSet = await getUploadedFilenames(unique);
   } catch (err) {
     console.error("[uploads/diff] DB query failed:", err);
     return jsonError(500, "database error");
   }
 
-  const uploadedSet = new Set(rows.map((r) => r.original_filename));
   const uploaded: string[] = [];
   const missing: string[] = [];
   for (const filename of unique) {
@@ -94,8 +87,4 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   return Response.json({ uploaded, missing });
-}
-
-function jsonError(status: number, message: string): Response {
-  return Response.json({ error: message }, { status });
 }

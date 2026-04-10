@@ -11,6 +11,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { formatBytes, formatDate, formatDuration } from "@/lib/format";
+
 import { CommentsPane, type CommentData, type MeData } from "./comments-pane";
 import { TimelineMarkers } from "./timeline-markers";
 import { VideoPlayer } from "./video-player";
@@ -140,35 +142,4 @@ export function WatchExperience({
       </div>
     </div>
   );
-}
-
-// ────────────────────────────────────────────────────────────────
-// Formatting helpers (moved from page.tsx since WatchExperience
-// is now the rendering owner of these values)
-// ────────────────────────────────────────────────────────────────
-
-function formatDate(isoString: string): string {
-  return new Date(isoString).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function formatDuration(seconds: number): string {
-  const total = Math.max(0, Math.round(seconds));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  if (h > 0) return `${h}:${pad(m)}:${pad(s)}`;
-  return `${m}:${pad(s)}`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }

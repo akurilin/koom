@@ -151,3 +151,81 @@ export async function recordingExists(id: string): Promise<boolean> {
   );
   return rows.length > 0;
 }
+
+/**
+ * Insert a new recording row with `status = 'pending'`. Called by
+ * the upload init endpoint before minting a presigned PUT URL.
+ */
+export async function insertPendingRecording(opts: {
+  id: string;
+  title: string | null;
+  originalFilename: string;
+  durationSeconds: number | null;
+  sizeBytes: number;
+  contentType: string;
+  bucket: string;
+  objectKey: string;
+}): Promise<void> {
+  await getDb().query(
+    `INSERT INTO recordings
+       (id, status, title, original_filename, duration_seconds,
+        size_bytes, content_type, bucket, object_key)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
+      opts.id,
+      "pending",
+      opts.title,
+      opts.originalFilename,
+      opts.durationSeconds,
+      opts.sizeBytes,
+      opts.contentType,
+      opts.bucket,
+      opts.objectKey,
+    ],
+  );
+}
+
+/**
+ * Look up a recording's size and status for upload completion
+ * verification. Returns null if the row does not exist.
+ */
+export async function getRecordingForCompletion(
+  id: string,
+): Promise<{ sizeBytes: number; status: string } | null> {
+  const { rows } = await getDb().query<{
+    size_bytes: string;
+    status: string;
+  }>(`SELECT size_bytes, status FROM recordings WHERE id = $1`, [id]);
+  const row = rows[0];
+  if (!row) return null;
+  return { sizeBytes: Number(row.size_bytes), status: row.status };
+}
+
+/**
+ * Flip a recording's status to `'complete'`. Idempotent — safe to
+ * call on a row that is already complete.
+ */
+export async function completeRecording(id: string): Promise<void> {
+  await getDb().query(
+    `UPDATE recordings SET status = 'complete' WHERE id = $1`,
+    [id],
+  );
+}
+
+/**
+ * Given a list of filenames, return the subset that have at least
+ * one completed recording in the database. Used by the desktop
+ * client's catch-up diff feature.
+ */
+export async function getUploadedFilenames(
+  filenames: string[],
+): Promise<Set<string>> {
+  const { rows } = await getDb().query<{ original_filename: string }>(
+    `SELECT DISTINCT original_filename
+       FROM recordings
+      WHERE original_filename = ANY($1)
+        AND status = 'complete'`,
+    [filenames],
+  );
+  return new Set(rows.map((r) => r.original_filename));
+}

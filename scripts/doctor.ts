@@ -28,13 +28,17 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import pg from "pg";
 
 const { Client: PgClient } = pg;
+const execFileAsync = promisify(execFile);
 
 // ────────────────────────────────────────────────────────────────────
 // Constants
@@ -58,6 +62,13 @@ const R2_REQUIRED_ENV_VARS = [
 const POSTGRES_REQUIRED_ENV_VARS = ["DATABASE_URL"] as const;
 
 const SOFT_ENV_VARS = ["KOOM_PUBLIC_BASE_URL", "KOOM_ADMIN_SECRET"] as const;
+const DEFAULT_CODESIGN_IDENTITY = "koom Local Dev";
+const LOGIN_KEYCHAIN_PATH = join(
+  process.env.HOME ?? "~",
+  "Library",
+  "Keychains",
+  "login.keychain-db",
+);
 
 // Auto-title defaults must stay in sync with Autotitler.swift on the
 // client. The doctor reads overrides from its own process env (not
@@ -251,6 +262,10 @@ async function main(): Promise<void> {
   // ── Section: Auto-title (Ollama) ──────────────────────────────────
   logSection("Auto-title (Ollama)");
   await runOllamaChecks();
+
+  // ── Section: Desktop client (macOS) ───────────────────────────────
+  logSection("Desktop client (macOS)");
+  await runDesktopClientChecks();
 
   // ── Section: Vercel (optional) ────────────────────────────────────
   logSection("Vercel");
@@ -680,6 +695,82 @@ async function runOllamaChecks(): Promise<void> {
         `    ollama pull ${ollamaModel}\n` +
         `Known models: ${modelNames.length > 0 ? modelNames.join(", ") : "(none)"}`,
     );
+  }
+}
+
+async function runDesktopClientChecks(): Promise<void> {
+  if (process.platform !== "darwin") {
+    skip(
+      "Stable local codesigning identity",
+      "macOS-only check; skipped on non-macOS hosts",
+    );
+    return;
+  }
+
+  const identityName =
+    process.env.KOOM_CODESIGN_IDENTITY ?? DEFAULT_CODESIGN_IDENTITY;
+
+  let identityOutput = "";
+  try {
+    const result = await execFileAsync("security", [
+      "find-identity",
+      "-v",
+      "-p",
+      "codesigning",
+      LOGIN_KEYCHAIN_PATH,
+    ]);
+    identityOutput = result.stdout;
+  } catch (err) {
+    warn(
+      "Stable local codesigning identity",
+      `Could not query login keychain identities: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return;
+  }
+
+  if (!identityOutput.includes(`"${identityName}"`)) {
+    warn(
+      "Stable local codesigning identity",
+      `Identity '${identityName}' is missing from ${LOGIN_KEYCHAIN_PATH}.\n` +
+        `Run:\n` +
+        `    ./scripts/setup-dev-codesign.sh\n` +
+        `Without it, the macOS app still runs, but rebuilds fall back to ad hoc signing and Keychain 'Always Allow' decisions may not stick.`,
+    );
+    return;
+  }
+
+  const tempBinary = join(
+    tmpdir(),
+    `koom-doctor-codesign-${process.pid}-${Date.now()}`,
+  );
+
+  try {
+    await execFileAsync("cp", ["/usr/bin/true", tempBinary]);
+    await execFileAsync("codesign", [
+      "--force",
+      "--sign",
+      identityName,
+      tempBinary,
+    ]);
+    await execFileAsync("codesign", ["--verify", "--verbose=1", tempBinary]);
+    pass("Stable local codesigning identity", `('${identityName}' is usable)`);
+  } catch (err) {
+    warn(
+      "Stable local codesigning identity",
+      `Identity '${identityName}' exists, but codesign could not use it.\n` +
+        `Re-run:\n` +
+        `    ./scripts/setup-dev-codesign.sh --force\n` +
+        `That recreates the identity, trusts it for code signing, and refreshes the user keychain search list.\n` +
+        `Underlying error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  } finally {
+    try {
+      await execFileAsync("rm", ["-f", tempBinary]);
+    } catch {
+      // ignore temp-file cleanup failures
+    }
   }
 }
 

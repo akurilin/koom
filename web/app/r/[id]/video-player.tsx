@@ -1,13 +1,15 @@
 /**
  * Client component wrapping the native HTML5 <video> element.
  *
- * Two responsibilities beyond plain `<video controls>`:
+ * Three responsibilities beyond plain `<video controls>`:
  *
  *   1. On mount, read `?t=<seconds>` from the URL and seek the video
  *      to that position once enough metadata is loaded. Lets share
  *      URLs like `/r/abc?t=42` jump straight to the 42-second mark.
  *   2. Surface a graceful fallback message if the browser can't
  *      play the content type.
+ *   3. Accept an optional external ref so parent components (e.g.
+ *      WatchExperience) can seek programmatically.
  *
  * Uses `window.location.search` rather than Next.js's
  * `useSearchParams` because the latter forces the entire tree into
@@ -17,18 +19,28 @@
 
 "use client";
 
-import { useEffect, useRef } from "react";
+import { type RefObject, useEffect, useRef } from "react";
 
 interface VideoPlayerProps {
   src: string;
   contentType: string;
+  /** Optional external ref for programmatic seek from parent. */
+  videoRef?: RefObject<HTMLVideoElement | null>;
+  /** Called on timeupdate with the current playback time. */
+  onTimeUpdate?: (currentTime: number) => void;
 }
 
-export function VideoPlayer({ src, contentType }: VideoPlayerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+export function VideoPlayer({
+  src,
+  contentType,
+  videoRef: externalRef,
+  onTimeUpdate,
+}: VideoPlayerProps) {
+  const internalRef = useRef<HTMLVideoElement>(null);
+  const ref = externalRef ?? internalRef;
 
   useEffect(() => {
-    const video = videoRef.current;
+    const video = ref.current;
     if (!video) return;
 
     const seconds = parseDeepLinkSeconds(window.location.search);
@@ -50,11 +62,22 @@ export function VideoPlayer({ src, contentType }: VideoPlayerProps) {
     return () => {
       video.removeEventListener("loadedmetadata", seek);
     };
-  }, []);
+  }, [ref]);
+
+  useEffect(() => {
+    if (!onTimeUpdate) return;
+    const video = ref.current;
+    if (!video) return;
+
+    const handler = () => onTimeUpdate(video.currentTime);
+    video.addEventListener("timeupdate", handler);
+    return () => video.removeEventListener("timeupdate", handler);
+  }, [ref, onTimeUpdate]);
 
   return (
     <video
-      ref={videoRef}
+      ref={ref}
+      data-testid="video-player"
       src={src}
       controls
       preload="metadata"

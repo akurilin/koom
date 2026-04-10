@@ -42,6 +42,9 @@ final class AppModel: ObservableObject {
     @Published var recordingState: RecordingState = .idle {
         didSet {
             AppLog.info("Recording state: \(String(describing: recordingState))")
+            if let controlWindow {
+                applyControlWindowCapturePolicy(controlWindow)
+            }
         }
     }
     @Published var isBusy = false
@@ -75,6 +78,8 @@ final class AppModel: ObservableObject {
     private let fragmentIntervalSeconds: TimeInterval = 2
 
     private var recorder: ScreenRecorder?
+    private weak var controlWindow: NSWindow?
+    private var isControlWindowCaptureSuppressed = false
     private var hasPlacedWindow = false
     private var currentSession: RecordingSessionStore.SessionHandle?
     private var currentSessionWasRecovered = false
@@ -187,12 +192,13 @@ final class AppModel: ObservableObject {
     }
 
     func configureControlWindow(_ window: NSWindow) {
+        controlWindow = window
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isMovableByWindowBackground = true
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
-        window.sharingType = .none
+        applyControlWindowCapturePolicy(window)
         window.standardWindowButton(.zoomButton)?.isHidden = true
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
 
@@ -289,14 +295,17 @@ final class AppModel: ObservableObject {
             try? sessionStore.updateState(.paused, in: &currentSession)
             self.currentSession = currentSession
             recordingState = .paused
+            setControlWindowCaptureSuppressed(false)
             statusMessage = "Paused."
 
         case .paused:
             AppLog.info("Resume recording requested.")
+            setControlWindowCaptureSuppressed(true)
             recorder.resume()
             try? sessionStore.updateState(.recording, in: &currentSession)
             self.currentSession = currentSession
             recordingState = .recording
+            setControlWindowCaptureSuppressed(false)
             statusMessage = "Recording resumed."
 
         case .idle:
@@ -462,6 +471,7 @@ final class AppModel: ObservableObject {
                 )
             )
 
+            setControlWindowCaptureSuppressed(true)
             try await recorder.start()
 
             self.currentSession = workingSession
@@ -469,6 +479,7 @@ final class AppModel: ObservableObject {
             self.recorder = recorder
             lastRecordingURL = nil
             recordingState = .recording
+            setControlWindowCaptureSuppressed(false)
             statusMessage =
                 recovered
                 ? "Interrupted recording resumed."
@@ -486,6 +497,7 @@ final class AppModel: ObservableObject {
                 }
             }
 
+            setControlWindowCaptureSuppressed(false)
             statusMessage = error.localizedDescription
         }
     }
@@ -507,6 +519,7 @@ final class AppModel: ObservableObject {
             let segmentURL = try await recorder.stop(discardOutput: discardOutput)
             self.recorder = nil
             recordingState = .idle
+            setControlWindowCaptureSuppressed(false)
 
             if discardOutput {
                 try? sessionStore.discardSession(currentSession)
@@ -576,6 +589,7 @@ final class AppModel: ObservableObject {
             self.currentSession = nil
             currentSessionWasRecovered = false
             recordingState = .idle
+            setControlWindowCaptureSuppressed(false)
             statusMessage = error.localizedDescription
             return false
         }
@@ -709,6 +723,20 @@ final class AppModel: ObservableObject {
             width: Int(selectedDisplay.size.width),
             height: Int(selectedDisplay.size.height)
         )
+    }
+
+    private func applyControlWindowCapturePolicy(_ window: NSWindow) {
+        window.sharingType =
+            (recordingState == .recording || isControlWindowCaptureSuppressed)
+            ? .none
+            : .readOnly
+    }
+
+    private func setControlWindowCaptureSuppressed(_ suppressed: Bool) {
+        isControlWindowCaptureSuppressed = suppressed
+        if let controlWindow {
+            applyControlWindowCapturePolicy(controlWindow)
+        }
     }
 
     private func requestPermissions() async -> Bool {

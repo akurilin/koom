@@ -111,15 +111,19 @@ npm run r2:setup
 # 4. verify the stack end to end (db reachable, R2 works, range requests OK)
 npm run doctor
 
-# 5. run the web app
+# 5. create the local macOS code-signing identity once
+#    (recommended before first client launch so Keychain trust survives rebuilds)
+./scripts/setup-dev-codesign.sh
+
+# 6. run the web app
 npm run dev -w web
 
-# 6. build and run the macOS client
+# 7. build and run the macOS client
 #    (preflights Ollama by default when local title generation is enabled)
 ./scripts/run.sh
 ```
 
-`npm run doctor` is the authoritative "is this environment actually usable?" check. It's always safe to re-run and exercises the database, R2 credentials, and HTTP range support that browser `<video>` scrubbing depends on.
+`npm run doctor` is the authoritative "is this environment actually usable?" check. It's always safe to re-run and exercises the database, R2 credentials, HTTP range support that browser `<video>` scrubbing depends on, and on macOS it warns if the local desktop-client signing identity is missing or unusable.
 
 `npm run r2:orphans` audits the shared R2 bucket for `recordings/{id}/...` objects that no longer have a matching row in the configured database set. It is dry-run by default; add `-- --delete` to remove confirmed orphans, and add `-- --prod-db-url ...` or `-- --prod-env-file ...` when you want to union a production database into the check.
 

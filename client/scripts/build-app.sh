@@ -9,6 +9,8 @@ EXECUTABLE_PATH="$BUILD_DIR/debug/koom"
 APP_ICON_SOURCE_PATH="$ROOT_DIR/assets/camera-lens-glitch.png"
 APP_ICON_PATH="$APP_PATH/Contents/Resources/AppIcon.icns"
 CLEAN_BUILD=false
+DEFAULT_CODESIGN_IDENTITY="koom Local Dev"
+KOOM_CODESIGN_IDENTITY="${KOOM_CODESIGN_IDENTITY:-}"
 
 usage() {
     cat >&2 <<'EOF'
@@ -17,6 +19,16 @@ Usage: ./scripts/build-app.sh [--clean]
 Options:
   --clean    Remove .build before invoking swift build.
   --help     Show this help text.
+
+Environment:
+  KOOM_CODESIGN_IDENTITY
+      Optional `codesign` identity to use for signing koom.app.
+      Defaults to: koom Local Dev
+      Create it with: ./scripts/setup-dev-codesign.sh
+      When the selected identity is missing, the bundle is ad hoc
+      signed, which means macOS Keychain and TCC trust decisions
+      are tied to the current binary hash and may re-prompt after
+      rebuilds.
 EOF
 }
 
@@ -105,6 +117,28 @@ generate_app_icon() {
     iconutil -c icns "$iconset_dir" -o "$APP_ICON_PATH"
 }
 
+sign_app_bundle() {
+    local sign_identity
+    sign_identity="${KOOM_CODESIGN_IDENTITY:-$DEFAULT_CODESIGN_IDENTITY}"
+
+    if security find-identity -v -p codesigning 2>/dev/null | grep -F "\"$sign_identity\"" >/dev/null; then
+        echo "Signing app bundle with identity: $sign_identity" >&2
+        codesign --force --deep --sign "$sign_identity" "$APP_PATH"
+        return
+    fi
+
+    if [[ -n "${KOOM_CODESIGN_IDENTITY}" ]]; then
+        echo "Configured codesign identity '$sign_identity' was not found. Falling back to ad hoc signing." >&2
+    else
+        echo "Default codesign identity '$sign_identity' was not found. Falling back to ad hoc signing." >&2
+        echo "Run ./scripts/setup-dev-codesign.sh once to create and trust it." >&2
+    fi
+
+    echo "Signing app bundle ad hoc." >&2
+    echo "Keychain 'Always Allow' decisions will not survive code changes under ad hoc signing; set KOOM_CODESIGN_IDENTITY to a stable certificate to avoid repeated prompts." >&2
+    codesign --force --deep --sign - "$APP_PATH"
+}
+
 cd "$ROOT_DIR"
 
 if [[ "$CLEAN_BUILD" == true ]]; then
@@ -119,6 +153,6 @@ cp "$EXECUTABLE_PATH" "$APP_PATH/Contents/MacOS/koom"
 cp "$ROOT_DIR/App/Info.plist" "$APP_PATH/Contents/Info.plist"
 generate_app_icon
 
-codesign --force --deep --sign - "$APP_PATH" >/dev/null 2>&1 || true
+sign_app_bundle >/dev/null
 
 printf '%s\n' "$APP_PATH"

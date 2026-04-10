@@ -41,6 +41,11 @@ let package = Package(
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("UniformTypeIdentifiers"),
             ]
+        ),
+        .testTarget(
+            name: "koomTests",
+            dependencies: ["koom"],
+            path: "Tests/koomTests"
         )
     ]
 )

@@ -37,18 +37,6 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         let expectedFrameRate: Int
     }
 
-    private struct TrackTimingState {
-        var firstPTS: CMTime?
-        var lastRetimedPTS: CMTime?
-        var hasLoggedSourceFormat = false
-    }
-
-    private struct PauseTimingState {
-        var accumulatedOffset: CMTime = .zero
-        var pausePTS: CMTime?
-        var needsResumeOffset = false
-    }
-
     private struct MicrophoneConfiguration {
         let writerSettings: [String: Any]
     }
@@ -56,24 +44,18 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     private let configuration: Configuration
     private let onRuntimeIssue: RuntimeIssueHandler?
     private let sampleQueue = DispatchQueue(label: "koom.recording.samples")
-    private let maxConsecutiveAudioBackpressureSamples = 5
 
     private var stream: SCStream?
     private var writer: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
     private var hasStartedSession = false
-    private var sessionStartPTS: CMTime?
-    private var videoTimingState = TrackTimingState()
-    private var audioTimingState = TrackTimingState()
-    private var pauseTimingState = PauseTimingState()
-    private var isPaused = false
+    private var timeline = RecorderTimelineController()
+    private var backpressureMonitor = RecorderBackpressureMonitor()
     private var isFinishing = false
     private var isStopping = false
     private var hasLoggedWriterFailure = false
     private var hasReportedRuntimeIssue = false
-    private var droppedVideoSamples = 0
-    private var consecutiveAudioBackpressureSamples = 0
 
     init(
         configuration: Configuration,
@@ -216,17 +198,14 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     func pause() {
         sampleQueue.async {
-            guard !self.isPaused else { return }
-            self.isPaused = true
+            self.timeline.pause()
             AppLog.info("Recorder paused.")
         }
     }
 
     func resume() {
         sampleQueue.async {
-            guard self.isPaused else { return }
-            self.isPaused = false
-            self.pauseTimingState.needsResumeOffset = true
+            self.timeline.resume()
             AppLog.info("Recorder resumed.")
         }
     }
@@ -258,17 +237,12 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             videoInput = nil
             audioInput = nil
             hasStartedSession = false
-            sessionStartPTS = nil
-            videoTimingState = TrackTimingState()
-            audioTimingState = TrackTimingState()
-            pauseTimingState = PauseTimingState()
-            isPaused = false
+            timeline = RecorderTimelineController()
+            backpressureMonitor = RecorderBackpressureMonitor()
             isFinishing = false
             isStopping = false
             hasLoggedWriterFailure = false
             hasReportedRuntimeIssue = false
-            droppedVideoSamples = 0
-            consecutiveAudioBackpressureSamples = 0
         }
 
         if discardOutput {
@@ -302,8 +276,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             guard
                 let retimedBuffer = prepareRetimedBuffer(
                     sampleBuffer,
-                    state: &videoTimingState,
-                    trackName: "video"
+                    track: .video
                 )
             else {
                 return
@@ -311,14 +284,13 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             appendPreparedBuffer(
                 retimedBuffer,
                 to: videoInput,
-                mediaKind: "video"
+                track: .video
             )
         case .audio:
             guard
                 let retimedBuffer = prepareRetimedBuffer(
                     sampleBuffer,
-                    state: &audioTimingState,
-                    trackName: "audio"
+                    track: .audio
                 )
             else {
                 return
@@ -326,7 +298,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             appendPreparedBuffer(
                 retimedBuffer,
                 to: audioInput,
-                mediaKind: "audio"
+                track: .audio
             )
         default:
             return
@@ -336,153 +308,100 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     private func appendPreparedBuffer(
         _ sampleBuffer: CMSampleBuffer,
         to input: AVAssetWriterInput?,
-        mediaKind: String
+        track: RecorderTrack
     ) {
         guard let input else { return }
 
         guard input.isReadyForMoreMediaData else {
             handleInputBackpressure(
-                whileAppending: mediaKind,
+                whileAppending: track,
                 sampleBuffer: sampleBuffer
             )
             return
         }
 
-        if mediaKind == "audio" {
-            consecutiveAudioBackpressureSamples = 0
-        }
+        backpressureMonitor.noteSuccessfulAppend(for: track)
 
         if !input.append(sampleBuffer) {
             logWriterFailureIfNeeded(
-                whileAppending: mediaKind,
+                whileAppending: track,
                 sampleBuffer: sampleBuffer
             )
             reportRuntimeIssue(
-                "Failed appending \(mediaKind) sample. \(Self.writerFailureDescription(writer))"
+                "Failed appending \(track.rawValue) sample. \(Self.writerFailureDescription(writer))"
             )
         }
     }
 
     private func handleInputBackpressure(
-        whileAppending mediaKind: String,
+        whileAppending track: RecorderTrack,
         sampleBuffer: CMSampleBuffer
     ) {
-        if mediaKind == "audio" {
-            consecutiveAudioBackpressureSamples += 1
-            if consecutiveAudioBackpressureSamples == 1
-                || consecutiveAudioBackpressureSamples
-                    == maxConsecutiveAudioBackpressureSamples
-            {
-                let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-                let ptsDescription = CMTIME_IS_VALID(pts) ? "\(pts.seconds)" : "invalid"
-                AppLog.error(
-                    "Audio writer backpressure at PTS \(ptsDescription). consecutiveDrops=\(consecutiveAudioBackpressureSamples)"
-                )
-            }
-
-            if consecutiveAudioBackpressureSamples
-                >= maxConsecutiveAudioBackpressureSamples
-            {
-                reportRuntimeIssue(
-                    "The microphone track fell behind while recording. koom stopped the recording to preserve the captured portion."
-                )
-            }
-            return
-        }
-
-        droppedVideoSamples += 1
-        if droppedVideoSamples == 1 || droppedVideoSamples.isMultiple(of: 60) {
+        let decision = backpressureMonitor.noteBackpressure(for: track)
+        if decision.shouldLog {
             let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             let ptsDescription = CMTIME_IS_VALID(pts) ? "\(pts.seconds)" : "invalid"
-            AppLog.error(
-                "Dropped \(droppedVideoSamples) video sample(s) because the writer was not ready. latestPTS=\(ptsDescription)"
+            switch track {
+            case .audio:
+                AppLog.error(
+                    "Audio writer backpressure at PTS \(ptsDescription). consecutiveDrops=\(decision.consecutiveAudioBackpressureSamples)"
+                )
+            case .video:
+                AppLog.error(
+                    "Dropped \(decision.droppedVideoSamples) video sample(s) because the writer was not ready. latestPTS=\(ptsDescription)"
+                )
+            }
+        }
+
+        if decision.shouldReportRuntimeIssue {
+            reportRuntimeIssue(
+                "The microphone track fell behind while recording. koom stopped the recording to preserve the captured portion."
             )
         }
     }
 
     private func prepareRetimedBuffer(
         _ sampleBuffer: CMSampleBuffer,
-        state: inout TrackTimingState,
-        trackName: String
+        track: RecorderTrack
     ) -> CMSampleBuffer? {
         let sourcePTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let decision = timeline.processSample(sourcePTS: sourcePTS, track: track)
 
-        if isPaused {
-            if pauseTimingState.pausePTS == nil, CMTIME_IS_VALID(sourcePTS) {
-                pauseTimingState.pausePTS = sourcePTS
+        if decision.shouldStartSession, !hasStartedSession {
+            writer?.startSession(atSourceTime: .zero)
+            hasStartedSession = true
+            AppLog.info(
+                "Anchored recording session at source PTS \(sourcePTS.seconds) via \(track.rawValue) track."
+            )
+        }
+
+        if decision.didAnchorTrack {
+            let offsetSeconds = decision.sessionOffset.map(\.seconds) ?? 0
+            AppLog.info(
+                "Anchored \(track.rawValue) track at source PTS \(sourcePTS.seconds), session offset \(offsetSeconds)."
+            )
+        }
+
+        if decision.shouldLogFirstSampleFormat {
+            AppLog.info(
+                "First \(track.rawValue) sample format: \(Self.describeSampleBufferFormat(sampleBuffer))"
+            )
+        }
+
+        guard decision.shouldAppend, let offset = decision.retimeOffset else {
+            if decision.dropReason == .nonMonotonic {
+                let currentPTS = CMTimeSubtract(sourcePTS, decision.retimeOffset ?? .zero)
+                AppLog.error(
+                    "Dropped non-monotonic \(track.rawValue) sample. currentPTS=\(currentPTS.seconds)"
+                )
             }
             return nil
         }
 
-        if pauseTimingState.needsResumeOffset {
-            if let pausePTS = pauseTimingState.pausePTS, CMTIME_IS_VALID(sourcePTS) {
-                let pauseDelta = CMTimeSubtract(sourcePTS, pausePTS)
-                if pauseDelta > .zero {
-                    pauseTimingState.accumulatedOffset = CMTimeAdd(
-                        pauseTimingState.accumulatedOffset,
-                        pauseDelta
-                    )
-                }
-            }
-
-            pauseTimingState.pausePTS = nil
-            pauseTimingState.needsResumeOffset = false
-        }
-
-        if state.firstPTS == nil, CMTIME_IS_VALID(sourcePTS) {
-            state.firstPTS = sourcePTS
-
-            if !hasStartedSession {
-                writer?.startSession(atSourceTime: .zero)
-                hasStartedSession = true
-                sessionStartPTS = sourcePTS
-                AppLog.info(
-                    "Anchored recording session at source PTS \(sourcePTS.seconds) via \(trackName) track."
-                )
-            }
-
-            let sessionOffset =
-                sessionStartPTS.map {
-                    CMTimeSubtract(sourcePTS, $0)
-                } ?? .zero
-            AppLog.info(
-                "Anchored \(trackName) track at source PTS \(sourcePTS.seconds), session offset \(sessionOffset.seconds)."
-            )
-        }
-
-        if !state.hasLoggedSourceFormat {
-            state.hasLoggedSourceFormat = true
-            AppLog.info(
-                "First \(trackName) sample format: \(Self.describeSampleBufferFormat(sampleBuffer))"
-            )
-        }
-
-        guard let sessionStartPTS else { return nil }
-        let offset = CMTimeAdd(sessionStartPTS, pauseTimingState.accumulatedOffset)
         let retimedBuffer = sampleBuffer.retimed(bySubtracting: offset)
         if retimedBuffer == nil {
             reportRuntimeIssue(
-                "koom could not retime a \(trackName) sample buffer while recording."
-            )
-        }
-
-        if let retimedBuffer,
-            !Self.isMonotonic(
-                sampleBuffer: retimedBuffer,
-                after: state.lastRetimedPTS
-            )
-        {
-            let currentPTS = CMSampleBufferGetPresentationTimeStamp(retimedBuffer)
-            let previousPTS = state.lastRetimedPTS.map(\.seconds) ?? -1
-            AppLog.error(
-                "Dropped non-monotonic \(trackName) sample. previousPTS=\(previousPTS) currentPTS=\(currentPTS.seconds)"
-            )
-            return nil
-        }
-
-        if let retimedBuffer {
-            state.lastRetimedPTS = CMSampleBufferGetPresentationTimeStamp(
-                retimedBuffer
+                "koom could not retime a \(track.rawValue) sample buffer while recording."
             )
         }
 
@@ -497,7 +416,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     }
 
     private func logWriterFailureIfNeeded(
-        whileAppending mediaKind: String,
+        whileAppending track: RecorderTrack,
         sampleBuffer: CMSampleBuffer
     ) {
         guard !hasLoggedWriterFailure else { return }
@@ -507,7 +426,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         let ptsDescription =
             CMTIME_IS_VALID(sourcePTS) ? "\(sourcePTS.seconds)" : "invalid"
         AppLog.error(
-            "Failed appending \(mediaKind) sample at retimed PTS \(ptsDescription). \(Self.writerFailureDescription(writer))"
+            "Failed appending \(track.rawValue) sample at retimed PTS \(ptsDescription). \(Self.writerFailureDescription(writer))"
         )
     }
 
@@ -681,18 +600,6 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
         return
             "formatID=\(formatID) sampleRate=\(sampleRate) channels=\(channelCount)"
-    }
-
-    private static func isMonotonic(
-        sampleBuffer: CMSampleBuffer,
-        after previousPTS: CMTime?
-    ) -> Bool {
-        guard let previousPTS else { return true }
-        let currentPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        guard CMTIME_IS_VALID(currentPTS), CMTIME_IS_VALID(previousPTS) else {
-            return true
-        }
-        return currentPTS > previousPTS
     }
 
     private static func fourCCDescription(_ value: FourCharCode) -> String {

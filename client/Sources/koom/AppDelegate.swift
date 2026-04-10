@@ -123,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .environmentObject(model)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 380),
+            contentRect: NSRect(x: 0, y: 0, width: 430, height: 520),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false

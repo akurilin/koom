@@ -139,8 +139,23 @@ test("admin recordings happy path", async ({ page }) => {
     // ─────────────────────────────────────────────────────────────
     await mediumCard.getByTestId("watch-link").first().click();
     await expect(page).toHaveURL(/\/r\/[0-9a-f-]+(\?.*)?$/);
+    await expect(page.getByTestId("watch-breadcrumb")).toBeVisible();
+    await expect(
+      page.getByTestId("watch-breadcrumb-recordings-link"),
+    ).toHaveText("My Recordings");
+    await expect(page.getByTestId("watch-breadcrumb")).toContainText(
+      filenameMedium,
+    );
+
+    await page.getByTestId("watch-breadcrumb-recordings-link").click();
+    await expect(page).toHaveURL(/\/(\?.*)?$/);
+    await expect(page.getByTestId("recordings-header")).toBeVisible();
 
     await page.goBack();
+    await expect(page).toHaveURL(/\/r\/[0-9a-f-]+(\?.*)?$/);
+    await expect(page.getByTestId("watch-breadcrumb")).toBeVisible();
+
+    await page.goForward();
     await expect(page).toHaveURL(/\/(\?.*)?$/);
     await expect(page.getByTestId("recordings-header")).toBeVisible();
 

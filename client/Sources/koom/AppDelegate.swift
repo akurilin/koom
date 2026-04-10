@@ -29,20 +29,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// in — otherwise the settings window opens first and the
     /// control panel ends up behind it.
     private func maybePromptForSettings() {
-        guard !KoomConfig.isFullyConfigured else {
-            AppLog.info("koom configuration present; skipping first-run prompt.")
+        let activeEnvironment = KoomConfig.activeEnvironment
+        guard KoomConfig.isFullyConfigured(for: activeEnvironment) else {
+            AppLog.info(
+                "koom is not fully configured for \(activeEnvironment.displayName); opening Settings window."
+            )
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                NSApp.sendAction(
+                    Selector(("showSettingsWindow:")),
+                    to: nil,
+                    from: nil
+                )
+            }
             return
         }
 
-        AppLog.info("koom is not fully configured; opening Settings window.")
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(250))
-            NSApp.sendAction(
-                Selector(("showSettingsWindow:")),
-                to: nil,
-                from: nil
-            )
-        }
+        AppLog.info(
+            "koom configuration present for \(activeEnvironment.displayName); skipping first-run prompt."
+        )
     }
 
     func applicationWillTerminate(_ notification: Notification) {

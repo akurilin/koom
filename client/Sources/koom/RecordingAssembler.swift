@@ -87,7 +87,7 @@ final class RecordingAssembler: @unchecked Sendable {
             cursor = CMTimeAdd(cursor, preparedSegment.duration)
         }
 
-        let outputURL = store.finalOutputURL(for: handle.session.finalFilename)
+        let outputURL = store.finalOutputURL(for: handle)
         try await export(
             asset: composition,
             to: outputURL,

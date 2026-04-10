@@ -7,6 +7,7 @@ final class RecordingSessionStore: @unchecked Sendable {
     struct SessionHandle {
         var session: RecordingSession
         let directoryURL: URL
+        let environment: KoomEnvironment
 
         var manifestURL: URL {
             directoryURL.appendingPathComponent(
@@ -49,6 +50,7 @@ final class RecordingSessionStore: @unchecked Sendable {
         let createdAt: Date
         var updatedAt: Date
         var state: State
+        var environment: KoomEnvironment?
         let finalFilename: String
         let display: DisplaySnapshot
         let cameraID: String?
@@ -65,16 +67,20 @@ final class RecordingSessionStore: @unchecked Sendable {
 
     func createSession(
         finalFilename: String,
+        environment: KoomEnvironment,
         display: RecordingSession.DisplaySnapshot,
         cameraID: String?,
         microphoneID: String?,
         fragmentIntervalSeconds: TimeInterval
     ) throws -> SessionHandle {
-        try ensureBaseDirectoriesExist()
+        try ensureBaseDirectoriesExist(for: environment)
 
         let sessionID = UUID().uuidString.lowercased()
-        let directoryURL = sessionsDirectoryURL()
-            .appendingPathComponent(sessionID, isDirectory: true)
+        let directoryURL = Self.sessionsDirectoryURL(
+            for: environment,
+            fileManager: fileManager
+        )
+        .appendingPathComponent(sessionID, isDirectory: true)
         try fileManager.createDirectory(
             at: directoryURL,
             withIntermediateDirectories: true
@@ -82,11 +88,12 @@ final class RecordingSessionStore: @unchecked Sendable {
 
         let now = Date()
         let session = RecordingSession(
-            manifestVersion: 1,
+            manifestVersion: 2,
             sessionID: sessionID,
             createdAt: now,
             updatedAt: now,
             state: .recording,
+            environment: environment,
             finalFilename: finalFilename,
             display: display,
             cameraID: normalizedOptionalID(cameraID),
@@ -95,13 +102,42 @@ final class RecordingSessionStore: @unchecked Sendable {
             segments: []
         )
 
-        let handle = SessionHandle(session: session, directoryURL: directoryURL)
+        let handle = SessionHandle(
+            session: session,
+            directoryURL: directoryURL,
+            environment: environment
+        )
         try writeManifest(for: handle)
         return handle
     }
 
     func loadRecoverableSessions() -> [SessionHandle] {
-        let sessionsDirectory = sessionsDirectoryURL()
+        var handles: [SessionHandle] = []
+
+        for environment in KoomEnvironment.allCases {
+            handles += contentsOfRecoverableSessions(
+                at: Self.sessionsDirectoryURL(
+                    for: environment,
+                    fileManager: fileManager
+                ),
+                fallbackEnvironment: environment
+            )
+        }
+
+        handles += contentsOfRecoverableSessions(
+            at: Self.legacySessionsDirectoryURL(fileManager: fileManager),
+            fallbackEnvironment: KoomConfig.legacyEnvironment
+        )
+
+        return handles.sorted {
+            $0.session.updatedAt > $1.session.updatedAt
+        }
+    }
+
+    private func contentsOfRecoverableSessions(
+        at sessionsDirectory: URL,
+        fallbackEnvironment: KoomEnvironment
+    ) -> [SessionHandle] {
         guard
             let entries = try? fileManager.contentsOfDirectory(
                 at: sessionsDirectory,
@@ -121,7 +157,7 @@ final class RecordingSessionStore: @unchecked Sendable {
             let decoder = JSONDecoder()
             guard
                 let data = try? Data(contentsOf: manifestURL),
-                let session = try? decoder.decode(
+                let decodedSession = try? decoder.decode(
                     RecordingSession.self,
                     from: data
                 )
@@ -129,11 +165,23 @@ final class RecordingSessionStore: @unchecked Sendable {
                 continue
             }
 
-            guard session.state != .completed, session.state != .discarded else {
+            guard
+                decodedSession.state != .completed,
+                decodedSession.state != .discarded
+            else {
                 continue
             }
 
-            let handle = SessionHandle(session: session, directoryURL: directoryURL)
+            var session = decodedSession
+            if session.environment == nil {
+                session.environment = fallbackEnvironment
+            }
+
+            let handle = SessionHandle(
+                session: session,
+                directoryURL: directoryURL,
+                environment: session.environment ?? fallbackEnvironment
+            )
             let existingSegments = existingSegmentURLs(for: handle)
             guard !existingSegments.isEmpty else {
                 try? fileManager.removeItem(at: directoryURL)
@@ -143,9 +191,7 @@ final class RecordingSessionStore: @unchecked Sendable {
             handles.append(handle)
         }
 
-        return handles.sorted {
-            $0.session.updatedAt > $1.session.updatedAt
-        }
+        return handles
     }
 
     func createNextSegment(in handle: inout SessionHandle) throws -> URL {
@@ -211,8 +257,21 @@ final class RecordingSessionStore: @unchecked Sendable {
         try writeManifest(for: handle)
     }
 
-    func finalOutputURL(for filename: String) -> URL {
-        recordingsDirectoryURL().appendingPathComponent(filename)
+    func finalOutputURL(
+        for filename: String,
+        environment: KoomEnvironment
+    ) -> URL {
+        Self.recordingsDirectoryURL(
+            for: environment,
+            fileManager: fileManager
+        ).appendingPathComponent(filename)
+    }
+
+    func finalOutputURL(for handle: SessionHandle) -> URL {
+        finalOutputURL(
+            for: handle.session.finalFilename,
+            environment: handle.environment
+        )
     }
 
     func segmentURL(
@@ -230,7 +289,7 @@ final class RecordingSessionStore: @unchecked Sendable {
         }
 
         let sourceURL = segmentURL(for: onlySegment, in: handle)
-        let destinationURL = finalOutputURL(for: handle.session.finalFilename)
+        let destinationURL = finalOutputURL(for: handle)
         if fileManager.fileExists(atPath: destinationURL.path) {
             try fileManager.removeItem(at: destinationURL)
         }
@@ -255,29 +314,67 @@ final class RecordingSessionStore: @unchecked Sendable {
             .filter { fileManager.fileExists(atPath: $0.path) }
     }
 
-    private func ensureBaseDirectoriesExist() throws {
+    static func recordingsDirectoryURL(
+        for environment: KoomEnvironment,
+        fileManager: FileManager = .default
+    ) -> URL {
+        baseDirectory(fileManager: fileManager)
+            .appendingPathComponent("koom", isDirectory: true)
+            .appendingPathComponent(
+                environment.recordingsSubdirectoryName,
+                isDirectory: true
+            )
+    }
+
+    static func legacyRecordingsDirectoryURL(
+        fileManager: FileManager = .default
+    ) -> URL {
+        baseDirectory(fileManager: fileManager)
+            .appendingPathComponent("koom", isDirectory: true)
+    }
+
+    private func ensureBaseDirectoriesExist(
+        for environment: KoomEnvironment
+    ) throws {
         try fileManager.createDirectory(
-            at: recordingsDirectoryURL(),
+            at: Self.recordingsDirectoryURL(
+                for: environment,
+                fileManager: fileManager
+            ),
             withIntermediateDirectories: true
         )
         try fileManager.createDirectory(
-            at: sessionsDirectoryURL(),
+            at: Self.sessionsDirectoryURL(
+                for: environment,
+                fileManager: fileManager
+            ),
             withIntermediateDirectories: true
         )
     }
 
-    private func recordingsDirectoryURL() -> URL {
-        let baseDirectory =
-            fileManager.urls(
-                for: .moviesDirectory,
-                in: .userDomainMask
-            ).first ?? fileManager.homeDirectoryForCurrentUser
-        return baseDirectory.appendingPathComponent("koom", isDirectory: true)
+    private static func sessionsDirectoryURL(
+        for environment: KoomEnvironment,
+        fileManager: FileManager
+    ) -> URL {
+        recordingsDirectoryURL(
+            for: environment,
+            fileManager: fileManager
+        )
+        .appendingPathComponent(".sessions", isDirectory: true)
     }
 
-    private func sessionsDirectoryURL() -> URL {
-        recordingsDirectoryURL()
+    private static func legacySessionsDirectoryURL(
+        fileManager: FileManager
+    ) -> URL {
+        legacyRecordingsDirectoryURL(fileManager: fileManager)
             .appendingPathComponent(".sessions", isDirectory: true)
+    }
+
+    private static func baseDirectory(fileManager: FileManager) -> URL {
+        fileManager.urls(
+            for: .moviesDirectory,
+            in: .userDomainMask
+        ).first ?? fileManager.homeDirectoryForCurrentUser
     }
 
     private func segmentURL(

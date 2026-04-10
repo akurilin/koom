@@ -14,9 +14,11 @@
  * know about the query string.
  */
 
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactElement } from "react";
 
+import { isAdminSessionValid } from "@/lib/auth/session";
 import { getCompletedRecordingById } from "@/lib/db/queries";
 import { recordingPublicUrl } from "@/lib/r2/client";
 
@@ -42,10 +44,40 @@ export default async function WatchPage(
 
   const videoUrl = recordingPublicUrl(recording.id);
   const displayTitle = recording.title ?? recording.originalFilename;
+  const showAdminBreadcrumb = await isAdminSessionValid();
 
   return (
     <main className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center px-4 py-8 sm:py-12">
       <div className="w-full max-w-4xl">
+        {showAdminBreadcrumb && (
+          <nav
+            aria-label="Breadcrumb"
+            data-testid="watch-breadcrumb"
+            className="mb-4 sm:mb-6"
+          >
+            <ol className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">
+              <li>
+                <Link
+                  href="/"
+                  data-testid="watch-breadcrumb-recordings-link"
+                  className="rounded-sm transition hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
+                >
+                  My Recordings
+                </Link>
+              </li>
+              <li aria-hidden="true" className="text-zinc-600">
+                /
+              </li>
+              <li
+                className="min-w-0 max-w-full truncate text-zinc-200"
+                title={displayTitle}
+              >
+                {displayTitle}
+              </li>
+            </ol>
+          </nav>
+        )}
+
         <VideoPlayer src={videoUrl} contentType={recording.contentType} />
 
         <div className="mt-6 sm:mt-8">

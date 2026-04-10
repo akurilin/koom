@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ControlPanelView: View {
@@ -20,6 +21,14 @@ struct ControlPanelView: View {
                     model.refreshHardware()
                 }
                 .disabled(model.isBusy)
+
+                SettingsLink {
+                    Image(systemName: "gearshape.fill")
+                        .imageScale(.medium)
+                }
+                .buttonStyle(.borderless)
+                .help("Open Settings")
+                .accessibilityLabel("Open Settings")
             }
 
             VStack(alignment: .leading, spacing: 8) {

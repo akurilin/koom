@@ -154,7 +154,10 @@ final class Uploader {
     // MARK: Single-file upload (post-recording)
 
     @discardableResult
-    func uploadRecording(at fileURL: URL) async -> Bool {
+    func uploadRecording(
+        at fileURL: URL,
+        environment: KoomEnvironment = KoomConfig.activeEnvironment
+    ) async -> Bool {
         emit(.preparing)
 
         // Kick off the upload, local auto-title pipeline, and local
@@ -180,7 +183,10 @@ final class Uploader {
             return title
         }
         async let thumbnailData: Data? = Self.runThumbnail(fileURL: fileURL)
-        let result = await performUpload(at: fileURL)
+        let result = await performUpload(
+            at: fileURL,
+            environment: environment
+        )
 
         switch result {
         case .success(let outcome):
@@ -188,14 +194,19 @@ final class Uploader {
             let title = await titleTask.value
             if let title, !title.isEmpty {
                 emit(.postProcessing(stage: .savingGeneratedTitle))
-                await patchTitle(recordingId: outcome.recordingId, title: title)
+                await patchTitle(
+                    recordingId: outcome.recordingId,
+                    title: title,
+                    environment: environment
+                )
             }
             emit(.postProcessing(stage: .generatingThumbnail))
             if let thumbnailData = await thumbnailData {
                 emit(.postProcessing(stage: .uploadingThumbnail))
                 await uploadThumbnail(
                     recordingId: outcome.recordingId,
-                    jpegData: thumbnailData
+                    jpegData: thumbnailData,
+                    environment: environment
                 )
             }
             openAndPasteShareURL(outcome.shareURL)
@@ -230,8 +241,12 @@ final class Uploader {
         await ThumbnailGenerator.generateJPEGData(from: fileURL)
     }
 
-    private func patchTitle(recordingId: String, title: String) async {
-        guard let api = makeAPIClient() else { return }
+    private func patchTitle(
+        recordingId: String,
+        title: String,
+        environment: KoomEnvironment
+    ) async {
+        guard let api = makeAPIClient(for: environment) else { return }
         do {
             _ = try await api.updateRecordingTitle(
                 recordingId: recordingId,
@@ -245,8 +260,12 @@ final class Uploader {
         }
     }
 
-    private func uploadThumbnail(recordingId: String, jpegData: Data) async {
-        guard let api = makeAPIClient() else { return }
+    private func uploadThumbnail(
+        recordingId: String,
+        jpegData: Data,
+        environment: KoomEnvironment
+    ) async {
+        guard let api = makeAPIClient(for: environment) else { return }
         do {
             let response = try await api.uploadRecordingThumbnail(
                 recordingId: recordingId,
@@ -276,8 +295,9 @@ final class Uploader {
     func catchUpRecordings(
         onCatchUpStateChange: @Sendable @escaping (CatchUpState) -> Void
     ) async {
+        let environment = KoomConfig.activeEnvironment
         onCatchUpStateChange(.scanning)
-        let localFiles = Self.scanLocalRecordings()
+        let localFiles = Self.scanLocalRecordings(in: environment)
 
         guard !localFiles.isEmpty else {
             onCatchUpStateChange(.completed(uploaded: 0, total: 0))
@@ -289,7 +309,7 @@ final class Uploader {
         // We need the API client for the diff call — load config once
         // upfront so we fail fast if it's missing, instead of after
         // the directory scan.
-        guard let api = makeAPIClient() else {
+        guard let api = makeAPIClient(for: environment) else {
             onCatchUpStateChange(
                 .failed(
                     uploaded: 0,
@@ -327,7 +347,7 @@ final class Uploader {
         }
 
         AppLog.info(
-            "Catch-up found \(missingURLs.count) missing file(s) out of \(localFiles.count) local recording(s)."
+            "Catch-up for \(environment.displayName) found \(missingURLs.count) missing file(s) out of \(localFiles.count) local recording(s)."
         )
 
         var successCount = 0
@@ -343,11 +363,14 @@ final class Uploader {
                 )
             )
             AppLog.info(
-                "Catch-up \(humanIndex)/\(missingURLs.count): \(fileURL.lastPathComponent)"
+                "Catch-up \(environment.displayName) \(humanIndex)/\(missingURLs.count): \(fileURL.lastPathComponent)"
             )
 
             emit(.preparing)
-            let result = await performUpload(at: fileURL)
+            let result = await performUpload(
+                at: fileURL,
+                environment: environment
+            )
 
             switch result {
             case .success(let outcome):
@@ -357,7 +380,8 @@ final class Uploader {
                     emit(.postProcessing(stage: .uploadingThumbnail))
                     await uploadThumbnail(
                         recordingId: outcome.recordingId,
-                        jpegData: thumbnailData
+                        jpegData: thumbnailData,
+                        environment: environment
                     )
                 }
                 // Drop the per-file progress UI between files so it
@@ -401,8 +425,11 @@ final class Uploader {
     /// finalizing. Does NOT emit the terminal `.completed` or
     /// `.failed` states — that's the caller's job — and does NOT
     /// perform the clipboard/browser side effects.
-    private func performUpload(at fileURL: URL) async -> Result<UploadOutcome, UploadFailure> {
-        guard let api = makeAPIClient() else {
+    private func performUpload(
+        at fileURL: URL,
+        environment: KoomEnvironment
+    ) async -> Result<UploadOutcome, UploadFailure> {
+        guard let api = makeAPIClient(for: environment) else {
             return .failure(
                 UploadFailure(
                     message: KoomAPI.APIError.missingBackendURL.localizedDescription
@@ -537,13 +564,15 @@ final class Uploader {
         NSWorkspace.shared.open(shareURL)
     }
 
-    private func makeAPIClient() -> KoomAPI? {
-        guard let backendURL = KoomConfig.backendURL else {
+    private func makeAPIClient(
+        for environment: KoomEnvironment
+    ) -> KoomAPI? {
+        guard let backendURL = KoomConfig.backendURL(for: environment) else {
             return nil
         }
         let secret: String
         do {
-            guard let loaded = try KoomConfig.loadAdminSecret(),
+            guard let loaded = try KoomConfig.loadAdminSecret(for: environment),
                 !loaded.isEmpty
             else {
                 return nil
@@ -586,28 +615,38 @@ final class Uploader {
     /// `koom_YYYY-MM-DD_HH-mm-ss.mp4`, also gives chronological
     /// order). Returns an empty array if the directory doesn't
     /// exist yet.
-    private static func scanLocalRecordings() -> [URL] {
-        let baseDirectory =
-            FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
-        let recordingsDirectory = baseDirectory.appendingPathComponent(
-            "koom",
-            isDirectory: true
-        )
+    private static func scanLocalRecordings(
+        in environment: KoomEnvironment
+    ) -> [URL] {
+        var directories = [
+            RecordingSessionStore.recordingsDirectoryURL(for: environment)
+        ]
 
-        guard
-            let entries = try? FileManager.default.contentsOfDirectory(
-                at: recordingsDirectory,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            )
-        else {
-            return []
+        if environment == KoomConfig.legacyEnvironment {
+            directories.append(RecordingSessionStore.legacyRecordingsDirectoryURL())
         }
 
-        return
-            entries
-            .filter { $0.pathExtension.lowercased() == "mp4" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        var seenPaths = Set<String>()
+        var recordings: [URL] = []
+
+        for recordingsDirectory in directories {
+            guard
+                let entries = try? FileManager.default.contentsOfDirectory(
+                    at: recordingsDirectory,
+                    includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                )
+            else {
+                continue
+            }
+
+            for entry in entries where entry.pathExtension.lowercased() == "mp4" {
+                if seenPaths.insert(entry.path).inserted {
+                    recordings.append(entry)
+                }
+            }
+        }
+
+        return recordings.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 }

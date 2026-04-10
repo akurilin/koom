@@ -432,6 +432,7 @@ final class AppModel: ObservableObject {
 
                 workingSession = try sessionStore.createSession(
                     finalFilename: makeOutputFilename(),
+                    environment: KoomConfig.activeEnvironment,
                     display: displaySnapshot,
                     cameraID: selectedCameraID.isEmpty ? nil : selectedCameraID,
                     microphoneID: selectedMicrophoneID.isEmpty ? nil : selectedMicrophoneID,
@@ -525,6 +526,7 @@ final class AppModel: ObservableObject {
                 try sessionStore.updateState(.finalizing, in: &currentSession)
 
                 let finalURL: URL
+                let uploadEnvironment = currentSession.environment
                 if !currentSessionWasRecovered && currentSession.session.segments.count == 1 {
                     finalURL = try sessionStore.promoteSingleSegmentToFinalLocation(
                         from: currentSession
@@ -547,7 +549,8 @@ final class AppModel: ObservableObject {
 
                 if uploadAfterStop, awaitUploadAfterStop {
                     let uploadSucceeded = await uploader.uploadRecording(
-                        at: finalURL
+                        at: finalURL,
+                        environment: uploadEnvironment
                     )
                     if !uploadSucceeded {
                         statusMessage =
@@ -555,8 +558,11 @@ final class AppModel: ObservableObject {
                         return false
                     }
                 } else if uploadAfterStop {
-                    Task { [uploader] in
-                        await uploader.uploadRecording(at: finalURL)
+                    Task { [uploader, uploadEnvironment] in
+                        await uploader.uploadRecording(
+                            at: finalURL,
+                            environment: uploadEnvironment
+                        )
                     }
                 }
             }
@@ -585,6 +591,7 @@ final class AppModel: ObservableObject {
         var recoverableSession = recoverableSession
 
         do {
+            KoomConfig.activeEnvironment = recoverableSession.environment
             try sessionStore.updateState(.finalizing, in: &recoverableSession)
             let finalURL = try await assembler.assembleSession(
                 recoverableSession,
@@ -594,8 +601,12 @@ final class AppModel: ObservableObject {
             lastRecordingURL = finalURL
             statusMessage = "Recovered \(finalURL.lastPathComponent)"
 
-            Task { [uploader] in
-                await uploader.uploadRecording(at: finalURL)
+            let uploadEnvironment = recoverableSession.environment
+            Task { [uploader, uploadEnvironment] in
+                await uploader.uploadRecording(
+                    at: finalURL,
+                    environment: uploadEnvironment
+                )
             }
         } catch {
             statusMessage = error.localizedDescription
@@ -611,7 +622,7 @@ final class AppModel: ObservableObject {
         alert.messageText = "Interrupted recording found"
         alert.informativeText =
             """
-            koom found an unfinished recording (\(recoverableSession.session.finalFilename)).
+            koom found an unfinished \(recoverableSession.environment.displayName) recording (\(recoverableSession.session.finalFilename)).
 
             You can resume it, finish the partial recording now, keep it for later, or discard it.
             """
@@ -639,6 +650,7 @@ final class AppModel: ObservableObject {
     private func applySelections(
         from recoverableSession: RecordingSessionStore.SessionHandle
     ) -> Bool {
+        KoomConfig.activeEnvironment = recoverableSession.environment
         refreshHardware()
 
         guard

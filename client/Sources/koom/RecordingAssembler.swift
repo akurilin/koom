@@ -77,11 +77,14 @@ final class RecordingAssembler: @unchecked Sendable {
                     )
                 }
 
-                try compositionAudioTrack?.insertTimeRange(
-                    timeRange,
-                    of: audioTrack,
-                    at: cursor
-                )
+                let audioDuration = preparedSegment.audioDuration ?? .zero
+                if audioDuration > .zero {
+                    try compositionAudioTrack?.insertTimeRange(
+                        CMTimeRange(start: .zero, duration: audioDuration),
+                        of: audioTrack,
+                        at: cursor
+                    )
+                }
             }
 
             cursor = CMTimeAdd(cursor, preparedSegment.duration)
@@ -97,10 +100,10 @@ final class RecordingAssembler: @unchecked Sendable {
     }
 
     private struct PreparedSegment {
-        let asset: AVURLAsset
         let duration: CMTime
         let videoTrack: AVAssetTrack
         let audioTrack: AVAssetTrack?
+        let audioDuration: CMTime?
     }
 
     private func loadPreparedSegments(
@@ -129,13 +132,20 @@ final class RecordingAssembler: @unchecked Sendable {
             }
 
             let audioTrack = tracks.first(where: { $0.mediaType == .audio })
+            let audioDuration: CMTime?
+            if let audioTrack {
+                let audioTimeRange = try await audioTrack.load(.timeRange)
+                audioDuration = CMTimeMinimum(duration, audioTimeRange.duration)
+            } else {
+                audioDuration = nil
+            }
 
             preparedSegments.append(
                 PreparedSegment(
-                    asset: asset,
                     duration: duration,
                     videoTrack: videoTrack,
-                    audioTrack: audioTrack
+                    audioTrack: audioTrack,
+                    audioDuration: audioDuration
                 )
             )
         }

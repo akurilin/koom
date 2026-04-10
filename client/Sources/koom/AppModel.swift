@@ -83,6 +83,7 @@ final class AppModel: ObservableObject {
     private var hasPlacedWindow = false
     private var currentSession: RecordingSessionStore.SessionHandle?
     private var currentSessionWasRecovered = false
+    private var isHandlingRecorderRuntimeIssue = false
 
     init(settingsStore: AppSettingsStore = AppSettingsStore()) {
         self.settingsStore = settingsStore
@@ -486,7 +487,12 @@ final class AppModel: ObservableObject {
                     ),
                     expectedFrameRate: compressionSettings.captureFrameRate
                         .framesPerSecond
-                )
+                ),
+                onRuntimeIssue: { [weak self] message in
+                    Task { [weak self] in
+                        await self?.handleRecorderRuntimeIssue(message)
+                    }
+                }
             )
 
             setControlWindowCaptureSuppressed(true)
@@ -603,6 +609,22 @@ final class AppModel: ObservableObject {
             }
             return true
         } catch {
+            if !discardOutput,
+                let salvagedURL = await salvageInterruptedRecording(
+                    from: &currentSession
+                )
+            {
+                self.recorder = nil
+                self.currentSession = nil
+                currentSessionWasRecovered = false
+                recordingState = .idle
+                setControlWindowCaptureSuppressed(false)
+                lastRecordingURL = salvagedURL
+                statusMessage =
+                    "Recording interrupted. Saved partial recording as \(salvagedURL.lastPathComponent)."
+                return true
+            }
+
             self.recorder = nil
             self.currentSession = nil
             currentSessionWasRecovered = false
@@ -610,6 +632,84 @@ final class AppModel: ObservableObject {
             setControlWindowCaptureSuppressed(false)
             statusMessage = error.localizedDescription
             return false
+        }
+    }
+
+    private func salvageInterruptedRecording(
+        from currentSession: inout RecordingSessionStore.SessionHandle
+    ) async -> URL? {
+        guard let latestSegment = currentSession.session.segments.last else {
+            return nil
+        }
+
+        let segmentURL = sessionStore.segmentURL(
+            for: latestSegment,
+            in: currentSession
+        )
+        guard FileManager.default.fileExists(atPath: segmentURL.path) else {
+            return nil
+        }
+
+        do {
+            let inspection = try await assembler.inspectSegment(at: segmentURL)
+            try sessionStore.markLatestSegmentStopped(
+                in: &currentSession,
+                cleanStop: false,
+                durationSeconds: inspection.durationSeconds,
+                hasVideo: inspection.hasVideo,
+                hasAudio: inspection.hasAudio
+            )
+            try sessionStore.updateState(.finalizing, in: &currentSession)
+
+            let finalURL: URL
+            if !currentSessionWasRecovered
+                && currentSession.session.segments.count == 1
+            {
+                finalURL = try sessionStore.promoteSingleSegmentToFinalLocation(
+                    from: currentSession
+                )
+            } else {
+                finalURL = try await assembler.assembleSession(
+                    currentSession,
+                    store: sessionStore
+                )
+            }
+
+            try? sessionStore.cleanupSessionDirectory(for: currentSession)
+            AppLog.info(
+                "Recovered partial recording without relaunch: \(finalURL.path)"
+            )
+            return finalURL
+        } catch {
+            AppLog.error(
+                "Could not salvage interrupted recording in-process: \(error.localizedDescription)"
+            )
+            return nil
+        }
+    }
+
+    private func handleRecorderRuntimeIssue(_ message: String) async {
+        guard !isHandlingRecorderRuntimeIssue else { return }
+        guard !isBusy else { return }
+        guard recorder != nil else { return }
+
+        isHandlingRecorderRuntimeIssue = true
+        defer { isHandlingRecorderRuntimeIssue = false }
+
+        AppLog.error("Recorder runtime issue detected: \(message)")
+        statusMessage = "Recording interrupted internally. Saving the partial recording..."
+
+        let stopSucceeded = await stopRecordingTask(
+            discardOutput: false,
+            restartAfterStop: false,
+            uploadAfterStop: false,
+            awaitUploadAfterStop: false
+        )
+
+        if stopSucceeded, let lastRecordingURL {
+            statusMessage = "Recording interrupted. Saved partial recording as \(lastRecordingURL.lastPathComponent)."
+        } else if !stopSucceeded {
+            statusMessage = "Recording interrupted. Relaunch koom if you need to recover the partial session."
         }
     }
 

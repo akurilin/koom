@@ -27,6 +27,8 @@ enum RecorderError: LocalizedError {
 }
 
 final class ScreenRecorder: NSObject, @unchecked Sendable {
+    typealias RuntimeIssueHandler = @Sendable (String) -> Void
+
     struct Configuration {
         let displayID: CGDirectDisplayID
         let microphoneID: String?
@@ -37,29 +39,48 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     private struct TrackTimingState {
         var firstPTS: CMTime?
-        var accumulatedPauseOffset: CMTime = .zero
+        var lastRetimedPTS: CMTime?
+        var hasLoggedSourceFormat = false
+    }
+
+    private struct PauseTimingState {
+        var accumulatedOffset: CMTime = .zero
         var pausePTS: CMTime?
         var needsResumeOffset = false
     }
 
+    private struct MicrophoneConfiguration {
+        let writerSettings: [String: Any]
+    }
+
     private let configuration: Configuration
+    private let onRuntimeIssue: RuntimeIssueHandler?
     private let sampleQueue = DispatchQueue(label: "koom.recording.samples")
+    private let maxConsecutiveAudioBackpressureSamples = 5
 
     private var stream: SCStream?
     private var writer: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var audioInput: AVAssetWriterInput?
-    private var microphoneCapture: MicrophoneCapture?
     private var hasStartedSession = false
     private var sessionStartPTS: CMTime?
     private var videoTimingState = TrackTimingState()
     private var audioTimingState = TrackTimingState()
+    private var pauseTimingState = PauseTimingState()
     private var isPaused = false
     private var isFinishing = false
+    private var isStopping = false
     private var hasLoggedWriterFailure = false
+    private var hasReportedRuntimeIssue = false
+    private var droppedVideoSamples = 0
+    private var consecutiveAudioBackpressureSamples = 0
 
-    init(configuration: Configuration) {
+    init(
+        configuration: Configuration,
+        onRuntimeIssue: RuntimeIssueHandler? = nil
+    ) {
         self.configuration = configuration
+        self.onRuntimeIssue = onRuntimeIssue
     }
 
     func start() async throws {
@@ -70,11 +91,19 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             try FileManager.default.removeItem(at: configuration.outputURL)
         }
 
-        let shareableContent = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let display = shareableContent.displays.first(where: { $0.displayID == configuration.displayID }) else {
+        let shareableContent = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: true
+        )
+        guard
+            let display = shareableContent.displays.first(where: {
+                $0.displayID == configuration.displayID
+            })
+        else {
             throw RecorderError.displayNotFound
         }
 
+        var microphoneConfiguration: MicrophoneConfiguration?
         let streamConfiguration = SCStreamConfiguration()
         streamConfiguration.width = display.width
         streamConfiguration.height = display.height
@@ -86,14 +115,45 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         streamConfiguration.showsCursor = true
         streamConfiguration.capturesAudio = false
 
-        let contentFilter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-        let stream = SCStream(filter: contentFilter, configuration: streamConfiguration, delegate: nil)
-        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: sampleQueue)
+        if let microphoneID = configuration.microphoneID {
+            microphoneConfiguration = try Self.microphoneConfiguration(
+                for: microphoneID
+            )
+            streamConfiguration.captureMicrophone = true
+            streamConfiguration.microphoneCaptureDeviceID = microphoneID
+        }
 
-        let writer = try AVAssetWriter(outputURL: configuration.outputURL, fileType: .mp4)
+        let contentFilter = SCContentFilter(
+            display: display,
+            excludingApplications: [],
+            exceptingWindows: []
+        )
+        let stream = SCStream(
+            filter: contentFilter,
+            configuration: streamConfiguration,
+            delegate: self
+        )
+        try stream.addStreamOutput(
+            self,
+            type: .screen,
+            sampleHandlerQueue: sampleQueue
+        )
+        if configuration.microphoneID != nil {
+            try stream.addStreamOutput(
+                self,
+                type: .microphone,
+                sampleHandlerQueue: sampleQueue
+            )
+        }
+
+        let writer = try AVAssetWriter(
+            outputURL: configuration.outputURL,
+            fileType: .mp4
+        )
         if let movieFragmentInterval = configuration.movieFragmentInterval {
             writer.movieFragmentInterval = movieFragmentInterval
         }
+
         let videoInput = AVAssetWriterInput(
             mediaType: .video,
             outputSettings: Self.videoSettings(
@@ -105,7 +165,9 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         videoInput.expectsMediaDataInRealTime = true
 
         guard writer.canAdd(videoInput) else {
-            throw RecorderError.writerFailed("koom could not add a video track to the recording.")
+            throw RecorderError.writerFailed(
+                "koom could not add a video track to the recording."
+            )
         }
 
         writer.add(videoInput)
@@ -113,42 +175,37 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         self.writer = writer
         self.videoInput = videoInput
 
-        if let microphoneID = configuration.microphoneID {
-            let microphoneCapture = try MicrophoneCapture(deviceID: microphoneID, outputQueue: sampleQueue) { [weak self] sampleBuffer in
-                self?.append(sampleBuffer: sampleBuffer, mediaType: .audio)
-            }
-            guard let audioSettings = microphoneCapture.recommendedAssetWriterSettings(fileType: .mp4) else {
-                throw RecorderError.writerFailed("koom could not derive compatible audio writer settings for microphone \(microphoneID).")
-            }
-
-            let audioInput: AVAssetWriterInput
-            if let sourceFormatHint = microphoneCapture.sourceFormatHint {
-                audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings, sourceFormatHint: sourceFormatHint)
-                AppLog.info("Configured microphone writer with source format hint.")
-            } else {
-                audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-            }
+        if let microphoneConfiguration {
+            let audioInput = AVAssetWriterInput(
+                mediaType: .audio,
+                outputSettings: microphoneConfiguration.writerSettings
+            )
             audioInput.expectsMediaDataInRealTime = true
 
             guard writer.canAdd(audioInput) else {
-                throw RecorderError.writerFailed("koom could not add an audio track to the recording.")
+                throw RecorderError.writerFailed(
+                    "koom could not add an audio track to the recording."
+                )
             }
 
             writer.add(audioInput)
             self.audioInput = audioInput
-            self.microphoneCapture = microphoneCapture
-            AppLog.info("Using microphone writer settings: \(Self.formatSettingsDescription(audioSettings))")
+            AppLog.info(
+                "Using microphone writer settings: \(Self.formatSettingsDescription(microphoneConfiguration.writerSettings))"
+            )
         }
 
         guard writer.startWriting() else {
-            throw RecorderError.writerFailed(writer.error?.localizedDescription ?? "koom could not start writing the movie file.")
+            throw RecorderError.writerFailed(
+                writer.error?.localizedDescription
+                    ?? "koom could not start writing the movie file."
+            )
         }
 
         self.stream = stream
 
         do {
             try await stream.startCapture()
-            try await microphoneCapture?.start()
             AppLog.info("Recorder capture started.")
         } catch {
             try? await stream.stopCapture()
@@ -169,8 +226,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         sampleQueue.async {
             guard self.isPaused else { return }
             self.isPaused = false
-            self.videoTimingState.needsResumeOffset = true
-            self.audioTimingState.needsResumeOffset = true
+            self.pauseTimingState.needsResumeOffset = true
             AppLog.info("Recorder resumed.")
         }
     }
@@ -180,9 +236,9 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             throw RecorderError.recorderNotRunning
         }
 
+        isStopping = true
         AppLog.info("Recorder stopping. Discard output: \(discardOutput)")
         try? await stream?.stopCapture()
-        await microphoneCapture?.stop()
         await drainSampleQueue()
 
         await withCheckedContinuation { continuation in
@@ -201,14 +257,18 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             self.writer = nil
             videoInput = nil
             audioInput = nil
-            microphoneCapture = nil
             hasStartedSession = false
             sessionStartPTS = nil
             videoTimingState = TrackTimingState()
             audioTimingState = TrackTimingState()
+            pauseTimingState = PauseTimingState()
             isPaused = false
             isFinishing = false
+            isStopping = false
             hasLoggedWriterFailure = false
+            hasReportedRuntimeIssue = false
+            droppedVideoSamples = 0
+            consecutiveAudioBackpressureSamples = 0
         }
 
         if discardOutput {
@@ -229,23 +289,114 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     private func append(sampleBuffer: CMSampleBuffer, mediaType: AVMediaType) {
         guard CMSampleBufferIsValid(sampleBuffer) else { return }
         guard !isFinishing else { return }
-        guard writer?.status != .failed else { return }
+
+        if writer?.status == .failed {
+            reportRuntimeIssue(
+                "The movie writer failed mid-recording. \(Self.writerFailureDescription(writer))"
+            )
+            return
+        }
 
         switch mediaType {
         case .video:
-            guard let retimedBuffer = prepareRetimedBuffer(sampleBuffer, state: &videoTimingState, trackName: "video") else { return }
-            guard let videoInput, videoInput.isReadyForMoreMediaData else { return }
-            if !videoInput.append(retimedBuffer) {
-                logWriterFailureIfNeeded(whileAppending: "video", sampleBuffer: retimedBuffer)
+            guard
+                let retimedBuffer = prepareRetimedBuffer(
+                    sampleBuffer,
+                    state: &videoTimingState,
+                    trackName: "video"
+                )
+            else {
+                return
             }
+            appendPreparedBuffer(
+                retimedBuffer,
+                to: videoInput,
+                mediaKind: "video"
+            )
         case .audio:
-            guard let retimedBuffer = prepareRetimedBuffer(sampleBuffer, state: &audioTimingState, trackName: "audio") else { return }
-            guard let audioInput, audioInput.isReadyForMoreMediaData else { return }
-            if !audioInput.append(retimedBuffer) {
-                logWriterFailureIfNeeded(whileAppending: "audio", sampleBuffer: retimedBuffer)
+            guard
+                let retimedBuffer = prepareRetimedBuffer(
+                    sampleBuffer,
+                    state: &audioTimingState,
+                    trackName: "audio"
+                )
+            else {
+                return
             }
+            appendPreparedBuffer(
+                retimedBuffer,
+                to: audioInput,
+                mediaKind: "audio"
+            )
         default:
             return
+        }
+    }
+
+    private func appendPreparedBuffer(
+        _ sampleBuffer: CMSampleBuffer,
+        to input: AVAssetWriterInput?,
+        mediaKind: String
+    ) {
+        guard let input else { return }
+
+        guard input.isReadyForMoreMediaData else {
+            handleInputBackpressure(
+                whileAppending: mediaKind,
+                sampleBuffer: sampleBuffer
+            )
+            return
+        }
+
+        if mediaKind == "audio" {
+            consecutiveAudioBackpressureSamples = 0
+        }
+
+        if !input.append(sampleBuffer) {
+            logWriterFailureIfNeeded(
+                whileAppending: mediaKind,
+                sampleBuffer: sampleBuffer
+            )
+            reportRuntimeIssue(
+                "Failed appending \(mediaKind) sample. \(Self.writerFailureDescription(writer))"
+            )
+        }
+    }
+
+    private func handleInputBackpressure(
+        whileAppending mediaKind: String,
+        sampleBuffer: CMSampleBuffer
+    ) {
+        if mediaKind == "audio" {
+            consecutiveAudioBackpressureSamples += 1
+            if consecutiveAudioBackpressureSamples == 1
+                || consecutiveAudioBackpressureSamples
+                    == maxConsecutiveAudioBackpressureSamples
+            {
+                let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                let ptsDescription = CMTIME_IS_VALID(pts) ? "\(pts.seconds)" : "invalid"
+                AppLog.error(
+                    "Audio writer backpressure at PTS \(ptsDescription). consecutiveDrops=\(consecutiveAudioBackpressureSamples)"
+                )
+            }
+
+            if consecutiveAudioBackpressureSamples
+                >= maxConsecutiveAudioBackpressureSamples
+            {
+                reportRuntimeIssue(
+                    "The microphone track fell behind while recording. koom stopped the recording to preserve the captured portion."
+                )
+            }
+            return
+        }
+
+        droppedVideoSamples += 1
+        if droppedVideoSamples == 1 || droppedVideoSamples.isMultiple(of: 60) {
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            let ptsDescription = CMTIME_IS_VALID(pts) ? "\(pts.seconds)" : "invalid"
+            AppLog.error(
+                "Dropped \(droppedVideoSamples) video sample(s) because the writer was not ready. latestPTS=\(ptsDescription)"
+            )
         }
     }
 
@@ -257,22 +408,25 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         let sourcePTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         if isPaused {
-            if state.pausePTS == nil, CMTIME_IS_VALID(sourcePTS) {
-                state.pausePTS = sourcePTS
+            if pauseTimingState.pausePTS == nil, CMTIME_IS_VALID(sourcePTS) {
+                pauseTimingState.pausePTS = sourcePTS
             }
             return nil
         }
 
-        if state.needsResumeOffset {
-            if let pausePTS = state.pausePTS, CMTIME_IS_VALID(sourcePTS) {
+        if pauseTimingState.needsResumeOffset {
+            if let pausePTS = pauseTimingState.pausePTS, CMTIME_IS_VALID(sourcePTS) {
                 let pauseDelta = CMTimeSubtract(sourcePTS, pausePTS)
                 if pauseDelta > .zero {
-                    state.accumulatedPauseOffset = CMTimeAdd(state.accumulatedPauseOffset, pauseDelta)
+                    pauseTimingState.accumulatedOffset = CMTimeAdd(
+                        pauseTimingState.accumulatedOffset,
+                        pauseDelta
+                    )
                 }
             }
 
-            state.pausePTS = nil
-            state.needsResumeOffset = false
+            pauseTimingState.pausePTS = nil
+            pauseTimingState.needsResumeOffset = false
         }
 
         if state.firstPTS == nil, CMTIME_IS_VALID(sourcePTS) {
@@ -282,25 +436,79 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
                 writer?.startSession(atSourceTime: .zero)
                 hasStartedSession = true
                 sessionStartPTS = sourcePTS
-                AppLog.info("Anchored recording session at source PTS \(sourcePTS.seconds) via \(trackName) track.")
+                AppLog.info(
+                    "Anchored recording session at source PTS \(sourcePTS.seconds) via \(trackName) track."
+                )
             }
 
-            let sessionOffset = sessionStartPTS.map { CMTimeSubtract(sourcePTS, $0) } ?? .zero
-            AppLog.info("Anchored \(trackName) track at source PTS \(sourcePTS.seconds), session offset \(sessionOffset.seconds).")
+            let sessionOffset =
+                sessionStartPTS.map {
+                    CMTimeSubtract(sourcePTS, $0)
+                } ?? .zero
+            AppLog.info(
+                "Anchored \(trackName) track at source PTS \(sourcePTS.seconds), session offset \(sessionOffset.seconds)."
+            )
+        }
+
+        if !state.hasLoggedSourceFormat {
+            state.hasLoggedSourceFormat = true
+            AppLog.info(
+                "First \(trackName) sample format: \(Self.describeSampleBufferFormat(sampleBuffer))"
+            )
         }
 
         guard let sessionStartPTS else { return nil }
-        let offset = CMTimeAdd(sessionStartPTS, state.accumulatedPauseOffset)
-        return sampleBuffer.retimed(bySubtracting: offset)
+        let offset = CMTimeAdd(sessionStartPTS, pauseTimingState.accumulatedOffset)
+        let retimedBuffer = sampleBuffer.retimed(bySubtracting: offset)
+        if retimedBuffer == nil {
+            reportRuntimeIssue(
+                "koom could not retime a \(trackName) sample buffer while recording."
+            )
+        }
+
+        if let retimedBuffer,
+            !Self.isMonotonic(
+                sampleBuffer: retimedBuffer,
+                after: state.lastRetimedPTS
+            )
+        {
+            let currentPTS = CMSampleBufferGetPresentationTimeStamp(retimedBuffer)
+            let previousPTS = state.lastRetimedPTS.map(\.seconds) ?? -1
+            AppLog.error(
+                "Dropped non-monotonic \(trackName) sample. previousPTS=\(previousPTS) currentPTS=\(currentPTS.seconds)"
+            )
+            return nil
+        }
+
+        if let retimedBuffer {
+            state.lastRetimedPTS = CMSampleBufferGetPresentationTimeStamp(
+                retimedBuffer
+            )
+        }
+
+        return retimedBuffer
     }
 
-    private func logWriterFailureIfNeeded(whileAppending mediaKind: String, sampleBuffer: CMSampleBuffer) {
+    private func reportRuntimeIssue(_ message: String) {
+        guard !hasReportedRuntimeIssue else { return }
+        hasReportedRuntimeIssue = true
+        AppLog.error(message)
+        onRuntimeIssue?(message)
+    }
+
+    private func logWriterFailureIfNeeded(
+        whileAppending mediaKind: String,
+        sampleBuffer: CMSampleBuffer
+    ) {
         guard !hasLoggedWriterFailure else { return }
         hasLoggedWriterFailure = true
 
         let sourcePTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        let ptsDescription = CMTIME_IS_VALID(sourcePTS) ? "\(sourcePTS.seconds)" : "invalid"
-        AppLog.error("Failed appending \(mediaKind) sample at retimed PTS \(ptsDescription). \(Self.writerFailureDescription(writer))")
+        let ptsDescription =
+            CMTIME_IS_VALID(sourcePTS) ? "\(sourcePTS.seconds)" : "invalid"
+        AppLog.error(
+            "Failed appending \(mediaKind) sample at retimed PTS \(ptsDescription). \(Self.writerFailureDescription(writer))"
+        )
     }
 
     private func drainSampleQueue() async {
@@ -329,137 +537,54 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         ]
     }
 
-    private static func writerFailureDescription(_ writer: AVAssetWriter?) -> String {
-        guard let writer else {
-            return "Writer unavailable."
-        }
-
-        let baseDescription = writer.error?.localizedDescription ?? "The operation could not be completed."
-        let nsError = writer.error as NSError?
-        let domain = nsError.map { "domain=\($0.domain)" } ?? "domain=unknown"
-        let code = nsError.map { "code=\($0.code)" } ?? "code=unknown"
-        let underlying = nsError?.userInfo[NSUnderlyingErrorKey] as? NSError
-        let underlyingDescription =
-            underlying.map {
-                " underlyingDomain=\($0.domain) underlyingCode=\($0.code) underlyingDescription=\($0.localizedDescription)"
-            } ?? ""
-
-        return "status=\(writer.status.rawValue) \(domain) \(code) \(baseDescription)\(underlyingDescription)"
-    }
-
-    fileprivate static func formatSettingsDescription(_ settings: [String: Any]) -> String {
-        settings
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: ", ")
-    }
-}
-
-extension ScreenRecorder: SCStreamOutput {
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
-        guard outputType == .screen else { return }
-        append(sampleBuffer: sampleBuffer, mediaType: .video)
-    }
-}
-
-private final class MicrophoneCapture: NSObject, @unchecked Sendable {
-    private let session = AVCaptureSession()
-    private let sessionQueue = DispatchQueue(label: "koom.microphone.session")
-    private let outputQueue: DispatchQueue
-    private let deviceID: String
-    private let handler: (CMSampleBuffer) -> Void
-
-    private var audioInput: AVCaptureDeviceInput?
-    private let audioOutput = AVCaptureAudioDataOutput()
-    private(set) var sourceFormatHint: CMFormatDescription?
-
-    init(deviceID: String, outputQueue: DispatchQueue, handler: @escaping (CMSampleBuffer) -> Void) throws {
-        self.deviceID = deviceID
-        self.outputQueue = outputQueue
-        self.handler = handler
-
-        super.init()
-
-        try configureSession()
-    }
-
-    func start() async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            sessionQueue.async {
-                self.session.startRunning()
-                AppLog.info("Microphone capture started.")
-                continuation.resume()
-            }
-        }
-    }
-
-    func stop() async {
-        await withCheckedContinuation { continuation in
-            sessionQueue.async {
-                self.audioOutput.setSampleBufferDelegate(nil, queue: nil)
-
-                if self.session.isRunning {
-                    self.session.stopRunning()
-                    AppLog.info("Microphone capture stopped.")
-                }
-
-                continuation.resume()
-            }
-        }
-    }
-
-    func recommendedAssetWriterSettings(fileType: AVFileType) -> [String: Any]? {
-        guard let settings = audioOutput.recommendedAudioSettingsForAssetWriter(writingTo: fileType) else {
-            return nil
-        }
-
-        return Self.sanitizedWriterSettings(settings)
-    }
-
-    private func configureSession() throws {
-        guard let device = CaptureDeviceCatalog.microphones().first(where: { $0.uniqueID == deviceID }) else {
+    private static func microphoneConfiguration(
+        for deviceID: String
+    ) throws -> MicrophoneConfiguration {
+        guard
+            let device = CaptureDeviceCatalog.microphones().first(where: {
+                $0.uniqueID == deviceID
+            })
+        else {
             throw RecorderError.microphoneNotFound
         }
 
-        let input = try AVCaptureDeviceInput(device: device)
-        let normalizedAudioFormat = Self.normalizedAudioFormat(for: device)
-        audioOutput.audioSettings = Self.normalizedOutputSettings(
-            sampleRate: normalizedAudioFormat.sampleRate, channelCount: normalizedAudioFormat.channelCount)
-        sourceFormatHint = Self.makeSourceFormatHint(sampleRate: normalizedAudioFormat.sampleRate, channelCount: normalizedAudioFormat.channelCount)
-        session.beginConfiguration()
-
-        if session.canAddInput(input) {
-            session.addInput(input)
-            audioInput = input
-        }
-
-        if session.canAddOutput(audioOutput) {
-            session.addOutput(audioOutput)
-            audioOutput.setSampleBufferDelegate(self, queue: outputQueue)
-        }
-
-        session.commitConfiguration()
-        AppLog.info(
-            "Configured microphone capture for device \(deviceID) with capture settings \(ScreenRecorder.formatSettingsDescription(audioOutput.audioSettings))"
+        let normalizedAudioFormat = normalizedAudioFormat(for: device)
+        return MicrophoneConfiguration(
+            writerSettings: audioWriterSettings(
+                sampleRate: normalizedAudioFormat.sampleRate,
+                channelCount: normalizedAudioFormat.channelCount
+            )
         )
     }
 
-    private static func normalizedAudioFormat(for device: AVCaptureDevice) -> (sampleRate: Double, channelCount: Int) {
-        let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(device.activeFormat.formatDescription)
-        let sampleRate = streamDescription.map { $0.pointee.mSampleRate > 0 ? $0.pointee.mSampleRate : 48_000 } ?? 48_000
-        let channelCount = streamDescription.map { max(1, Int($0.pointee.mChannelsPerFrame)) } ?? 1
+    private static func normalizedAudioFormat(
+        for device: AVCaptureDevice
+    ) -> (sampleRate: Double, channelCount: Int) {
+        let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(
+            device.activeFormat.formatDescription
+        )
+        let sampleRate =
+            streamDescription.map {
+                let reportedSampleRate =
+                    $0.pointee.mSampleRate > 0 ? $0.pointee.mSampleRate : 48_000
+                return reportedSampleRate > 48_000 ? 48_000 : reportedSampleRate
+            } ?? 48_000
+        let channelCount =
+            streamDescription.map {
+                max(1, Int($0.pointee.mChannelsPerFrame))
+            } ?? 1
         return (sampleRate, min(channelCount, 2))
     }
 
-    private static func normalizedOutputSettings(sampleRate: Double, channelCount: Int) -> [String: Any] {
+    private static func audioWriterSettings(
+        sampleRate: Double,
+        channelCount: Int
+    ) -> [String: Any] {
         var settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: channelCount,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsNonInterleaved: false,
+            AVEncoderBitRateKey: channelCount == 1 ? 96_000 : 128_000,
         ]
 
         if let channelLayoutData = channelLayoutData(for: channelCount) {
@@ -469,54 +594,20 @@ private final class MicrophoneCapture: NSObject, @unchecked Sendable {
         return settings
     }
 
-    private static func makeSourceFormatHint(sampleRate: Double, channelCount: Int) -> CMFormatDescription? {
-        guard let sourceChannelLayout = channelLayout(for: channelCount) else {
-            return nil
-        }
-
-        let channelCount = UInt32(channelCount)
-        var streamDescription = AudioStreamBasicDescription(
-            mSampleRate: sampleRate,
-            mFormatID: kAudioFormatLinearPCM,
-            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
-            mBytesPerPacket: channelCount * 2,
-            mFramesPerPacket: 1,
-            mBytesPerFrame: channelCount * 2,
-            mChannelsPerFrame: channelCount,
-            mBitsPerChannel: 16,
-            mReserved: 0
-        )
-        var channelLayout = sourceChannelLayout
-        var formatDescription: CMAudioFormatDescription?
-
-        let status = CMAudioFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault,
-            asbd: &streamDescription,
-            layoutSize: MemoryLayout<AudioChannelLayout>.size,
-            layout: &channelLayout,
-            magicCookieSize: 0,
-            magicCookie: nil,
-            extensions: nil,
-            formatDescriptionOut: &formatDescription
-        )
-
-        guard status == noErr else {
-            AppLog.error("Could not create microphone source format hint. status=\(status)")
-            return nil
-        }
-
-        return formatDescription
-    }
-
     private static func channelLayoutData(for channelCount: Int) -> Data? {
         guard var channelLayout = channelLayout(for: channelCount) else {
             return nil
         }
 
-        return Data(bytes: &channelLayout, count: MemoryLayout<AudioChannelLayout>.size)
+        return Data(
+            bytes: &channelLayout,
+            count: MemoryLayout<AudioChannelLayout>.size
+        )
     }
 
-    private static func channelLayout(for channelCount: Int) -> AudioChannelLayout? {
+    private static func channelLayout(
+        for channelCount: Int
+    ) -> AudioChannelLayout? {
         let layoutTag: AudioChannelLayoutTag
         switch channelCount {
         case 1:
@@ -539,54 +630,160 @@ private final class MicrophoneCapture: NSObject, @unchecked Sendable {
         )
     }
 
-    private static func sanitizedWriterSettings(_ settings: [String: Any]) -> [String: Any] {
-        guard
-            let formatID = settings[AVFormatIDKey] as? NSNumber,
-            AudioFormatID(formatID.uint32Value) != kAudioFormatLinearPCM
-        else {
-            return settings
+    private static func writerFailureDescription(
+        _ writer: AVAssetWriter?
+    ) -> String {
+        guard let writer else {
+            return "Writer unavailable."
         }
 
-        let disallowedKeys: Set<String> = [
-            AVLinearPCMBitDepthKey,
-            AVLinearPCMIsBigEndianKey,
-            AVLinearPCMIsFloatKey,
-            AVLinearPCMIsNonInterleaved,
+        let baseDescription =
+            writer.error?.localizedDescription
+            ?? "The operation could not be completed."
+        let nsError = writer.error as NSError?
+        let domain = nsError.map { "domain=\($0.domain)" } ?? "domain=unknown"
+        let code = nsError.map { "code=\($0.code)" } ?? "code=unknown"
+        let underlying = nsError?.userInfo[NSUnderlyingErrorKey] as? NSError
+        let underlyingDescription =
+            underlying.map {
+                " underlyingDomain=\($0.domain) underlyingCode=\($0.code) underlyingDescription=\($0.localizedDescription)"
+            } ?? ""
+
+        return
+            "status=\(writer.status.rawValue) \(domain) \(code) \(baseDescription)\(underlyingDescription)"
+    }
+
+    fileprivate static func formatSettingsDescription(
+        _ settings: [String: Any]
+    ) -> String {
+        settings
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ", ")
+    }
+
+    private static func describeSampleBufferFormat(
+        _ sampleBuffer: CMSampleBuffer
+    ) -> String {
+        guard
+            let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+            CMFormatDescriptionGetMediaType(formatDescription) == kCMMediaType_Audio
+        else {
+            return "non-audio format"
+        }
+
+        let streamDescription =
+            CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)
+        let sampleRate = streamDescription?.pointee.mSampleRate ?? 0
+        let channelCount = streamDescription?.pointee.mChannelsPerFrame ?? 0
+        let formatIDValue = streamDescription?.pointee.mFormatID ?? 0
+        let formatID = Self.fourCCDescription(formatIDValue)
+
+        return
+            "formatID=\(formatID) sampleRate=\(sampleRate) channels=\(channelCount)"
+    }
+
+    private static func isMonotonic(
+        sampleBuffer: CMSampleBuffer,
+        after previousPTS: CMTime?
+    ) -> Bool {
+        guard let previousPTS else { return true }
+        let currentPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard CMTIME_IS_VALID(currentPTS), CMTIME_IS_VALID(previousPTS) else {
+            return true
+        }
+        return currentPTS > previousPTS
+    }
+
+    private static func fourCCDescription(_ value: FourCharCode) -> String {
+        let bytes: [UInt8] = [
+            UInt8((value >> 24) & 0xFF),
+            UInt8((value >> 16) & 0xFF),
+            UInt8((value >> 8) & 0xFF),
+            UInt8(value & 0xFF),
         ]
 
-        return settings.filter { !disallowedKeys.contains($0.key) }
+        if bytes.allSatisfy({ $0 >= 32 && $0 <= 126 }) {
+            return String(decoding: bytes, as: UTF8.self)
+        }
+
+        return "0x" + bytes.map { String(format: "%02X", $0) }.joined()
     }
 }
 
-extension MicrophoneCapture: AVCaptureAudioDataOutputSampleBufferDelegate {
-    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        handler(sampleBuffer)
+extension ScreenRecorder: SCStreamOutput {
+    func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of outputType: SCStreamOutputType
+    ) {
+        switch outputType {
+        case .screen:
+            append(sampleBuffer: sampleBuffer, mediaType: .video)
+        case .microphone:
+            append(sampleBuffer: sampleBuffer, mediaType: .audio)
+        default:
+            return
+        }
+    }
+}
+
+extension ScreenRecorder: SCStreamDelegate {
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        sampleQueue.async {
+            guard !self.isStopping else { return }
+
+            let nsError = error as NSError
+            self.reportRuntimeIssue(
+                "ScreenCaptureKit stopped the recording unexpectedly. domain=\(nsError.domain) code=\(nsError.code) \(error.localizedDescription)"
+            )
+        }
     }
 }
 
 private extension CMSampleBuffer {
     func retimed(bySubtracting offset: CMTime) -> CMSampleBuffer? {
         var timingEntryCount = 0
-        CMSampleBufferGetSampleTimingInfoArray(self, entryCount: 0, arrayToFill: nil, entriesNeededOut: &timingEntryCount)
+        CMSampleBufferGetSampleTimingInfoArray(
+            self,
+            entryCount: 0,
+            arrayToFill: nil,
+            entriesNeededOut: &timingEntryCount
+        )
 
         guard timingEntryCount > 0 else {
             return self
         }
 
         var timings = Array(
-            repeating: CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: .invalid, decodeTimeStamp: .invalid),
+            repeating: CMSampleTimingInfo(
+                duration: .invalid,
+                presentationTimeStamp: .invalid,
+                decodeTimeStamp: .invalid
+            ),
             count: timingEntryCount
         )
 
-        CMSampleBufferGetSampleTimingInfoArray(self, entryCount: timingEntryCount, arrayToFill: &timings, entriesNeededOut: &timingEntryCount)
+        CMSampleBufferGetSampleTimingInfoArray(
+            self,
+            entryCount: timingEntryCount,
+            arrayToFill: &timings,
+            entriesNeededOut: &timingEntryCount
+        )
 
         for index in timings.indices {
             if CMTIME_IS_VALID(timings[index].presentationTimeStamp) {
-                timings[index].presentationTimeStamp = CMTimeSubtract(timings[index].presentationTimeStamp, offset)
+                timings[index].presentationTimeStamp = CMTimeSubtract(
+                    timings[index].presentationTimeStamp,
+                    offset
+                )
             }
 
             if CMTIME_IS_VALID(timings[index].decodeTimeStamp) {
-                timings[index].decodeTimeStamp = CMTimeSubtract(timings[index].decodeTimeStamp, offset)
+                timings[index].decodeTimeStamp = CMTimeSubtract(
+                    timings[index].decodeTimeStamp,
+                    offset
+                )
             }
         }
 

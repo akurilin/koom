@@ -17,12 +17,12 @@ Loom is great, but you don't actually own your recordings, you pay monthly, and 
 
 - **You own the bytes.** Videos sit in your Cloudflare R2 bucket. No vendor can deprecate, paywall, or delete them.
 - **Zero-egress storage.** R2 has no bandwidth fees, so cost stays flat no matter how much the links get shared.
-- **Deliberately narrow scope.** Single-tenant, one admin secret, no teams, no comments, no stored transcripts, no search beyond a simple list. The whole stack fits in your head.
+- **Deliberately narrow scope.** Single-tenant, one admin secret, no teams, no stored transcripts, no search beyond a simple list. The whole stack fits in your head.
 - **Cheap steady state.** Vercel Hobby + Supabase free tier + R2 free tier. The only variable cost is R2 storage above 10 GB.
 - **Private auto-titles.** Recordings get a short descriptive title generated locally via WhisperKit + Ollama — the audio never leaves your machine, and the feature is an opt-out, not an extra subscription.
 - **Local thumbnails.** Recordings also get a sidecar JPEG generated on-device and uploaded next to the video in R2, so list views can use a lightweight image instead of seeking into the MP4 whenever the thumbnail is available.
 
-v1 intentionally leaves a lot out: no accounts, no comments, no stored transcripts or captions, no transcoding, no custom domains. See [`docs/monorepo-backend-plan.md`](docs/monorepo-backend-plan.md) for the full decision record.
+v1 intentionally leaves a lot out: no accounts, no stored transcripts or captions, no transcoding, no custom domains. See [`docs/monorepo-backend-plan.md`](docs/monorepo-backend-plan.md) for the full decision record.
 
 ## Architecture
 
@@ -32,7 +32,7 @@ koom is a small monorepo split by runtime:
 | ----------- | ------------------------------------------------ | -------------------------------------------------------------- |
 | `client/`   | Swift 6, SwiftUI, AVFoundation, ScreenCaptureKit | Records the screen, uploads the finished file                  |
 | `web/`      | Next.js 16 (App Router), TypeScript, React 19    | Public watch pages, admin UI, backend API routes               |
-| `supabase/` | Hand-written SQL migrations, managed via `pg`    | Single `recordings` metadata table (no ORM)                    |
+| `supabase/` | Hand-written SQL migrations, managed via `pg`    | `recordings` + `comments` tables (no ORM)                      |
 | `scripts/`  | TypeScript, run through `tsx`                    | R2 provisioning (`r2:setup`) and stack verification (`doctor`) |
 
 Deployment targets:
@@ -40,7 +40,7 @@ Deployment targets:
 - **Web tier:** Vercel Hobby
 - **Metadata:** Supabase Postgres (used purely as a Postgres provider — no Supabase Auth, no Supabase Storage)
 - **Video + CDN:** Cloudflare R2 with its built-in CDN
-- **Auth:** a single deployment-wide admin secret; browsers use a signed cookie, the desktop client uses `Authorization: Bearer`
+- **Auth:** a single deployment-wide admin secret; browsers use a signed cookie, the desktop client uses `Authorization: Bearer`. Anonymous commenters are tracked by a plain UUID cookie.
 
 ### How a recording flows end to end
 
@@ -49,7 +49,7 @@ Deployment targets:
 3. The client `PUT`s the file straight to R2 — bytes never flow through Vercel.
 4. In parallel with step 3, local post-upload processing kicks off on the Mac. The auto-titler extracts the mic track via `AVAssetReader`, transcribes it in-process with WhisperKit, and asks a local Ollama model for a short title. The thumbnail generator also grabs a JPEG still frame from the finalized MP4. Nothing leaves the machine except the derived title/thumbnail artifacts you choose to upload back into your own stack.
 5. `POST /api/admin/uploads/complete` `HEAD`s the object to confirm it landed, flips the row to `complete`, and returns the share URL. If the auto-titler produced a title, the client `PATCH`es it onto the row. If thumbnail generation succeeded, the client uploads the JPEG to `PUT /api/admin/recordings/[id]/thumbnail`, and the backend stores it in R2 at `recordings/{id}/thumbnail-v1.jpg`.
-6. The client copies the share URL to the clipboard and opens it. Anyone with the link can watch at `/r/[id]` (with `?t=` timestamp deep-linking). The recordings list APIs expose `thumbnailUrl`; list views prefer that sidecar JPEG and fall back to `videoUrl#t=0.1` if no thumbnail exists.
+6. The client copies the share URL to the clipboard and opens it. Anyone with the link can watch at `/r/[id]` (with `?t=` timestamp deep-linking) and leave timestamped comments. The recordings list APIs expose `thumbnailUrl`; list views prefer that sidecar JPEG and fall back to `videoUrl#t=0.1` if no thumbnail exists.
 
 The Next.js app holds all R2 and Postgres credentials. The desktop client only knows the web URL and the admin secret; every interaction with R2 is gated by short-lived presigned URLs.
 
@@ -62,14 +62,15 @@ client/                  macOS Swift package (recorder + uploader)
   scripts/               build-app.sh, run.sh, install-app.sh
 web/                     Next.js app (frontend + backend)
   app/                   App Router pages
-    r/[id]/              public watch page
-    app/                 admin UI (login, recordings list)
-    api/public/          public JSON endpoints
+    r/[id]/              public watch page + comments pane
+    login/               public login page
+    app/                 admin UI (recordings list)
+    api/public/          public JSON endpoints (recordings, comments)
     api/admin/           admin JSON endpoints (session, uploads, recordings)
   lib/
     db/                  thin `pg` Pool + parameterized query helpers
     r2/                  S3-compatible R2 client + presigning
-    auth/                admin session + bearer validation
+    auth/                admin session, bearer validation, commenter identity
   tests/                 Vitest integration + Playwright E2E
 supabase/
   migrations/            hand-written SQL, applied via the Supabase CLI
@@ -79,6 +80,8 @@ scripts/
   r2-orphans.ts          audit or delete orphaned recording objects in R2
   r2-setup.ts            provisions the production R2 bucket + credentials
   r2-setup-test.ts       provisions the isolated E2E test bucket
+  test.sh                unified test runner (web + client)
+  clean-web-cache.js     removes rebuildable web workspace artifacts
   build-app.sh, run.sh, install-app.sh   thin wrappers that delegate into client/scripts
 docs/
   monorepo-backend-plan.md   architectural decision record
@@ -140,6 +143,7 @@ npm run dev -w web
 | Lint Swift sources                  | `npm run swift:lint`               |
 | Auto-fix Swift formatting           | `npm run swift:format`             |
 | ShellCheck every tracked `.sh`      | `npm run shellcheck`               |
+| Push migrations to production       | `npm run db:push`                  |
 | Audit orphaned R2 recording files   | `npm run r2:orphans`               |
 | Web unit + integration tests        | `npm test -w web`                  |
 | Web end-to-end tests (Playwright)   | `npm run test:e2e -w web`          |

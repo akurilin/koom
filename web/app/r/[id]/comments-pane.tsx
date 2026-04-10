@@ -158,6 +158,12 @@ export function CommentsPane({
           data-testid="comment-body-input"
           value={body}
           onChange={(e) => setBody(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              e.currentTarget.form?.requestSubmit();
+            }
+          }}
           maxLength={2000}
           rows={2}
           placeholder="Add a comment..."

@@ -56,6 +56,8 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     private var isStopping = false
     private var hasLoggedWriterFailure = false
     private var hasReportedRuntimeIssue = false
+    private var hasDumpedDiagnostics = false
+    private var diagnostics = RecorderDiagnosticsCollector()
 
     init(
         configuration: Configuration,
@@ -185,12 +187,17 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         }
 
         self.stream = stream
+        diagnostics.start(
+            recordingStartedAt: Date(),
+            microphoneUniqueID: configuration.microphoneID
+        )
 
         do {
             try await stream.startCapture()
             AppLog.info("Recorder capture started.")
         } catch {
             try? await stream.stopCapture()
+            diagnostics.stop()
             AppLog.error("Recorder failed to start: \(error.localizedDescription)")
             throw error
         }
@@ -243,6 +250,9 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             isStopping = false
             hasLoggedWriterFailure = false
             hasReportedRuntimeIssue = false
+            hasDumpedDiagnostics = false
+            diagnostics.stop()
+            diagnostics = RecorderDiagnosticsCollector()
         }
 
         if discardOutput {
@@ -265,6 +275,20 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         guard !isFinishing else { return }
 
         if writer?.status == .failed {
+            // Record the event for forensics before bailing.
+            if mediaType == .audio {
+                diagnostics.recordAudioBuffer(
+                    sampleBuffer,
+                    sourcePTS: CMSampleBufferGetPresentationTimeStamp(sampleBuffer),
+                    retimedPTS: .invalid,
+                    outcome: .writerAlreadyFailed
+                )
+            }
+            emitDiagnosticsIfFirstFailure(
+                reason: "writer.status == .failed on entry",
+                failingTrack: mediaType == .audio ? .audio : .video,
+                failingBuffer: sampleBuffer
+            )
             reportRuntimeIssue(
                 "The movie writer failed mid-recording. \(Self.writerFailureDescription(writer))"
             )
@@ -273,6 +297,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
         switch mediaType {
         case .video:
+            let sourcePTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             guard
                 let retimedBuffer = prepareRetimedBuffer(
                     sampleBuffer,
@@ -284,31 +309,166 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             appendPreparedBuffer(
                 retimedBuffer,
                 to: videoInput,
-                track: .video
+                track: .video,
+                originalSourceBuffer: sampleBuffer,
+                originalSourcePTS: sourcePTS
             )
         case .audio:
-            guard
-                let retimedBuffer = prepareRetimedBuffer(
-                    sampleBuffer,
-                    track: .audio
-                )
-            else {
-                return
-            }
-            appendPreparedBuffer(
-                retimedBuffer,
-                to: audioInput,
-                track: .audio
-            )
+            appendAudioSample(sampleBuffer)
         default:
             return
         }
     }
 
+    /// Full audio path with diagnostics instrumentation on every
+    /// branch. Each drop/backpressure/success/failure is fed to
+    /// the diagnostics collector so the ring buffer captures the
+    /// whole pattern leading up to a failure.
+    private func appendAudioSample(_ sampleBuffer: CMSampleBuffer) {
+        let sourcePTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let timelineDecision = prepareAudioTimelineDecision(sampleBuffer, sourcePTS: sourcePTS)
+
+        guard let retimedBuffer = timelineDecision.retimedBuffer else {
+            // Already recorded the drop inside prepareAudioTimelineDecision.
+            return
+        }
+
+        let retimedPTS = CMSampleBufferGetPresentationTimeStamp(retimedBuffer)
+
+        guard let input = audioInput else {
+            diagnostics.recordAudioBuffer(
+                retimedBuffer,
+                sourcePTS: sourcePTS,
+                retimedPTS: retimedPTS,
+                outcome: .droppedInvalidRetime
+            )
+            return
+        }
+
+        guard input.isReadyForMoreMediaData else {
+            diagnostics.recordAudioBuffer(
+                retimedBuffer,
+                sourcePTS: sourcePTS,
+                retimedPTS: retimedPTS,
+                outcome: .backpressure
+            )
+            handleInputBackpressure(
+                whileAppending: .audio,
+                sampleBuffer: retimedBuffer
+            )
+            return
+        }
+
+        backpressureMonitor.noteSuccessfulAppend(for: .audio)
+
+        if input.append(retimedBuffer) {
+            diagnostics.recordAudioBuffer(
+                retimedBuffer,
+                sourcePTS: sourcePTS,
+                retimedPTS: retimedPTS,
+                outcome: .appended
+            )
+        } else {
+            diagnostics.recordAudioBuffer(
+                retimedBuffer,
+                sourcePTS: sourcePTS,
+                retimedPTS: retimedPTS,
+                outcome: .appendFailed
+            )
+            logWriterFailureIfNeeded(
+                whileAppending: .audio,
+                sampleBuffer: retimedBuffer
+            )
+            emitDiagnosticsIfFirstFailure(
+                reason: "audio input.append() returned false",
+                failingTrack: .audio,
+                failingBuffer: retimedBuffer,
+                failingSourcePTS: sourcePTS,
+                failingRetimedPTS: retimedPTS
+            )
+            reportRuntimeIssue(
+                "Failed appending audio sample. \(Self.writerFailureDescription(writer))"
+            )
+        }
+    }
+
+    /// Runs the timeline decision for an audio buffer and records
+    /// any drop in diagnostics. Returns the retimed buffer (or nil
+    /// if the buffer was dropped).
+    private func prepareAudioTimelineDecision(
+        _ sampleBuffer: CMSampleBuffer,
+        sourcePTS: CMTime
+    ) -> (retimedBuffer: CMSampleBuffer?, dropReason: RecorderSampleDropReason?) {
+        let decision = timeline.processSample(sourcePTS: sourcePTS, track: .audio)
+
+        if decision.shouldStartSession, !hasStartedSession {
+            writer?.startSession(atSourceTime: .zero)
+            hasStartedSession = true
+            AppLog.info(
+                "Anchored recording session at source PTS \(sourcePTS.seconds) via audio track."
+            )
+        }
+
+        if decision.didAnchorTrack {
+            let offsetSeconds = decision.sessionOffset.map(\.seconds) ?? 0
+            AppLog.info(
+                "Anchored audio track at source PTS \(sourcePTS.seconds), session offset \(offsetSeconds)."
+            )
+        }
+
+        if decision.shouldLogFirstSampleFormat {
+            AppLog.info(
+                "First audio sample format: \(Self.describeSampleBufferFormat(sampleBuffer))"
+            )
+        }
+
+        guard decision.shouldAppend, let offset = decision.retimeOffset else {
+            let outcome: AudioAppendOutcome
+            switch decision.dropReason {
+            case .nonMonotonic:
+                let currentPTS = CMTimeSubtract(sourcePTS, decision.retimeOffset ?? .zero)
+                AppLog.error(
+                    "Dropped non-monotonic audio sample. currentPTS=\(currentPTS.seconds)"
+                )
+                outcome = .droppedNonMonotonic
+            case .paused:
+                outcome = .droppedPaused
+            case .waitingForSessionAnchor:
+                outcome = .droppedWaitingForAnchor
+            case .none:
+                outcome = .droppedInvalidRetime
+            }
+            diagnostics.recordAudioBuffer(
+                sampleBuffer,
+                sourcePTS: sourcePTS,
+                retimedPTS: .invalid,
+                outcome: outcome
+            )
+            return (nil, decision.dropReason)
+        }
+
+        let retimedBuffer = sampleBuffer.retimed(bySubtracting: offset)
+        if retimedBuffer == nil {
+            diagnostics.recordAudioBuffer(
+                sampleBuffer,
+                sourcePTS: sourcePTS,
+                retimedPTS: .invalid,
+                outcome: .droppedInvalidRetime
+            )
+            reportRuntimeIssue(
+                "koom could not retime an audio sample buffer while recording."
+            )
+        }
+
+        return (retimedBuffer, nil)
+    }
+
     private func appendPreparedBuffer(
         _ sampleBuffer: CMSampleBuffer,
         to input: AVAssetWriterInput?,
-        track: RecorderTrack
+        track: RecorderTrack,
+        originalSourceBuffer: CMSampleBuffer,
+        originalSourcePTS: CMTime
     ) {
         guard let input else { return }
 
@@ -322,10 +482,24 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
         backpressureMonitor.noteSuccessfulAppend(for: track)
 
-        if !input.append(sampleBuffer) {
+        if input.append(sampleBuffer) {
+            if track == .video {
+                diagnostics.recordVideoAppend(success: true)
+            }
+        } else {
+            if track == .video {
+                diagnostics.recordVideoAppend(success: false)
+            }
             logWriterFailureIfNeeded(
                 whileAppending: track,
                 sampleBuffer: sampleBuffer
+            )
+            emitDiagnosticsIfFirstFailure(
+                reason: "\(track.rawValue) input.append() returned false",
+                failingTrack: track,
+                failingBuffer: sampleBuffer,
+                failingSourcePTS: originalSourcePTS,
+                failingRetimedPTS: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
             )
             reportRuntimeIssue(
                 "Failed appending \(track.rawValue) sample. \(Self.writerFailureDescription(writer))"
@@ -413,6 +587,32 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         hasReportedRuntimeIssue = true
         AppLog.error(message)
         onRuntimeIssue?(message)
+    }
+
+    /// Dump the diagnostics collector's forensic report to
+    /// `AppLog.error`. Gated so we only emit once per recording —
+    /// the first failure is the interesting one; cascading
+    /// failures after the writer is already dead would just drown
+    /// out the original signal.
+    private func emitDiagnosticsIfFirstFailure(
+        reason: String,
+        failingTrack: RecorderTrack?,
+        failingBuffer: CMSampleBuffer?,
+        failingSourcePTS: CMTime? = nil,
+        failingRetimedPTS: CMTime? = nil
+    ) {
+        guard !hasDumpedDiagnostics else { return }
+        hasDumpedDiagnostics = true
+        diagnostics.emitFailureReport(
+            reason: reason,
+            failingTrack: failingTrack,
+            failingBuffer: failingBuffer,
+            failingBufferSourcePTS: failingSourcePTS,
+            failingBufferRetimedPTS: failingRetimedPTS,
+            writer: writer,
+            audioInput: audioInput,
+            videoInput: videoInput
+        )
     }
 
     private func logWriterFailureIfNeeded(
@@ -641,6 +841,11 @@ extension ScreenRecorder: SCStreamDelegate {
             guard !self.isStopping else { return }
 
             let nsError = error as NSError
+            self.emitDiagnosticsIfFirstFailure(
+                reason: "SCStream.didStopWithError: \(nsError.domain) code=\(nsError.code)",
+                failingTrack: nil,
+                failingBuffer: nil
+            )
             self.reportRuntimeIssue(
                 "ScreenCaptureKit stopped the recording unexpectedly. domain=\(nsError.domain) code=\(nsError.code) \(error.localizedDescription)"
             )

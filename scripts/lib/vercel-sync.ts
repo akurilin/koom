@@ -200,6 +200,48 @@ export interface SyncDiff {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// Write mode types
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * One side effect `applySyncDiff` performed (or attempted) against
+ * the Vercel project. Every event carries the key and the action so
+ * callers can render a progress log, and `error` is set only when the
+ * write failed.
+ */
+export type WriteAction =
+  | "create" // POST a new env var with type=sensitive
+  | "update" // PATCH an existing sensitive var's value
+  | "replace" // DELETE then POST to change type to sensitive
+  | "skip"; // diff said there was nothing to do for this key
+
+export interface WriteEvent {
+  key: string;
+  action: WriteAction;
+  /** Human-readable explanation of why the action was chosen. */
+  reason: string;
+  /** Set when the write failed. Undefined on success and on skip. */
+  error?: string;
+}
+
+export interface WriteReport {
+  events: WriteEvent[];
+  successes: number;
+  failures: number;
+  skipped: number;
+  /** True if no write attempt returned an error. Skipped writes do not affect this flag. */
+  allSucceeded: boolean;
+}
+
+/**
+ * The write target for all sync operations. koom's current model is
+ * production-only; preview and development are intentionally out of
+ * scope. Parameterize this (and the API body below) if a future
+ * feature needs to sync multiple targets.
+ */
+export const WRITE_TARGET: ReadonlyArray<"production"> = ["production"];
+
+// ────────────────────────────────────────────────────────────────────
 // Vercel API fetchers
 // ────────────────────────────────────────────────────────────────────
 
@@ -264,6 +306,122 @@ export async function fetchVercelPrimaryDomain(
   const verified = domains.find((d) => d.verified && d.name);
   const chosen = verified ?? domains.find((d) => d.name);
   return chosen?.name ?? null;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Vercel API writers
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * Create a new env var on a Vercel project. Always writes with
+ * type=sensitive so secrets round-trip through the Vercel-recommended
+ * storage classification. Target is always production (WRITE_TARGET).
+ *
+ * POST /v10/projects/{id}/env
+ *
+ * v10 is the first API version where `type: "sensitive"` is
+ * supported on creation; older versions silently fall back to
+ * `encrypted`, which is what we're trying to normalize away from.
+ */
+export async function createVercelEnvVar(
+  token: string,
+  projectId: string,
+  key: string,
+  value: string,
+): Promise<void> {
+  const url = new URL(
+    `https://api.vercel.com/v10/projects/${encodeURIComponent(projectId)}/env`,
+  );
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      key,
+      value,
+      type: "sensitive",
+      target: Array.from(WRITE_TARGET),
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(
+      `POST ${url.pathname} failed: HTTP ${res.status}${body ? ` — ${body}` : ""}`,
+    );
+  }
+}
+
+/**
+ * Update the value of an existing env var, leaving its type, key,
+ * and targets untouched. Used when the existing Vercel record is
+ * already `sensitive` type so no type change is needed.
+ *
+ * PATCH /v9/projects/{id}/env/{envId}
+ */
+export async function updateVercelEnvVarValue(
+  token: string,
+  projectId: string,
+  envId: string,
+  value: string,
+): Promise<void> {
+  const url = new URL(
+    `https://api.vercel.com/v9/projects/${encodeURIComponent(
+      projectId,
+    )}/env/${encodeURIComponent(envId)}`,
+  );
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ value }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(
+      `PATCH ${url.pathname} failed: HTTP ${res.status}${body ? ` — ${body}` : ""}`,
+    );
+  }
+}
+
+/**
+ * Delete an existing env var by id. Used as the first half of a
+ * type-normalization replace: DELETE the old `encrypted` (or other
+ * non-sensitive) record, then POST a fresh `sensitive` one.
+ *
+ * DELETE /v9/projects/{id}/env/{envId}
+ */
+export async function deleteVercelEnvVar(
+  token: string,
+  projectId: string,
+  envId: string,
+): Promise<void> {
+  const url = new URL(
+    `https://api.vercel.com/v9/projects/${encodeURIComponent(
+      projectId,
+    )}/env/${encodeURIComponent(envId)}`,
+  );
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(
+      `DELETE ${url.pathname} failed: HTTP ${res.status}${body ? ` — ${body}` : ""}`,
+    );
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -482,6 +640,264 @@ export async function computeSyncDiff(ctx: SyncContext): Promise<SyncDiff> {
 
   const summary = summarize(results);
   return { results, summary };
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Apply (write mode)
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * Apply the writes described by a previously-computed `SyncDiff`
+ * against the Vercel project. ALWAYS fetches fresh Vercel state
+ * internally rather than trusting the passed-in diff's record IDs,
+ * so a stale dry-run run minutes ago cannot misfire writes against
+ * records that have since been deleted or recreated in the
+ * dashboard.
+ *
+ * Per-variable rules:
+ *
+ *   - in-sync         → skip
+ *   - drift           → PATCH (if existing type=sensitive) or
+ *                        DELETE+POST (otherwise, to normalize type)
+ *   - missing-on-vercel → POST new sensitive record
+ *   - opaque          → DELETE+POST (cannot verify current; we
+ *                        unconditionally overwrite because the
+ *                        local source of truth is authoritative)
+ *   - unknown         → skip (sync is additive, never deletes
+ *                        variables that koom does not manage)
+ *   - unresolvable    → skip (nothing to write)
+ *
+ * Writes happen serially, one variable at a time. If a write fails
+ * the remaining writes still attempt so a transient failure on one
+ * variable doesn't block the rest. The returned report tells the
+ * caller exactly which variables succeeded and which failed.
+ *
+ * This function does NOT prompt for confirmation. Callers (the
+ * vercel-sync CLI) are responsible for gating it behind a confirm
+ * flag like --yes.
+ */
+export async function applySyncDiff(
+  ctx: SyncContext,
+  diff: SyncDiff,
+  opts?: {
+    onEvent?: (event: WriteEvent) => void;
+  },
+): Promise<WriteReport> {
+  const events: WriteEvent[] = [];
+
+  const emit = (event: WriteEvent): void => {
+    events.push(event);
+    opts?.onEvent?.(event);
+  };
+
+  // Re-fetch Vercel state so we have up-to-date env record IDs for
+  // PATCH / DELETE. The dry-run diff may have been computed minutes
+  // ago; records can have been rotated or recreated in the interim.
+  let current: VercelEnvVar[];
+  try {
+    current = await fetchVercelEnvVars(ctx.vercelToken, ctx.vercelProjectId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Emit one aggregate failure event so the CLI's progress log
+    // surfaces the error; individual per-variable events would be
+    // misleading because we never actually attempted a write.
+    emit({
+      key: "(all)",
+      action: "skip",
+      reason: "could not refresh Vercel state before apply",
+      error: message,
+    });
+    return buildReport(events);
+  }
+
+  // Index by key, preferring the production-targeted record when
+  // multiple exist. Mirrors the logic in computeSyncDiff so both
+  // functions agree on "the current record for this key".
+  const currentByKey = new Map<string, VercelEnvVar>();
+  for (const ev of current) {
+    const existing = currentByKey.get(ev.key);
+    const isProduction = ev.target.includes("production");
+    const existingIsProduction = existing?.target.includes("production");
+    if (!existing || (isProduction && !existingIsProduction)) {
+      currentByKey.set(ev.key, ev);
+    }
+  }
+
+  // Share a single Vercel-domain cache across every variable's
+  // resolution, matching computeSyncDiff's behavior.
+  const domainCache: { value?: string | null } = {};
+
+  for (const result of diff.results) {
+    // Skip statuses that never write, including unknown (extra
+    // vars on Vercel we don't manage) and unresolvable (no local
+    // source of truth). The CLI surfaces these separately in the
+    // dry-run report so users know why they were skipped.
+    if (
+      result.status === "in-sync" ||
+      result.status === "unknown" ||
+      result.status === "unresolvable"
+    ) {
+      emit({
+        key: result.key,
+        action: "skip",
+        reason: `status '${result.status}' — nothing to write`,
+      });
+      continue;
+    }
+
+    // Resolve the desired value fresh. We must not trust any
+    // cached value from the diff because the diff intentionally
+    // never carries values (to prevent accidental leakage in the
+    // CLI report). Re-resolution also catches the rare race where
+    // the local source of truth changed between dry-run and apply.
+    const spec = EXPECTED_VARS.find((v) => v.key === result.key);
+    if (!spec) {
+      // Defensive: shouldn't happen because the diff is built from
+      // EXPECTED_VARS, but bail with a clear skip event if the
+      // caller passes a hand-crafted diff.
+      emit({
+        key: result.key,
+        action: "skip",
+        reason:
+          "variable is not in EXPECTED_VARS — applySyncDiff refuses to write unmanaged keys",
+      });
+      continue;
+    }
+
+    const desired = await resolveDesiredValue(spec.source, ctx, domainCache);
+    if (desired.value === null) {
+      emit({
+        key: result.key,
+        action: "skip",
+        reason: `desired value unresolvable: ${desired.unresolvableReason ?? "unknown reason"}`,
+      });
+      continue;
+    }
+
+    const existing = currentByKey.get(result.key);
+
+    // Missing on Vercel: pure create.
+    if (!existing) {
+      try {
+        await createVercelEnvVar(
+          ctx.vercelToken,
+          ctx.vercelProjectId,
+          result.key,
+          desired.value,
+        );
+        emit({
+          key: result.key,
+          action: "create",
+          reason: "variable was missing from the Vercel project",
+        });
+      } catch (err) {
+        emit({
+          key: result.key,
+          action: "create",
+          reason: "variable was missing from the Vercel project",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      continue;
+    }
+
+    // Existing record. Decide between PATCH (in-place value update,
+    // type is already sensitive) and DELETE+POST (type normalization).
+    const needsTypeNormalization = existing.type !== "sensitive";
+
+    if (!needsTypeNormalization) {
+      try {
+        await updateVercelEnvVarValue(
+          ctx.vercelToken,
+          ctx.vercelProjectId,
+          existing.id,
+          desired.value,
+        );
+        emit({
+          key: result.key,
+          action: "update",
+          reason:
+            result.status === "opaque"
+              ? "existing record is sensitive and cannot be read back; unconditionally overwriting"
+              : "value differs from local source of truth",
+        });
+      } catch (err) {
+        emit({
+          key: result.key,
+          action: "update",
+          reason: "value differs from local source of truth",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      continue;
+    }
+
+    // Needs type normalization: delete the existing non-sensitive
+    // record, then create a fresh sensitive one. If the DELETE
+    // succeeds but the POST fails, the variable is temporarily
+    // missing from Vercel — the CLI surfaces this explicitly so the
+    // user knows to rerun.
+    try {
+      await deleteVercelEnvVar(
+        ctx.vercelToken,
+        ctx.vercelProjectId,
+        existing.id,
+      );
+    } catch (err) {
+      emit({
+        key: result.key,
+        action: "replace",
+        reason: `existing record has type '${existing.type}'; delete+create required to normalize to sensitive`,
+        error: `DELETE failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      continue;
+    }
+
+    try {
+      await createVercelEnvVar(
+        ctx.vercelToken,
+        ctx.vercelProjectId,
+        result.key,
+        desired.value,
+      );
+      emit({
+        key: result.key,
+        action: "replace",
+        reason: `existing record had type '${existing.type}'; deleted and recreated as sensitive`,
+      });
+    } catch (err) {
+      emit({
+        key: result.key,
+        action: "replace",
+        reason: `existing record had type '${existing.type}'; delete+create required to normalize to sensitive`,
+        error: `DELETE succeeded but POST failed, leaving '${result.key}' temporarily missing from Vercel — rerun vercel:sync to recreate it: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  return buildReport(events);
+}
+
+function buildReport(events: WriteEvent[]): WriteReport {
+  let successes = 0;
+  let failures = 0;
+  let skipped = 0;
+  for (const event of events) {
+    if (event.action === "skip") {
+      skipped++;
+    } else if (event.error) {
+      failures++;
+    } else {
+      successes++;
+    }
+  }
+  return {
+    events,
+    successes,
+    failures,
+    skipped,
+    allSucceeded: failures === 0,
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────

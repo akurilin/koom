@@ -2,18 +2,28 @@
 /*
  * scripts/vercel-sync.ts
  *
- * Read-only (for now) comparison of the koom production Vercel
- * environment variables against the local sources of truth. Run this
- * any time you want to see whether your Vercel deployment is still
- * configured with the values koom expects.
+ * Compare (and optionally apply) the koom production Vercel
+ * environment variables against the local sources of truth. The
+ * comparison logic lives in `scripts/lib/vercel-sync.ts` and is
+ * shared with `scripts/doctor.ts`, which runs the same comparison as
+ * an aggregate readiness check.
  *
- *   npm run vercel:sync             dry-run report (default, current behavior)
- *   npm run vercel:sync -- --write  not yet implemented — errors out
+ * Usage:
  *
- * The actual comparison lives in `scripts/lib/vercel-sync.ts` and is
- * also reused by `scripts/doctor.ts` to surface drift as a readiness
- * warning. This file is the thin CLI wrapper that reads env files,
- * calls the lib, and formats the results.
+ *   npm run vercel:sync
+ *     Dry run only. Reports per-variable drift, prints a plan, and
+ *     exits 0 if there is no detectable drift, 1 otherwise. Safe to
+ *     run any time.
+ *
+ *   npm run vercel:sync -- --write
+ *     Prints the dry-run report plus the write plan, then REFUSES to
+ *     apply anything because --yes was not passed. Treats this as a
+ *     safety gate against accidental writes.
+ *
+ *   npm run vercel:sync -- --write --yes
+ *     Prints the dry-run report AND applies the writes against the
+ *     Vercel project. Every write is logged as it happens. Exits 0
+ *     only if every attempted write succeeded.
  */
 
 import { existsSync } from "node:fs";
@@ -21,7 +31,14 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { computeSyncDiff, type VarSyncResult } from "./lib/vercel-sync";
+import {
+  applySyncDiff,
+  computeSyncDiff,
+  type SyncDiff,
+  type VarSyncResult,
+  type WriteEvent,
+  type WriteReport,
+} from "./lib/vercel-sync";
 
 // ────────────────────────────────────────────────────────────────────
 // Paths
@@ -65,7 +82,7 @@ async function loadEnv(path: string): Promise<Record<string, string>> {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Output formatting
+// Output formatting for the dry-run report
 // ────────────────────────────────────────────────────────────────────
 
 interface StatusDisplay {
@@ -125,75 +142,7 @@ function printReport(results: VarSyncResult[]): void {
   }
 }
 
-// ────────────────────────────────────────────────────────────────────
-// Main
-// ────────────────────────────────────────────────────────────────────
-
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-
-  if (args.includes("--write")) {
-    console.error(
-      "--write mode is not yet implemented. vercel-sync currently runs in dry-run mode only.",
-    );
-    console.error(
-      "When --write lands, it will upsert every drifted/missing variable against the Vercel project and normalize credential-shaped values to the 'sensitive' type.",
-    );
-    process.exit(2);
-  }
-
-  if (args.some((a) => a === "--help" || a === "-h")) {
-    console.log(
-      "Usage: npm run vercel:sync [-- --write]\n\n" +
-        "Compare the koom production Vercel project's environment variables\n" +
-        "against the local sources of truth (web/.env.local + Supabase CLI\n" +
-        "link state + Vercel primary domain).\n\n" +
-        "Options:\n" +
-        "  --write   Apply any detected changes. NOT YET IMPLEMENTED.\n" +
-        "  -h, --help   Show this help.\n\n" +
-        "Exit codes:\n" +
-        "  0   No detectable drift (all in-sync or opaque)\n" +
-        "  1   Detectable drift, missing variables, or unresolvable sources\n" +
-        "  2   Usage error or --write requested\n",
-    );
-    return;
-  }
-
-  console.log("koom Vercel sync (dry run)");
-  console.log("──────────────────────────");
-
-  const localEnv = await loadEnv(ENV_LOCAL_PATH);
-  const prodEnv = await loadEnv(ENV_PROD_PATH);
-
-  if (!prodEnv.VERCEL_TOKEN || !prodEnv.VERCEL_PROJECT_ID) {
-    console.error(
-      "\nVERCEL_TOKEN and VERCEL_PROJECT_ID must be set in web/.env.prod.local.",
-    );
-    console.error(
-      "Run `npm run doctor` once to bootstrap the file from its template, then fill in both values.",
-    );
-    process.exit(1);
-  }
-
-  console.log(
-    `\nReading current Vercel env vars for project ${prodEnv.VERCEL_PROJECT_ID}...`,
-  );
-  console.log("Computing desired values from local sources...\n");
-
-  const diff = await computeSyncDiff({
-    vercelToken: prodEnv.VERCEL_TOKEN,
-    vercelProjectId: prodEnv.VERCEL_PROJECT_ID,
-    localEnv,
-    poolerUrlPath: POOLER_URL_PATH,
-  });
-
-  if (diff.error) {
-    console.error(`\nVercel sync failed: ${diff.error}`);
-    process.exit(1);
-  }
-
-  printReport(diff.results);
-
+function printDryRunSummary(diff: SyncDiff): void {
   const { summary } = diff;
   console.log("");
   console.log("Summary:");
@@ -214,35 +163,250 @@ async function main(): Promise<void> {
     console.log(
       `  ${summary.unknown} unknown extra var on Vercel (not managed by koom)`,
     );
+}
 
-  console.log("");
-  if (
-    summary.drift === 0 &&
-    summary.missing === 0 &&
-    summary.unresolvable === 0
-  ) {
-    console.log("No detectable drift. --write would not change anything.");
-    if (summary.opaque > 0) {
-      console.log(
-        `(${summary.opaque} sensitive variable${summary.opaque === 1 ? "" : "s"} could not be verified, but --write would overwrite them if run.)`,
-      );
-    }
-  } else {
-    const writeHint =
-      summary.writesNeeded > 0
-        ? `--write would upsert ${summary.writesNeeded} variable${summary.writesNeeded === 1 ? "" : "s"} (not yet implemented).`
-        : "No writes would be made even with --write.";
-    console.log(
-      `Detectable drift / missing / unresolvable found. ${writeHint}`,
-    );
+// ────────────────────────────────────────────────────────────────────
+// Output formatting for the write path
+// ────────────────────────────────────────────────────────────────────
+
+function displayForAction(action: WriteEvent["action"]): StatusDisplay {
+  switch (action) {
+    case "create":
+      return { icon: "+", label: "create" };
+    case "update":
+      return { icon: "~", label: "update" };
+    case "replace":
+      return { icon: "↻", label: "replace" };
+    case "skip":
+      return { icon: "·", label: "skip" };
+  }
+}
+
+function printWritePlan(diff: SyncDiff): void {
+  // Only list variables that would actually produce a write. Opaque
+  // variables are listed separately because they're unconditional
+  // overwrites — the user should understand that's what's about to
+  // happen to their sensitive values.
+  const writable = diff.results.filter((r) => r.wouldWrite);
+  if (writable.length === 0) {
+    console.log("No writes would be performed.");
+    return;
   }
 
-  console.log("");
-  console.log("This was a DRY RUN. No changes were made to Vercel.");
+  console.log("Planned writes:");
+  for (const r of writable) {
+    let action: string;
+    switch (r.status) {
+      case "missing-on-vercel":
+        action = "CREATE (sensitive)";
+        break;
+      case "drift":
+        action =
+          r.currentType === "sensitive"
+            ? "UPDATE (value only)"
+            : `REPLACE (normalize type from '${r.currentType}' to 'sensitive')`;
+        break;
+      case "opaque":
+        action = "OVERWRITE (sensitive — current value cannot be verified)";
+        break;
+      default:
+        action = "(unexpected)";
+    }
+    console.log(`  • ${r.key} — ${action}`);
+  }
+}
 
-  // Exit code: 0 if everything is in-sync or opaque, 1 if there is
-  // detectable drift that a human needs to do something about.
-  process.exit(summary.allInSyncOrOpaque ? 0 : 1);
+function printWriteEvent(event: WriteEvent): void {
+  const disp = displayForAction(event.action);
+  const head = `  ${disp.icon} ${pad(disp.label, 8)} ${event.key}`;
+  if (event.error) {
+    console.log(`${head}   ✗ FAILED`);
+    console.log(`      reason: ${event.reason}`);
+    console.log(`      error:  ${event.error}`);
+  } else if (event.action === "skip") {
+    console.log(`${head}   ${event.reason}`);
+  } else {
+    console.log(`${head}   ✓`);
+    console.log(`      ${event.reason}`);
+  }
+}
+
+function printWriteSummary(report: WriteReport): void {
+  console.log("");
+  console.log("Write summary:");
+  console.log(`  ${report.successes} succeeded`);
+  if (report.failures > 0) console.log(`  ${report.failures} failed`);
+  if (report.skipped > 0) console.log(`  ${report.skipped} skipped`);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Main
+// ────────────────────────────────────────────────────────────────────
+
+interface Args {
+  write: boolean;
+  yes: boolean;
+  help: boolean;
+}
+
+function parseArgs(argv: string[]): Args {
+  const args: Args = { write: false, yes: false, help: false };
+  for (const a of argv) {
+    if (a === "--write") args.write = true;
+    else if (a === "--yes" || a === "-y") args.yes = true;
+    else if (a === "--help" || a === "-h") args.help = true;
+  }
+  return args;
+}
+
+function printHelp(): void {
+  console.log(
+    "Usage: npm run vercel:sync [-- --write [--yes]]\n\n" +
+      "Compare the koom production Vercel project's environment variables\n" +
+      "against the local sources of truth (web/.env.local + Supabase CLI\n" +
+      "link state + Vercel primary domain), and optionally apply any\n" +
+      "detected drift.\n\n" +
+      "Options:\n" +
+      "  --write      Apply detected drift to the Vercel project. Requires\n" +
+      "               --yes to actually execute; passing --write alone\n" +
+      "               prints the plan and refuses to write as a safety gate.\n" +
+      "  --yes, -y    Confirm that you really want to write to Vercel.\n" +
+      "               Ignored unless --write is also passed.\n" +
+      "  -h, --help   Show this help.\n\n" +
+      "Exit codes:\n" +
+      "  0   No detectable drift (dry run) or all writes succeeded (--write)\n" +
+      "  1   Detectable drift, unresolvable sources, or any write failed\n" +
+      "  2   Usage error (e.g. --write without --yes)\n",
+  );
+}
+
+async function main(): Promise<void> {
+  const args = parseArgs(process.argv.slice(2));
+
+  if (args.help) {
+    printHelp();
+    return;
+  }
+
+  const mode = args.write ? (args.yes ? "apply" : "write-refused") : "dry-run";
+
+  console.log(
+    mode === "apply"
+      ? "koom Vercel sync (APPLY — writing to Vercel)"
+      : "koom Vercel sync (dry run)",
+  );
+  console.log("──────────────────────────");
+
+  const localEnv = await loadEnv(ENV_LOCAL_PATH);
+  const prodEnv = await loadEnv(ENV_PROD_PATH);
+
+  if (!prodEnv.VERCEL_TOKEN || !prodEnv.VERCEL_PROJECT_ID) {
+    console.error(
+      "\nVERCEL_TOKEN and VERCEL_PROJECT_ID must be set in web/.env.prod.local.",
+    );
+    console.error(
+      "Run `npm run doctor` once to bootstrap the file from its template, then fill in both values.",
+    );
+    process.exit(1);
+  }
+
+  const ctx = {
+    vercelToken: prodEnv.VERCEL_TOKEN,
+    vercelProjectId: prodEnv.VERCEL_PROJECT_ID,
+    localEnv,
+    poolerUrlPath: POOLER_URL_PATH,
+  };
+
+  console.log(
+    `\nReading current Vercel env vars for project ${prodEnv.VERCEL_PROJECT_ID}...`,
+  );
+  console.log("Computing desired values from local sources...\n");
+
+  const diff = await computeSyncDiff(ctx);
+
+  if (diff.error) {
+    console.error(`\nVercel sync failed: ${diff.error}`);
+    process.exit(1);
+  }
+
+  printReport(diff.results);
+  printDryRunSummary(diff);
+
+  console.log("");
+
+  const noDetectableDrift =
+    diff.summary.drift === 0 &&
+    diff.summary.missing === 0 &&
+    diff.summary.unresolvable === 0;
+
+  // ── Dry-run mode ─────────────────────────────────────────────────
+  if (mode === "dry-run") {
+    if (noDetectableDrift) {
+      console.log("No detectable drift. --write would not change anything.");
+      if (diff.summary.opaque > 0) {
+        console.log(
+          `(${diff.summary.opaque} sensitive variable${diff.summary.opaque === 1 ? "" : "s"} could not be verified, but --write would overwrite them if run.)`,
+        );
+      }
+    } else {
+      const writeHint =
+        diff.summary.writesNeeded > 0
+          ? `Rerun with --write --yes to apply ${diff.summary.writesNeeded} change${diff.summary.writesNeeded === 1 ? "" : "s"}.`
+          : "No writes would be made even with --write.";
+      console.log(`Detectable drift found. ${writeHint}`);
+    }
+    console.log("");
+    console.log("This was a DRY RUN. No changes were made to Vercel.");
+    process.exit(diff.summary.allInSyncOrOpaque ? 0 : 1);
+  }
+
+  // ── Safety gate: --write without --yes ───────────────────────────
+  if (mode === "write-refused") {
+    console.log("");
+    printWritePlan(diff);
+    console.log("");
+    console.error(
+      "Refusing to apply: --write requires --yes to confirm you actually want to push changes to Vercel.",
+    );
+    console.error(
+      "Rerun with `npm run vercel:sync -- --write --yes` once you have reviewed the plan above.",
+    );
+    console.error("No changes were made to Vercel.");
+    process.exit(2);
+  }
+
+  // ── Apply mode ───────────────────────────────────────────────────
+  // Only reached when mode === "apply" (--write --yes).
+  console.log("");
+  printWritePlan(diff);
+  console.log("");
+
+  if (diff.summary.writesNeeded === 0 && diff.summary.opaque === 0) {
+    console.log("Nothing to write. Exiting without touching Vercel.");
+    process.exit(0);
+  }
+
+  console.log("Applying writes to Vercel...");
+  console.log("");
+
+  const report = await applySyncDiff(ctx, diff, {
+    onEvent: (event) => printWriteEvent(event),
+  });
+
+  printWriteSummary(report);
+
+  console.log("");
+  if (report.allSucceeded) {
+    console.log(
+      "All writes succeeded. Rerun `npm run vercel:sync` (without --write) to verify.",
+    );
+    process.exit(0);
+  } else {
+    console.error(
+      `${report.failures} write${report.failures === 1 ? "" : "s"} failed. Review the errors above and rerun with --write --yes after fixing them.`,
+    );
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {

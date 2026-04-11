@@ -53,6 +53,9 @@ test("comment system happy path", async ({ page }) => {
     // ─────────────────────────────────────────────────────────────
     await page.goto(watchUrl);
     await expect(page.getByTestId("video-player")).toBeVisible();
+
+    // Default tab is Transcript — switch to Comments for this test.
+    await page.getByRole("button", { name: /comments/i }).click();
     await expect(page.getByTestId("comments-pane")).toBeVisible();
 
     // ─────────────────────────────────────────────────────────────

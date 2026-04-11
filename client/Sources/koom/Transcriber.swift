@@ -25,19 +25,43 @@ actor Transcriber {
     }
 
     /// Transcribes a 16 kHz mono float PCM buffer (the format
-    /// `AudioExtractor` returns) into plain text. Returns the
-    /// concatenation of every segment's text with leading and
-    /// trailing whitespace trimmed. Throws any error WhisperKit
-    /// surfaces; the caller (Autotitler) converts those into
-    /// "skip this recording" outcomes.
-    func transcribe(audioArray: [Float]) async throws -> String {
+    /// `AudioExtractor` returns) into a `TimedTranscript` with
+    /// word-level timestamps. Each word carries the start/end time
+    /// (in seconds) so the web player can seek to the exact moment
+    /// a word was spoken.
+    ///
+    /// Throws any error WhisperKit surfaces; the caller (Autotitler)
+    /// converts those into "skip this recording" outcomes.
+    func transcribe(audioArray: [Float]) async throws -> TimedTranscript {
         let kit = try await ensureKit()
-        let results = try await kit.transcribe(audioArray: audioArray)
-        let joined =
+        let options = DecodingOptions(wordTimestamps: true)
+        let results = try await kit.transcribe(
+            audioArray: audioArray,
+            decodeOptions: options
+        )
+
+        let segments: [TimedTranscript.Segment] =
             results
-            .map(\.text)
-            .joined(separator: " ")
-        return joined.trimmingCharacters(in: .whitespacesAndNewlines)
+            .flatMap(\.segments)
+            .map { seg in
+                let words = (seg.words ?? []).map { w in
+                    TimedTranscript.Word(
+                        word: w.word,
+                        start: w.start,
+                        end: w.end
+                    )
+                }
+                return TimedTranscript.Segment(
+                    start: seg.start,
+                    end: seg.end,
+                    text: seg.text.trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    ),
+                    words: words
+                )
+            }
+
+        return TimedTranscript(segments: segments)
     }
 
     private func ensureKit() async throws -> WhisperKit {

@@ -21,7 +21,10 @@ import {
   getOrCreateCommenter,
 } from "@/lib/db/comments";
 import { getCompletedRecordingById } from "@/lib/db/queries";
-import { recordingPublicUrl } from "@/lib/r2/client";
+import {
+  recordingPublicUrl,
+  recordingTranscriptPublicUrl,
+} from "@/lib/r2/client";
 import { buildMePayload, serializeComment } from "@/lib/types";
 
 import { WatchExperience } from "./watch-experience";
@@ -45,6 +48,7 @@ export default async function WatchPage(
   }
 
   const videoUrl = recordingPublicUrl(recording.id);
+  const transcriptUrl = recordingTranscriptPublicUrl(recording.id);
   const displayTitle = recording.title ?? recording.originalFilename;
 
   // Check admin status — used for breadcrumb and comments pane
@@ -71,8 +75,8 @@ export default async function WatchPage(
   const me = buildMePayload(viewer);
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100 px-4 py-8 sm:py-12">
-      <div className="w-full max-w-6xl mx-auto">
+    <main className="min-h-screen bg-zinc-950 text-zinc-100 px-4 py-4 sm:py-6">
+      <div className="w-full mx-auto">
         {isAdmin && (
           <nav
             aria-label="Breadcrumb"
@@ -105,6 +109,7 @@ export default async function WatchPage(
         <WatchExperience
           recordingId={recording.id}
           videoUrl={videoUrl}
+          transcriptUrl={transcriptUrl}
           contentType={recording.contentType}
           displayTitle={displayTitle}
           originalFilename={recording.originalFilename}

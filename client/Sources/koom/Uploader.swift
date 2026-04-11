@@ -27,6 +27,7 @@ enum PostUploadStage: Equatable, Sendable {
     case transcribing(modelName: String)
     case generatingTitle(modelName: String)
     case savingGeneratedTitle
+    case uploadingTranscript
     case generatingThumbnail
     case uploadingThumbnail
 }
@@ -175,8 +176,8 @@ final class Uploader {
         let postProcessingRelay = PostProcessingStatusRelay(
             onStateChange: onStateChange
         )
-        let titleTask = Task<String?, Never> {
-            let title = await Self.runAutotitle(
+        let processTask = Task<AutotitleResult, Never> {
+            let result = await Self.runProcess(
                 autotitler: autotitler,
                 fileURL: fileURL,
                 onProgress: { stage in
@@ -184,7 +185,7 @@ final class Uploader {
                 }
             )
             await postProcessingRelay.markGenerationFinished()
-            return title
+            return result
         }
         async let thumbnailData: Data? = Self.runThumbnail(fileURL: fileURL)
         let result = await performUpload(
@@ -195,12 +196,20 @@ final class Uploader {
         switch result {
         case .success(let outcome):
             await postProcessingRelay.showIfStillGenerating()
-            let title = await titleTask.value
-            if let title, !title.isEmpty {
+            let processResult = await processTask.value
+            if let title = processResult.title, !title.isEmpty {
                 emit(.postProcessing(stage: .savingGeneratedTitle))
                 await patchTitle(
                     recordingId: outcome.recordingId,
                     title: title,
+                    environment: environment
+                )
+            }
+            if let transcript = processResult.transcript {
+                emit(.postProcessing(stage: .uploadingTranscript))
+                await uploadTranscript(
+                    recordingId: outcome.recordingId,
+                    transcript: transcript,
                     environment: environment
                 )
             }
@@ -222,20 +231,22 @@ final class Uploader {
             )
             return true
         case .failure(let failure):
-            _ = await titleTask.value
+            _ = await processTask.value
             _ = await thumbnailData
             emit(.failed(message: failure.message))
             return false
         }
     }
 
-    private static func runAutotitle(
+    private static func runProcess(
         autotitler: Autotitler?,
         fileURL: URL,
         onProgress: @Sendable @escaping (PostUploadStage) async -> Void
-    ) async -> String? {
-        guard let autotitler else { return nil }
-        return await autotitler.generateTitle(
+    ) async -> AutotitleResult {
+        guard let autotitler else {
+            return AutotitleResult(title: nil, transcript: nil)
+        }
+        return await autotitler.process(
             for: fileURL,
             onProgress: onProgress
         )
@@ -260,6 +271,36 @@ final class Uploader {
         } catch {
             AppLog.error(
                 "Autotitle: failed to PATCH title for \(recordingId): \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func uploadTranscript(
+        recordingId: String,
+        transcript: TimedTranscript,
+        environment: KoomEnvironment
+    ) async {
+        guard let api = makeAPIClient(for: environment) else { return }
+        let jsonData: Data
+        do {
+            jsonData = try JSONEncoder().encode(transcript)
+        } catch {
+            AppLog.error(
+                "Transcript: failed to encode JSON for \(recordingId): \(error.localizedDescription)"
+            )
+            return
+        }
+        do {
+            let response = try await api.uploadRecordingTranscript(
+                recordingId: recordingId,
+                jsonData: jsonData
+            )
+            AppLog.info(
+                "Transcript: stored sidecar JSON for \(recordingId): \(response.transcriptUrl)"
+            )
+        } catch {
+            AppLog.error(
+                "Transcript: failed to upload JSON for \(recordingId): \(error.localizedDescription)"
             )
         }
     }

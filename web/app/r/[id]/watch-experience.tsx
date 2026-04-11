@@ -1,7 +1,8 @@
 /**
  * Client component that orchestrates the video player, timeline
- * markers, and comments pane. Owns the shared state between them
- * (comments list, highlighted comment, video ref for seeking).
+ * markers, and the tabbed right rail (comments / transcript).
+ * Owns the shared state between them (comments list, highlighted
+ * comment, video ref for seeking, active tab).
  *
  * Receives initial data from the server component (page.tsx)
  * so the first paint already has comments — no loading spinner.
@@ -15,11 +16,15 @@ import { formatBytes, formatDate, formatDuration } from "@/lib/format";
 
 import { CommentsPane, type CommentData, type MeData } from "./comments-pane";
 import { TimelineMarkers } from "./timeline-markers";
+import { TranscriptPane } from "./transcript-pane";
 import { VideoPlayer } from "./video-player";
+
+type RailTab = "comments" | "transcript";
 
 interface WatchExperienceProps {
   recordingId: string;
   videoUrl: string;
+  transcriptUrl: string;
   contentType: string;
   displayTitle: string;
   originalFilename: string;
@@ -34,6 +39,7 @@ interface WatchExperienceProps {
 export function WatchExperience({
   recordingId,
   videoUrl,
+  transcriptUrl,
   contentType,
   displayTitle,
   originalFilename,
@@ -51,6 +57,8 @@ export function WatchExperience({
     string | null
   >(null);
   const [currentTime, setCurrentTime] = useState(0);
+  const [activeTab, setActiveTab] = useState<RailTab>("transcript");
+  const [railOpen, setRailOpen] = useState(true);
 
   // Inline title editing (admin only)
   const [title, setTitle] = useState(displayTitle);
@@ -167,8 +175,15 @@ export function WatchExperience({
     setCurrentTime(time);
   }, []);
 
+  const seekTo = useCallback((seconds: number) => {
+    const video = videoRef.current;
+    if (video) {
+      video.currentTime = seconds;
+    }
+  }, []);
+
   return (
-    <div className="w-full flex flex-col lg:flex-row gap-6">
+    <div className="w-full flex flex-col lg:flex-row gap-4">
       {/* Left column: video + metadata */}
       <div className="flex-1 min-w-0">
         <VideoPlayer
@@ -182,7 +197,7 @@ export function WatchExperience({
           durationSeconds={durationSeconds}
           onMarkerClick={seekAndHighlight}
         />
-        <div className="mt-6 sm:mt-8">
+        <div className="mt-4 sm:mt-6">
           {isEditingTitle ? (
             <div className="flex items-center gap-2">
               <input
@@ -259,19 +274,104 @@ export function WatchExperience({
         </div>
       </div>
 
-      {/* Right column: comments */}
-      <div className="w-full lg:w-[360px] lg:shrink-0 lg:sticky lg:top-8 lg:max-h-[calc(100vh-4rem)] bg-zinc-900/50 rounded-lg border border-zinc-800 overflow-hidden flex flex-col max-h-[500px] lg:max-h-[calc(100vh-4rem)]">
-        <CommentsPane
-          recordingId={recordingId}
-          comments={comments}
-          me={me}
-          highlightedCommentId={highlightedCommentId}
-          currentTime={currentTime}
-          onCommentCreated={handleCommentCreated}
-          onCommentDeleted={handleCommentDeleted}
-          onCommentClick={seekAndHighlight}
-        />
-      </div>
+      {/* Right rail: tabbed comments / transcript (collapsible) */}
+      {railOpen ? (
+        <div className="w-full lg:w-[400px] lg:shrink-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] bg-zinc-900/50 rounded-lg border border-zinc-800 overflow-hidden flex flex-col max-h-[600px] lg:max-h-[calc(100vh-2rem)]">
+          {/* Tab bar */}
+          <div className="flex border-b border-zinc-800">
+            <button
+              type="button"
+              onClick={() => setActiveTab("transcript")}
+              className={`flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${
+                activeTab === "transcript"
+                  ? "text-zinc-100 border-b-2 border-sky-500"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              Transcript
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("comments")}
+              className={`flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${
+                activeTab === "comments"
+                  ? "text-zinc-100 border-b-2 border-sky-500"
+                  : "text-zinc-500 hover:text-zinc-300"
+              }`}
+            >
+              Comments ({comments.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setRailOpen(false)}
+              className="px-3 py-2.5 text-zinc-500 hover:text-zinc-300 transition-colors"
+              aria-label="Collapse panel"
+              title="Collapse panel"
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="5 3 10 8 5 13" />
+                <polyline points="9 3 14 8 9 13" />
+              </svg>
+            </button>
+          </div>
+
+          {/* Tab content */}
+          <div className="flex-1 overflow-hidden">
+            <div className={activeTab === "transcript" ? "h-full" : "hidden"}>
+              <TranscriptPane
+                transcriptUrl={transcriptUrl}
+                currentTime={currentTime}
+                onWordClick={seekTo}
+              />
+            </div>
+            <div className={activeTab === "comments" ? "h-full" : "hidden"}>
+              <CommentsPane
+                recordingId={recordingId}
+                comments={comments}
+                me={me}
+                highlightedCommentId={highlightedCommentId}
+                currentTime={currentTime}
+                onCommentCreated={handleCommentCreated}
+                onCommentDeleted={handleCommentDeleted}
+                onCommentClick={seekAndHighlight}
+              />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="hidden lg:flex lg:shrink-0 lg:sticky lg:top-4 lg:self-start">
+          <button
+            type="button"
+            onClick={() => setRailOpen(true)}
+            className="p-2 rounded-lg border border-zinc-800 bg-zinc-900/50 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 transition-colors"
+            aria-label="Expand panel"
+            title="Expand panel"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <polyline points="11 3 6 8 11 13" />
+              <polyline points="7 3 2 8 7 13" />
+            </svg>
+          </button>
+        </div>
+      )}
     </div>
   );
 }

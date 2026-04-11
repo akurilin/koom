@@ -1,5 +1,13 @@
 import Foundation
 
+/// The combined output of the local post-processing pipeline:
+/// a short LLM-generated title and the full word-level transcript.
+/// Both are optional — any stage can fail independently.
+struct AutotitleResult: Sendable {
+    let title: String?
+    let transcript: TimedTranscript?
+}
+
 /// Coordinates the local auto-titling pipeline that runs after each
 /// recording finishes:
 ///
@@ -52,12 +60,13 @@ struct Autotitler: Sendable {
     }
 
     /// Runs the full pipeline on the finalized recording at
-    /// `fileURL` and returns a short title, or `nil` if any stage
-    /// failed or produced nothing usable. Never throws.
-    func generateTitle(
+    /// `fileURL` and returns the generated title and the full timed
+    /// transcript. Either or both may be nil if stages failed.
+    /// Never throws.
+    func process(
         for fileURL: URL,
         onProgress: @Sendable (PostUploadStage) async -> Void
-    ) async -> String? {
+    ) async -> AutotitleResult {
         let filename = fileURL.lastPathComponent
 
         await onProgress(.preparingOllama(modelName: ollamaModelName))
@@ -65,7 +74,9 @@ struct Autotitler: Sendable {
             try await ollamaRuntime.ensureReady()
         } catch {
             AppLog.error("Autotitle: Ollama is not ready for \(filename): \(error.localizedDescription)")
-            return nil
+            // Ollama failing doesn't block transcription — continue
+            // to get the transcript even if we can't generate a title.
+            return await transcribeOnly(fileURL: fileURL, onProgress: onProgress)
         }
 
         // Stage 1: pull mic audio into 16 kHz mono float PCM.
@@ -73,45 +84,76 @@ struct Autotitler: Sendable {
         AppLog.info("Autotitle: extracting audio from \(filename).")
         guard let pcm = await AudioExtractor.extractMono16kFloatPCM(from: fileURL) else {
             AppLog.info("Autotitle: no usable audio track in \(filename); skipping.")
-            return nil
+            return AutotitleResult(title: nil, transcript: nil)
         }
         guard !pcm.isEmpty else {
             AppLog.info("Autotitle: audio track in \(filename) was empty; skipping.")
-            return nil
+            return AutotitleResult(title: nil, transcript: nil)
         }
         let approximateSeconds = pcm.count / 16_000
         AppLog.info("Autotitle: extracted ~\(approximateSeconds)s of audio from \(filename).")
 
-        // Stage 2: Whisper transcription.
-        let transcript: String
+        // Stage 2: Whisper transcription (with word timestamps).
+        let transcript: TimedTranscript
         do {
             await onProgress(.transcribing(modelName: whisperModelName))
             AppLog.info("Autotitle: transcribing \(filename).")
             transcript = try await transcriber.transcribe(audioArray: pcm)
         } catch {
             AppLog.error("Autotitle: transcription failed for \(filename): \(error.localizedDescription)")
-            return nil
+            return AutotitleResult(title: nil, transcript: nil)
         }
 
-        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTranscript.isEmpty else {
+        let plainText = transcript.plainText
+        guard !plainText.isEmpty else {
             AppLog.info("Autotitle: transcript for \(filename) was empty; skipping.")
-            return nil
+            return AutotitleResult(title: nil, transcript: nil)
         }
-        AppLog.info("Autotitle: transcript for \(filename) has \(trimmedTranscript.count) chars.")
+        AppLog.info("Autotitle: transcript for \(filename) has \(plainText.count) chars.")
 
         // Stage 3: Ollama summarization.
         do {
             await onProgress(.generatingTitle(modelName: ollamaModelName))
             AppLog.info("Autotitle: summarizing transcript for \(filename) via Ollama.")
             let title = try await ollamaRuntime.generateTitle(
-                from: trimmedTranscript
+                from: plainText
             )
             AppLog.info("Autotitle: generated title for \(filename): \(title)")
-            return title
+            return AutotitleResult(title: title, transcript: transcript)
         } catch {
             AppLog.error("Autotitle: Ollama summarization failed for \(filename): \(error.localizedDescription)")
-            return nil
+            // Title generation failed, but we still have the transcript.
+            return AutotitleResult(title: nil, transcript: transcript)
+        }
+    }
+
+    /// Fallback path when Ollama is unavailable — still produce a
+    /// transcript for upload even if we can't summarize it.
+    private func transcribeOnly(
+        fileURL: URL,
+        onProgress: @Sendable (PostUploadStage) async -> Void
+    ) async -> AutotitleResult {
+        let filename = fileURL.lastPathComponent
+
+        await onProgress(.extractingAudio)
+        guard let pcm = await AudioExtractor.extractMono16kFloatPCM(from: fileURL) else {
+            return AutotitleResult(title: nil, transcript: nil)
+        }
+        guard !pcm.isEmpty else {
+            return AutotitleResult(title: nil, transcript: nil)
+        }
+
+        do {
+            await onProgress(.transcribing(modelName: whisperModelName))
+            let transcript = try await transcriber.transcribe(audioArray: pcm)
+            guard !transcript.plainText.isEmpty else {
+                return AutotitleResult(title: nil, transcript: nil)
+            }
+            AppLog.info("Autotitle: transcript-only for \(filename) has \(transcript.plainText.count) chars (Ollama unavailable).")
+            return AutotitleResult(title: nil, transcript: transcript)
+        } catch {
+            AppLog.error("Autotitle: transcription failed for \(filename): \(error.localizedDescription)")
+            return AutotitleResult(title: nil, transcript: nil)
         }
     }
 }

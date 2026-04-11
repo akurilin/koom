@@ -118,13 +118,6 @@ export function CommentsPane({
 
   return (
     <div data-testid="comments-pane" className="flex flex-col h-full">
-      {/* Header */}
-      <div className="px-4 py-3 border-b border-zinc-800">
-        <h2 className="text-sm font-medium text-zinc-300">
-          Comments ({comments.length})
-        </h2>
-      </div>
-
       {/* Comment list */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
         {comments.length === 0 ? (

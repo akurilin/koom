@@ -360,6 +360,9 @@ final class AppModel: ObservableObject {
             case .savingGeneratedTitle:
                 return
                     "Upload finished. Saving the generated title to the backend…"
+            case .uploadingTranscript:
+                return
+                    "Upload finished. Uploading word-level transcript…"
             case .generatingThumbnail:
                 return
                     "Upload finished. Generating a JPEG thumbnail from the recording…"

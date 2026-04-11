@@ -61,6 +61,10 @@ export function recordingThumbnailObjectKey(recordingId: string): string {
   return `recordings/${recordingId}/thumbnail-v1.jpg`;
 }
 
+export function recordingTranscriptObjectKey(recordingId: string): string {
+  return `recordings/${recordingId}/transcript.json`;
+}
+
 /**
  * Build the public playback URL for a recording. Served by R2's
  * managed `.r2.dev` subdomain (or a custom domain in production),
@@ -94,6 +98,14 @@ export function recordingThumbnailPublicUrl(recordingId: string): string {
     throw new Error("R2_PUBLIC_BASE_URL not set");
   }
   return `${base.replace(/\/$/, "")}/${recordingThumbnailObjectKey(recordingId)}`;
+}
+
+export function recordingTranscriptPublicUrl(recordingId: string): string {
+  const base = process.env.R2_PUBLIC_BASE_URL;
+  if (!base) {
+    throw new Error("R2_PUBLIC_BASE_URL not set");
+  }
+  return `${base.replace(/\/$/, "")}/${recordingTranscriptObjectKey(recordingId)}`;
 }
 
 /**
@@ -170,6 +182,21 @@ export async function putRecordingThumbnail(
       Key: recordingThumbnailObjectKey(recordingId),
       Body: body,
       ContentType: "image/jpeg",
+      CacheControl: "public, max-age=31536000, immutable",
+    }),
+  );
+}
+
+export async function putRecordingTranscript(
+  recordingId: string,
+  body: Uint8Array,
+): Promise<void> {
+  await getR2Client().send(
+    new PutObjectCommand({
+      Bucket: requireBucket(),
+      Key: recordingTranscriptObjectKey(recordingId),
+      Body: body,
+      ContentType: "application/json",
       CacheControl: "public, max-age=31536000, immutable",
     }),
   );

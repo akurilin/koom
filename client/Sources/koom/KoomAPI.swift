@@ -77,6 +77,11 @@ struct KoomAPI {
         let thumbnailUrl: String
     }
 
+    struct UploadTranscriptResponse: Decodable {
+        let ok: Bool
+        let transcriptUrl: String
+    }
+
     // MARK: - Errors
 
     enum APIError: LocalizedError {
@@ -219,6 +224,54 @@ struct KoomAPI {
 
         do {
             return try JSONDecoder().decode(UploadThumbnailResponse.self, from: data)
+        } catch {
+            throw APIError.invalidResponse
+        }
+    }
+
+    /// Upload a sidecar JSON transcript for an existing recording.
+    /// The desktop client generates word-level timestamps via
+    /// WhisperKit and sends the JSON to the web backend, which
+    /// stores it in R2 next to the video object.
+    func uploadRecordingTranscript(
+        recordingId: String,
+        jsonData: Data
+    ) async throws -> UploadTranscriptResponse {
+        var request = URLRequest(
+            url: backendURL.appendingPathComponent(
+                "api/admin/recordings/\(recordingId)/transcript"
+            )
+        )
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(
+            "Bearer \(adminSecret)",
+            forHTTPHeaderField: "Authorization"
+        )
+        request.httpBody = jsonData
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.network(error)
+        }
+
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+
+        if http.statusCode == 401 {
+            throw APIError.unauthorized
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            throw APIError.badStatus(code: http.statusCode, body: bodyText)
+        }
+
+        do {
+            return try JSONDecoder().decode(UploadTranscriptResponse.self, from: data)
         } catch {
             throw APIError.invalidResponse
         }

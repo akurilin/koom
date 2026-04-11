@@ -32,7 +32,8 @@
     "db:verify": "psql \"${DATABASE_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres}\" -v ON_ERROR_STOP=1 -f supabase/tests/database/public_schema_lockdown.sql"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24.14.1",
+    "npm": ">=11.12.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -65,7 +65,7 @@ export function LoginForm() {
       <div>
         <label
           htmlFor="admin-secret"
-          className="block text-sm font-medium text-zinc-300 mb-2"
+          className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2"
         >
           Admin secret
         </label>
@@ -77,7 +77,7 @@ export function LoginForm() {
           required
           value={secret}
           onChange={(e) => setSecret(e.target.value)}
-          className="w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
+          className="w-full rounded-md border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 px-3 py-2 text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40"
           placeholder="Paste KOOM_ADMIN_SECRET"
         />
       </div>

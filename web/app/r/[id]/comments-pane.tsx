@@ -123,7 +123,7 @@ export function CommentsPane({
         {comments.length === 0 ? (
           <p
             data-testid="no-comments-message"
-            className="text-sm text-zinc-500 text-center py-8"
+            className="text-sm text-zinc-400 dark:text-zinc-500 text-center py-8"
           >
             No comments yet
           </p>
@@ -144,7 +144,7 @@ export function CommentsPane({
       {/* Compose form */}
       <form
         onSubmit={handleSubmit}
-        className="border-t border-zinc-800 px-4 py-3 space-y-2"
+        className="border-t border-zinc-200 dark:border-zinc-800 px-4 py-3 space-y-2"
       >
         <textarea
           ref={bodyRef}
@@ -160,10 +160,10 @@ export function CommentsPane({
           maxLength={2000}
           rows={2}
           placeholder="Add a comment..."
-          className="w-full bg-zinc-800 text-zinc-100 text-sm rounded-md px-3 py-2 placeholder:text-zinc-500 resize-none focus:outline-none focus:ring-1 focus:ring-sky-500"
+          className="w-full bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-sm rounded-md px-3 py-2 placeholder:text-zinc-400 dark:placeholder:text-zinc-500 resize-none focus:outline-none focus:ring-1 focus:ring-sky-500"
         />
         <div className="flex items-center gap-2">
-          <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+          <label className="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
             <span>at</span>
             <input
               data-testid="comment-timestamp-input"
@@ -173,7 +173,7 @@ export function CommentsPane({
               value={timestamp}
               onChange={(e) => setTimestamp(e.target.value)}
               placeholder={String(Math.round(currentTime * 10) / 10)}
-              className="w-16 bg-zinc-800 text-zinc-100 text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-sky-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              className="w-16 bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-xs rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-sky-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
             />
             <span>sec</span>
           </label>
@@ -215,8 +215,8 @@ function CommentItem({
       data-testid="comment-item"
       className={`group rounded-md px-3 py-2 text-sm transition-colors ${
         isHighlighted
-          ? "bg-sky-950/50 ring-1 ring-sky-700"
-          : "hover:bg-zinc-800/50"
+          ? "bg-sky-50 dark:bg-sky-950/50 ring-1 ring-sky-300 dark:ring-sky-700"
+          : "hover:bg-zinc-100 dark:hover:bg-zinc-800/50"
       }`}
     >
       <div className="flex items-center gap-2 mb-1">
@@ -225,7 +225,7 @@ function CommentItem({
           className={`inline-block w-5 h-5 rounded-full text-[10px] font-bold flex items-center justify-center shrink-0 ${
             comment.isAdmin
               ? "bg-sky-600 text-white"
-              : `bg-zinc-700 text-zinc-300`
+              : `bg-zinc-300 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-300`
           }`}
         >
           {comment.isAdmin
@@ -234,7 +234,7 @@ function CommentItem({
         </span>
 
         {/* Display name */}
-        <span className="font-medium text-zinc-200 truncate text-xs">
+        <span className="font-medium text-zinc-800 dark:text-zinc-200 truncate text-xs">
           {comment.displayName}
         </span>
 
@@ -263,7 +263,7 @@ function CommentItem({
             data-testid="delete-comment-button"
             type="button"
             onClick={onDelete}
-            className="text-zinc-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+            className="text-zinc-300 dark:text-zinc-600 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
             title="Delete comment"
           >
             &times;
@@ -271,7 +271,7 @@ function CommentItem({
         )}
       </div>
 
-      <p className="text-zinc-300 text-xs leading-relaxed whitespace-pre-wrap break-words">
+      <p className="text-zinc-600 dark:text-zinc-300 text-xs leading-relaxed whitespace-pre-wrap break-words">
         {comment.body}
       </p>
     </div>

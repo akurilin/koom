@@ -75,7 +75,7 @@ export default async function WatchPage(
   const me = buildMePayload(viewer);
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100 px-4 py-4 sm:py-6">
+    <main className="min-h-screen px-4 py-4 sm:py-6">
       <div className="w-full mx-auto">
         {isAdmin && (
           <nav
@@ -83,21 +83,24 @@ export default async function WatchPage(
             data-testid="watch-breadcrumb"
             className="mb-4 sm:mb-6"
           >
-            <ol className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">
+            <ol className="flex flex-wrap items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
               <li>
                 <Link
                   href="/"
                   data-testid="watch-breadcrumb-recordings-link"
-                  className="rounded-sm transition hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
+                  className="rounded-sm transition hover:text-zinc-900 dark:hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-sky-500/60"
                 >
                   My Recordings
                 </Link>
               </li>
-              <li aria-hidden="true" className="text-zinc-600">
+              <li
+                aria-hidden="true"
+                className="text-zinc-300 dark:text-zinc-600"
+              >
                 /
               </li>
               <li
-                className="min-w-0 max-w-full truncate text-zinc-200"
+                className="min-w-0 max-w-full truncate text-zinc-800 dark:text-zinc-200"
                 title={displayTitle}
               >
                 {displayTitle}

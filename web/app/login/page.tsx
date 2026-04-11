@@ -25,11 +25,11 @@ export default async function LoginPage(): Promise<ReactElement> {
   }
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center px-4">
+    <main className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
           <h1 className="text-2xl font-semibold tracking-tight">koom admin</h1>
-          <p className="mt-2 text-sm text-zinc-400">
+          <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
             Enter the admin secret to manage your recordings.
           </p>
         </div>

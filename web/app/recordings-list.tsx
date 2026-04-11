@@ -167,13 +167,16 @@ export function RecordingsList({ initialRecordings, showBulkDelete }: Props) {
           <h1 className="text-2xl font-semibold tracking-tight">
             My Recordings
           </h1>
-          <p className="mt-1 text-sm text-zinc-400">
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
             {recordings.length}{" "}
             {recordings.length === 1 ? "recording" : "recordings"}
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
-          <label htmlFor="sort-select" className="text-sm text-zinc-400">
+          <label
+            htmlFor="sort-select"
+            className="text-sm text-zinc-500 dark:text-zinc-400"
+          >
             Sort by
           </label>
           <select
@@ -182,7 +185,7 @@ export function RecordingsList({ initialRecordings, showBulkDelete }: Props) {
             value={sortKey}
             onChange={(e) => setSortKey(e.target.value as SortKey)}
             disabled={isMutating}
-            className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-100 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-md border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 px-3 py-1.5 text-sm text-zinc-900 dark:text-zinc-100 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/40 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {SORT_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -206,7 +209,7 @@ export function RecordingsList({ initialRecordings, showBulkDelete }: Props) {
             data-testid="logout-button"
             onClick={handleLogout}
             disabled={isMutating}
-            className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-300 hover:border-zinc-500 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-md border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 px-3 py-1.5 text-sm text-zinc-700 dark:text-zinc-300 hover:border-zinc-400 dark:hover:border-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Log out
           </button>
@@ -225,7 +228,7 @@ export function RecordingsList({ initialRecordings, showBulkDelete }: Props) {
 
       {sorted.length === 0 ? (
         <div
-          className="rounded-md border border-zinc-800 bg-zinc-900/40 px-6 py-12 text-center text-sm text-zinc-400"
+          className="rounded-md border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/40 px-6 py-12 text-center text-sm text-zinc-500 dark:text-zinc-400"
           data-testid="empty-state"
         >
           No recordings yet. Record something in the desktop app and it&apos;ll
@@ -283,7 +286,7 @@ function RecordingCard({
     <div
       data-testid="recording-card"
       data-recording-id={recording.recordingId}
-      className="group overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/50 transition hover:border-zinc-700"
+      className="group overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50 transition hover:border-zinc-300 dark:hover:border-zinc-700"
     >
       <Link
         href={watchHref}
@@ -299,7 +302,7 @@ function RecordingCard({
             playsInline
             className="aspect-video w-full object-cover"
           >
-            <p className="p-4 text-xs text-zinc-400">
+            <p className="p-4 text-xs text-zinc-500 dark:text-zinc-400">
               Your browser cannot play this {recording.contentType} file.
             </p>
           </video>
@@ -331,7 +334,7 @@ function RecordingCard({
             {displayTitle}
           </Link>
         </h2>
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-zinc-400">
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-zinc-500 dark:text-zinc-400">
           <span data-testid="card-date">{formatDate(recording.createdAt)}</span>
           <span data-testid="card-size">
             {formatBytes(recording.sizeBytes)}
@@ -344,7 +347,7 @@ function RecordingCard({
         </div>
       </div>
 
-      <div className="flex items-center justify-end border-t border-zinc-800 px-4 py-2">
+      <div className="flex items-center justify-end border-t border-zinc-200 dark:border-zinc-800 px-4 py-2">
         <button
           type="button"
           data-testid="delete-button"

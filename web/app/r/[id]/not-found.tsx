@@ -17,10 +17,10 @@ import type { ReactElement } from "react";
 
 export default function RecordingNotFound(): ReactElement {
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center justify-center px-4">
+    <main className="min-h-screen flex flex-col items-center justify-center px-4">
       <div className="max-w-md text-center">
         <h1 className="text-3xl font-medium mb-3">Recording not found</h1>
-        <p className="text-zinc-400 mb-8 text-sm">
+        <p className="text-zinc-500 dark:text-zinc-400 mb-8 text-sm">
           The recording you&apos;re looking for doesn&apos;t exist, was removed,
           or isn&apos;t ready to watch yet.
         </p>

@@ -97,7 +97,9 @@ export function TranscriptPane({
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center h-full">
-        <p className="text-sm text-zinc-500">Loading transcript…</p>
+        <p className="text-sm text-zinc-400 dark:text-zinc-500">
+          Loading transcript…
+        </p>
       </div>
     );
   }
@@ -105,7 +107,7 @@ export function TranscriptPane({
   if (error || !transcript) {
     return (
       <div className="flex-1 flex items-center justify-center h-full">
-        <p className="text-sm text-zinc-500 text-center px-4">
+        <p className="text-sm text-zinc-400 dark:text-zinc-500 text-center px-4">
           No transcript available for this recording.
         </p>
       </div>
@@ -118,7 +120,7 @@ export function TranscriptPane({
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto h-full"
     >
-      <div className="divide-y divide-zinc-800/50">
+      <div className="divide-y divide-zinc-200/50 dark:divide-zinc-800/50">
         {transcript.segments.map((segment, segIdx) => {
           const isActiveSegment =
             currentTime >= segment.start && currentTime < segment.end;
@@ -126,13 +128,13 @@ export function TranscriptPane({
             <div
               key={segIdx}
               className={`flex gap-3 px-4 py-3 transition-colors ${
-                isActiveSegment ? "bg-zinc-800/30" : ""
+                isActiveSegment ? "bg-sky-50/50 dark:bg-zinc-800/30" : ""
               }`}
             >
               <button
                 type="button"
                 onClick={() => onWordClick(segment.start)}
-                className="shrink-0 text-xs font-mono text-zinc-500 hover:text-sky-400 transition-colors pt-0.5 w-10 text-right"
+                className="shrink-0 text-xs font-mono text-zinc-400 dark:text-zinc-500 hover:text-sky-400 transition-colors pt-0.5 w-10 text-right"
               >
                 {formatTimestamp(segment.start)}
               </button>
@@ -146,10 +148,10 @@ export function TranscriptPane({
                         key={wordIdx}
                         ref={isActive ? activeWordRef : undefined}
                         onClick={() => onWordClick(word.start)}
-                        className={`cursor-pointer rounded px-0.5 transition-colors hover:bg-sky-900/50 hover:text-sky-200 ${
+                        className={`cursor-pointer rounded px-0.5 transition-colors hover:bg-sky-100 dark:hover:bg-sky-900/50 hover:text-sky-800 dark:hover:text-sky-200 ${
                           isActive
-                            ? "bg-sky-900/60 text-sky-100"
-                            : "text-zinc-300"
+                            ? "bg-sky-100 dark:bg-sky-900/60 text-sky-800 dark:text-sky-100"
+                            : "text-zinc-700 dark:text-zinc-300"
                         }`}
                       >
                         {word.word}
@@ -157,7 +159,9 @@ export function TranscriptPane({
                     );
                   })
                 ) : (
-                  <span className="text-zinc-300">{segment.text}</span>
+                  <span className="text-zinc-700 dark:text-zinc-300">
+                    {segment.text}
+                  </span>
                 )}
               </p>
             </div>

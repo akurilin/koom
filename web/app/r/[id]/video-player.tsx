@@ -82,9 +82,9 @@ export function VideoPlayer({
       controls
       preload="metadata"
       playsInline
-      className="w-full rounded-lg shadow-2xl shadow-black/60 bg-black aspect-video"
+      className="w-full rounded-lg shadow-2xl shadow-black/20 dark:shadow-black/60 bg-black aspect-video"
     >
-      <p className="p-4 text-zinc-400 text-sm">
+      <p className="p-4 text-zinc-500 dark:text-zinc-400 text-sm">
         Your browser cannot play this {contentType} file.
       </p>
     </video>

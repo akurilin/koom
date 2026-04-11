@@ -209,14 +209,14 @@ export function WatchExperience({
                 onBlur={cancelEditing}
                 disabled={isSavingTitle}
                 maxLength={200}
-                className="flex-1 min-w-0 text-xl sm:text-2xl font-medium leading-tight bg-zinc-900 text-zinc-100 border border-zinc-700 rounded-md px-3 py-1.5 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
+                className="flex-1 min-w-0 text-xl sm:text-2xl font-medium leading-tight bg-zinc-50 dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border border-zinc-300 dark:border-zinc-700 rounded-md px-3 py-1.5 outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 disabled:opacity-50"
               />
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={saveTitle}
                 disabled={isSavingTitle}
-                className="shrink-0 p-1.5 rounded-md text-zinc-400 hover:text-emerald-400 hover:bg-zinc-800 transition disabled:opacity-50"
+                className="shrink-0 p-1.5 rounded-md text-zinc-500 dark:text-zinc-400 hover:text-emerald-500 dark:hover:text-emerald-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition disabled:opacity-50"
                 aria-label="Save title"
               >
                 <svg
@@ -237,7 +237,7 @@ export function WatchExperience({
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={cancelEditing}
                 disabled={isSavingTitle}
-                className="shrink-0 p-1.5 rounded-md text-zinc-400 hover:text-red-400 hover:bg-zinc-800 transition disabled:opacity-50"
+                className="shrink-0 p-1.5 rounded-md text-zinc-500 dark:text-zinc-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition disabled:opacity-50"
                 aria-label="Cancel rename"
               >
                 <svg
@@ -257,14 +257,14 @@ export function WatchExperience({
             </div>
           ) : (
             <h1
-              className={`text-xl sm:text-2xl font-medium leading-tight break-words${isAdmin ? " cursor-pointer rounded-md transition hover:bg-zinc-800/60 -mx-2 px-2 py-1" : ""}`}
+              className={`text-xl sm:text-2xl font-medium leading-tight break-words${isAdmin ? " cursor-pointer rounded-md transition hover:bg-zinc-100 dark:hover:bg-zinc-800/60 -mx-2 px-2 py-1" : ""}`}
               onClick={isAdmin ? startEditing : undefined}
               title={isAdmin ? "Click to rename" : undefined}
             >
               {title}
             </h1>
           )}
-          <div className="mt-3 text-sm text-zinc-400 flex flex-wrap gap-x-4 gap-y-1">
+          <div className="mt-3 text-sm text-zinc-500 dark:text-zinc-400 flex flex-wrap gap-x-4 gap-y-1">
             <span>{formatDate(createdAt)}</span>
             {durationSeconds !== null && (
               <span>{formatDuration(durationSeconds)}</span>
@@ -276,16 +276,16 @@ export function WatchExperience({
 
       {/* Right rail: tabbed comments / transcript (collapsible) */}
       {railOpen ? (
-        <div className="w-full lg:w-[400px] lg:shrink-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] bg-zinc-900/50 rounded-lg border border-zinc-800 overflow-hidden flex flex-col max-h-[600px] lg:max-h-[calc(100vh-2rem)]">
+        <div className="w-full lg:w-[400px] lg:shrink-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] bg-zinc-50 dark:bg-zinc-900/50 rounded-lg border border-zinc-200 dark:border-zinc-800 overflow-hidden flex flex-col max-h-[600px] lg:max-h-[calc(100vh-2rem)]">
           {/* Tab bar */}
-          <div className="flex border-b border-zinc-800">
+          <div className="flex border-b border-zinc-200 dark:border-zinc-800">
             <button
               type="button"
               onClick={() => setActiveTab("transcript")}
               className={`flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${
                 activeTab === "transcript"
-                  ? "text-zinc-100 border-b-2 border-sky-500"
-                  : "text-zinc-500 hover:text-zinc-300"
+                  ? "text-zinc-900 dark:text-zinc-100 border-b-2 border-sky-500"
+                  : "text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
               }`}
             >
               Transcript
@@ -295,8 +295,8 @@ export function WatchExperience({
               onClick={() => setActiveTab("comments")}
               className={`flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${
                 activeTab === "comments"
-                  ? "text-zinc-100 border-b-2 border-sky-500"
-                  : "text-zinc-500 hover:text-zinc-300"
+                  ? "text-zinc-900 dark:text-zinc-100 border-b-2 border-sky-500"
+                  : "text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
               }`}
             >
               Comments ({comments.length})
@@ -304,7 +304,7 @@ export function WatchExperience({
             <button
               type="button"
               onClick={() => setRailOpen(false)}
-              className="px-3 py-2.5 text-zinc-500 hover:text-zinc-300 transition-colors"
+              className="px-3 py-2.5 text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 transition-colors"
               aria-label="Collapse panel"
               title="Collapse panel"
             >
@@ -352,7 +352,7 @@ export function WatchExperience({
           <button
             type="button"
             onClick={() => setRailOpen(true)}
-            className="p-2 rounded-lg border border-zinc-800 bg-zinc-900/50 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 transition-colors"
+            className="p-2 rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-900/50 text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800/50 transition-colors"
             aria-label="Expand panel"
             title="Expand panel"
           >

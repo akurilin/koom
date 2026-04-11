@@ -32,7 +32,7 @@ export function TimelineMarkers({
   return (
     <div
       data-testid="timeline-markers-strip"
-      className="relative w-full h-2 bg-zinc-800 rounded-full mt-1"
+      className="relative w-full h-2 bg-zinc-200 dark:bg-zinc-800 rounded-full mt-1"
     >
       {hasDuration &&
         comments.map((c) => {

@@ -34,7 +34,7 @@ export default async function HomePage(): Promise<ReactElement> {
   const items = recordings.map(toRecordingListItem);
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100">
+    <main className="min-h-screen">
       <RecordingsList
         initialRecordings={items}
         showBulkDelete={showBulkDelete}

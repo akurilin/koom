@@ -39,6 +39,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     private struct MicrophoneConfiguration {
         let writerSettings: [String: Any]
+        let sourceFormatHint: CMFormatDescription
     }
 
     private let configuration: Configuration
@@ -162,7 +163,8 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         if let microphoneConfiguration {
             let audioInput = AVAssetWriterInput(
                 mediaType: .audio,
-                outputSettings: microphoneConfiguration.writerSettings
+                outputSettings: microphoneConfiguration.writerSettings,
+                sourceFormatHint: microphoneConfiguration.sourceFormatHint
             )
             audioInput.expectsMediaDataInRealTime = true
 
@@ -672,7 +674,8 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             writerSettings: audioWriterSettings(
                 sampleRate: normalizedAudioFormat.sampleRate,
                 channelCount: normalizedAudioFormat.channelCount
-            )
+            ),
+            sourceFormatHint: device.activeFormat.formatDescription
         )
     }
 
@@ -718,9 +721,16 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             return nil
         }
 
+        // AudioChannelLayout is a variable-length C struct. For tag-based
+        // mono/stereo layouts with zero explicit channel descriptions, the
+        // payload ends before the trailing flexible array member.
+        let baseLayoutSize =
+            MemoryLayout<AudioChannelLayout>.size
+            - MemoryLayout<AudioChannelDescription>.size
+
         return Data(
             bytes: &channelLayout,
-            count: MemoryLayout<AudioChannelLayout>.size
+            count: baseLayoutSize
         )
     }
 

@@ -139,11 +139,19 @@ struct ControlPanelView: View {
 
     var body: some View {
         ZStack {
+            // The window has .titled + .fullSizeContentView with a
+            // transparent title bar, so the title bar region sits on
+            // top of the content view. SwiftUI's default safe-area
+            // insets keep this gradient below the title bar, leaving
+            // a white stripe at the top where the traffic lights sit.
+            // ignoresSafeArea pushes the gradient edge-to-edge so the
+            // cream background extends behind the title bar too.
             LinearGradient(
                 colors: [panelBackgroundTop, panelBackgroundBottom],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
+            .ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: 18) {
                 header

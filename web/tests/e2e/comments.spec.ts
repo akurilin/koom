@@ -150,8 +150,9 @@ test("comment system happy path", async ({ page }) => {
     // Wait for redirect to recordings page
     await expect(page).toHaveURL(/\/(\?.*)?$/);
 
-    // Go back to the watch page
+    // Go back to the watch page and switch to Comments tab
     await page.goto(watchUrl);
+    await page.getByRole("button", { name: /comments/i }).click();
     await expect(page.getByTestId("comments-pane")).toBeVisible();
 
     // Post an admin comment

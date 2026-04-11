@@ -44,6 +44,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
 
+import { computeSyncDiff } from "./lib/vercel-sync";
+
 const { Client: PgClient } = pg;
 const execFileAsync = promisify(execFile);
 
@@ -443,7 +445,7 @@ async function main(): Promise<void> {
 
   // ── Section: Vercel ───────────────────────────────────────────────
   logSection("Vercel");
-  await runVercelChecks(prodEnv);
+  await runVercelChecks(prodEnv, env, SUPABASE_POOLER_URL_PATH);
 
   finish();
 }
@@ -1203,37 +1205,74 @@ async function runDesktopClientChecks(): Promise<void> {
 // ────────────────────────────────────────────────────────────────────
 
 /**
- * If VERCEL_TOKEN and VERCEL_PROJECT_ID are set in web/.env.local,
- * verify the project exists and the token has access. This is the
- * only check that actively reaches out to Vercel; everything else in
- * the doctor is local to the dev machine or touches Supabase/R2
- * directly. Production deploys don't technically need this check to
- * work — the user can deploy via the Vercel dashboard without ever
- * putting a token in .env.local — so the check only runs when the
- * credentials are provided.
+ * Runs two Vercel checks, both tagged prod-track:
+ *
+ *   1. "Vercel project reachable" — confirms VERCEL_TOKEN has access
+ *      to VERCEL_PROJECT_ID via GET /v9/projects/{id}.
+ *
+ *   2. "Vercel env vars in sync" — delegates to computeSyncDiff() in
+ *      scripts/lib/vercel-sync.ts and aggregates the per-variable
+ *      results into a single doctor check. Pass when every expected
+ *      variable is either in-sync or opaque (sensitive type, cannot
+ *      verify). Warn with a count + hint to run `npm run vercel:sync`
+ *      when any drift, missing, or unresolvable variable is
+ *      detected. The drift check is skipped entirely when the
+ *      reachability check fails, because there's nothing to compare
+ *      against.
  */
-async function runVercelChecks(env: Record<string, string>): Promise<void> {
+async function runVercelChecks(
+  prodEnv: Record<string, string>,
+  localEnv: Record<string, string>,
+  poolerUrlPath: string,
+): Promise<void> {
   const track: Track = "prod";
 
-  if (!env.VERCEL_TOKEN || !env.VERCEL_PROJECT_ID) {
+  if (!prodEnv.VERCEL_TOKEN || !prodEnv.VERCEL_PROJECT_ID) {
     skip(
       "Vercel project reachable",
       track,
-      `VERCEL_TOKEN / VERCEL_PROJECT_ID not set (optional — only needed if you want the doctor to verify your Vercel project is live and the token has access)`,
+      `VERCEL_TOKEN / VERCEL_PROJECT_ID not set in web/.env.prod.local (optional — only needed if you want the doctor to verify your Vercel project is live and compare production env vars against the local sources of truth)`,
+    );
+    skip(
+      "Vercel env vars in sync",
+      track,
+      "skipped because Vercel credentials are not configured",
     );
     return;
   }
 
+  const reachable = await runVercelProjectReachableCheck(prodEnv);
+  if (!reachable) {
+    skip(
+      "Vercel env vars in sync",
+      track,
+      "skipped because the Vercel project is not reachable",
+    );
+    return;
+  }
+
+  await runVercelEnvDriftCheck(prodEnv, localEnv, poolerUrlPath);
+}
+
+/**
+ * Calls GET /v9/projects/{id} to verify the token/project combo.
+ * Returns true on success so the caller knows whether to continue
+ * with the drift check.
+ */
+async function runVercelProjectReachableCheck(
+  prodEnv: Record<string, string>,
+): Promise<boolean> {
+  const track: Track = "prod";
   const projectUrl = new URL(
     `https://api.vercel.com/v9/projects/${encodeURIComponent(
-      env.VERCEL_PROJECT_ID,
+      prodEnv.VERCEL_PROJECT_ID,
     )}`,
   );
 
   try {
     const res = await fetch(projectUrl, {
       headers: {
-        Authorization: `Bearer ${env.VERCEL_TOKEN}`,
+        Authorization: `Bearer ${prodEnv.VERCEL_TOKEN}`,
         Accept: "application/json",
       },
       signal: AbortSignal.timeout(10_000),
@@ -1243,17 +1282,17 @@ async function runVercelChecks(env: Record<string, string>): Promise<void> {
       fail(
         "Vercel project reachable",
         track,
-        `HTTP ${res.status} from Vercel API. The VERCEL_TOKEN does not have access to project '${env.VERCEL_PROJECT_ID}'. Re-mint a token at https://vercel.com/account/tokens with the right scope.`,
+        `HTTP ${res.status} from Vercel API. The VERCEL_TOKEN does not have access to project '${prodEnv.VERCEL_PROJECT_ID}'. Re-mint a token at https://vercel.com/account/tokens with the right scope.`,
       );
-      return;
+      return false;
     }
     if (res.status === 404) {
       fail(
         "Vercel project reachable",
         track,
-        `HTTP 404: project '${env.VERCEL_PROJECT_ID}' not found. Double-check VERCEL_PROJECT_ID in web/.env.local — it's the project ID string (prj_...), not the project slug.`,
+        `HTTP 404: project '${prodEnv.VERCEL_PROJECT_ID}' not found. Double-check VERCEL_PROJECT_ID in web/.env.prod.local — it's the project ID string (prj_...), not the project slug.`,
       );
-      return;
+      return false;
     }
     if (!res.ok) {
       fail(
@@ -1261,7 +1300,7 @@ async function runVercelChecks(env: Record<string, string>): Promise<void> {
         track,
         `HTTP ${res.status} from ${projectUrl.href}`,
       );
-      return;
+      return false;
     }
 
     const body = (await res.json()) as { name?: string };
@@ -1270,6 +1309,7 @@ async function runVercelChecks(env: Record<string, string>): Promise<void> {
       track,
       body.name ? `(project '${body.name}')` : undefined,
     );
+    return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     fail(
@@ -1277,7 +1317,88 @@ async function runVercelChecks(env: Record<string, string>): Promise<void> {
       track,
       `Could not reach ${projectUrl.href}: ${msg}`,
     );
+    return false;
   }
+}
+
+/**
+ * Aggregate drift check. Runs the same computeSyncDiff() that the
+ * standalone vercel:sync CLI uses, then folds the per-variable
+ * results into a single doctor check so the Vercel section stays
+ * readable. The user can run `npm run vercel:sync` any time for the
+ * full per-variable breakdown.
+ */
+async function runVercelEnvDriftCheck(
+  prodEnv: Record<string, string>,
+  localEnv: Record<string, string>,
+  poolerUrlPath: string,
+): Promise<void> {
+  const track: Track = "prod";
+
+  let diff;
+  try {
+    diff = await computeSyncDiff({
+      vercelToken: prodEnv.VERCEL_TOKEN,
+      vercelProjectId: prodEnv.VERCEL_PROJECT_ID,
+      localEnv,
+      poolerUrlPath,
+    });
+  } catch (err) {
+    fail(
+      "Vercel env vars in sync",
+      track,
+      `computeSyncDiff threw: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return;
+  }
+
+  if (diff.error) {
+    fail("Vercel env vars in sync", track, diff.error);
+    return;
+  }
+
+  const { summary } = diff;
+
+  if (summary.allInSyncOrOpaque) {
+    // Detail line tells the user how many variables were actually
+    // verified vs how many are opaque so they don't mistake opaque
+    // for "proven in sync."
+    const opaqueNote =
+      summary.opaque > 0
+        ? `, ${summary.opaque} opaque (sensitive type, cannot verify)`
+        : "";
+    pass(
+      "Vercel env vars in sync",
+      track,
+      `(${summary.inSync} verified${opaqueNote}${summary.unknown > 0 ? `, ${summary.unknown} extra on Vercel (ignored)` : ""})`,
+    );
+    return;
+  }
+
+  // Build a short warning message that names which variables need
+  // attention without dumping the full report. `npm run vercel:sync`
+  // is the place to get the full breakdown.
+  const problems: string[] = [];
+  if (summary.drift > 0) problems.push(`${summary.drift} drift`);
+  if (summary.missing > 0) problems.push(`${summary.missing} missing`);
+  if (summary.unresolvable > 0)
+    problems.push(`${summary.unresolvable} unresolvable`);
+
+  const affectedKeys = diff.results
+    .filter(
+      (r) =>
+        r.status === "drift" ||
+        r.status === "missing-on-vercel" ||
+        r.status === "unresolvable",
+    )
+    .map((r) => r.key);
+
+  warn(
+    "Vercel env vars in sync",
+    track,
+    `${problems.join(", ")} detected: ${affectedKeys.join(", ")}.\n` +
+      `Run 'npm run vercel:sync' for the full per-variable breakdown. The sync command is currently dry-run only; a future --write mode will apply the changes automatically.`,
+  );
 }
 
 function finish(): never {

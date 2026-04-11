@@ -23,6 +23,7 @@
     "r2:setup:test": "tsx scripts/r2-setup-test.ts",
     "r2:orphans": "tsx scripts/r2-orphans.ts",
     "doctor": "tsx scripts/doctor.ts",
+    "vercel:sync": "tsx scripts/vercel-sync.ts",
     "db:start": "npx -y supabase@2.87.2 start",
     "db:stop": "npx -y supabase@2.87.2 stop",
     "db:status": "npx -y supabase@2.87.2 status",

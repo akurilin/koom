@@ -26,6 +26,7 @@ Features koom is particularly proud of:
 - **Inline admin rename.** Admins can click the title on the watch page to rename a recording inline — no separate admin form.
 - **Light/dark/system theme.** The watch page and admin UI respect `prefers-color-scheme` and offer a manual toggle that persists to `localStorage` with no flash of the wrong theme on first paint.
 - **Zero-egress storage.** Cloudflare R2 has no bandwidth fees, so cost stays flat no matter how much the links get shared.
+- **Guided self-hosting via `npm run doctor`.** One command bootstraps missing env files from committed templates, validates every external service end-to-end (R2 with Range-request checks, local Postgres schema, remote Supabase via the CLI link, Vercel project reachability, Vercel env var drift detection, Ollama), and produces a split readiness report for local development vs. production deployment. Self-hosting the stack means `git clone`, a handful of external-service signups, and iterating on the doctor until both tracks turn green — no hidden deployment gauntlet.
 - **Deliberately narrow scope.** Single-tenant, one admin secret, no teams, no transcoding, no custom domains. The whole stack fits in your head.
 
 Some of these features have longer write-ups — see [Deeper reading](#deeper-reading) at the bottom.
@@ -34,12 +35,12 @@ Some of these features have longer write-ups — see [Deeper reading](#deeper-re
 
 koom is a small monorepo split by runtime:
 
-| Component   | Stack                                            | Role                                                      |
-| ----------- | ------------------------------------------------ | --------------------------------------------------------- |
-| `client/`   | Swift 6, SwiftUI, AVFoundation, ScreenCaptureKit | Records the screen, uploads the file, transcribes locally |
-| `web/`      | Next.js 16 (App Router), TypeScript, React 19    | Public watch pages, admin UI, backend API routes          |
-| `supabase/` | Hand-written SQL migrations, managed via `pg`    | `recordings`, `comments`, `commenters` tables (no ORM)    |
-| `scripts/`  | TypeScript, run through `tsx`                    | Operator tooling — `r2:setup`, `doctor`, `r2:orphans`     |
+| Component   | Stack                                            | Role                                                                 |
+| ----------- | ------------------------------------------------ | -------------------------------------------------------------------- |
+| `client/`   | Swift 6, SwiftUI, AVFoundation, ScreenCaptureKit | Records the screen, uploads the file, transcribes locally            |
+| `web/`      | Next.js 16 (App Router), TypeScript, React 19    | Public watch pages, admin UI, backend API routes                     |
+| `supabase/` | Hand-written SQL migrations, managed via `pg`    | `recordings`, `comments`, `commenters` tables (no ORM)               |
+| `scripts/`  | TypeScript, run through `tsx`                    | Operator tooling — `doctor`, `r2:setup`, `r2:orphans`, `vercel:sync` |
 
 Deployment targets:
 
@@ -142,7 +143,7 @@ It exercises:
 - **Remote Supabase** — verifies the Supabase CLI is installed, that `supabase link` has been run against a hosted project, and that the cached pooler URL + `SUPABASE_DB_PASSWORD` can actually connect to the remote Postgres with a `SELECT 1`. The doctor does **not** validate whether migrations have been applied to the remote DB — just that you have something you can migrate against. No test rows are written to production.
 - **Ollama (auto-title)** — server is reachable and the configured model is pulled (non-fatal).
 - **Desktop code signing** — local dev codesign identity is present and usable on macOS.
-- **Vercel** — if `VERCEL_TOKEN` and `VERCEL_PROJECT_ID` are set in `web/.env.prod.local`, the project is reachable and the token has access.
+- **Vercel** — if `VERCEL_TOKEN` and `VERCEL_PROJECT_ID` are set in `web/.env.prod.local`, the doctor verifies the project is reachable, the token has access, and every env var currently configured on the Vercel project matches what koom expects (see [Vercel sync](#vercel-sync) below for the drift-detection details).
 
 The final summary splits the checks into two readiness tracks:
 
@@ -150,6 +151,12 @@ The final summary splits the checks into two readiness tracks:
 - **Production deployment** — everything you need to deploy to Vercel, with a hosted Supabase + R2 bucket to back it.
 
 Either track can be "ready" independently. If you don't care about local development and just want to run koom in production, the doctor still tells you exactly what's missing for prod, and vice versa.
+
+### Vercel sync
+
+`npm run vercel:sync` compares every env var configured on the Vercel project against the local sources of truth (`web/.env.local`, the Supabase CLI link state, and the Vercel project's primary domain) and reports per-variable drift. It's currently **dry-run only** — it never writes to Vercel — so it's safe to run whenever you want to audit the production configuration.
+
+Each expected variable falls into one of six buckets: `in-sync`, `drift` (local and Vercel disagree), `missing-on-vercel`, `opaque` (Vercel stores the variable as `sensitive`, which cannot be read back through the API — a future `--write` mode would unconditionally overwrite these), `unknown` (extra variable on Vercel that koom doesn't manage — ignored), or `unresolvable` (the local source for the desired value is missing, e.g. `SUPABASE_DB_PASSWORD` unset). The doctor runs the same comparison as an aggregate check in its Vercel section and surfaces drift as a warning with the offending keys, so you don't need to remember to run the sync command manually — just notice when the doctor tells you to. A future `--write` mode will apply the detected changes in one shot.
 
 A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, `swift format`, ShellCheck, and gitleaks against staged changes before any commit lands. The same checks run in GitHub Actions on push and pull requests, plus a full-history gitleaks scan.
 

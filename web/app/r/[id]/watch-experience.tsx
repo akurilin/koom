@@ -179,18 +179,16 @@ export function WatchExperience({
     const video = videoRef.current;
     if (!video) return;
     video.currentTime = seconds;
-    // If the video was paused or hadn't started yet, start playing.
-    // Clicking a word in the transcript should feel like a hyperlink:
-    // jump to that moment AND hear it. play() returns a promise that
-    // rejects if the browser blocks autoplay (e.g. user gesture
-    // requirements); since this is invoked from a user click, it
-    // should almost always succeed, but we still swallow any
-    // rejection so a failed play() doesn't break the seek.
-    if (video.paused) {
-      video.play().catch(() => {
-        // Browser refused to start playback — the seek still happened.
-      });
-    }
+    // Clicking a word in the transcript should always start/resume
+    // playback. Calling play() on a video that's already playing is
+    // a spec no-op, so we don't need to check paused state first.
+    // play() returns a promise that may reject if the browser blocks
+    // autoplay; since this is invoked from a user click, it should
+    // almost always succeed, but we swallow any rejection so a
+    // failed play() doesn't break the seek.
+    video.play().catch(() => {
+      // Browser refused to start playback — the seek still happened.
+    });
   }, []);
 
   return (

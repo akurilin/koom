@@ -6,6 +6,7 @@
   "scripts": {
     "clean": "node ../scripts/clean-web-cache.js",
     "dev": "next dev",
+    "dev:clean": "rm -rf .next && next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

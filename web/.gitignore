@@ -38,8 +38,14 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files. Templates `.env.example` (local dev) and
+# `.env.prod.example` (production validation from a dev machine) are
+# committed; everything else is gitignored, including the two live
+# files `.env.local` and `.env.prod.local` that the doctor script
+# bootstraps from the templates.
 .env*
+!.env.example
+!.env.prod.example
 
 # vercel
 .vercel

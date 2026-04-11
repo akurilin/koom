@@ -4,22 +4,29 @@
  *
  * Read-only verification of the koom configuration. Run this any time
  * something seems off — at initial setup, after editing env vars, or
- * after a failed deploy. Exit code is non-zero if any check failed, so
- * it's CI-friendly.
+ * after a failed deploy. Exit code is non-zero if any check failed,
+ * so it's CI-friendly.
  *
- * Currently checks:
- *   - Required env vars present in web/.env.local
- *   - R2 credentials work against the S3-compatible endpoint
- *   - Test PUT of a small throwaway object succeeds
- *   - Public .r2.dev URL serves that object
- *   - Range requests return 206 with Content-Range and the right slice
- *   - Test object is cleaned up before exit
- *   - Postgres reachable via DATABASE_URL
- *   - recordings table exists with expected columns
- *   - Round-trip INSERT / SELECT / DELETE of a throwaway row
- *   - Ollama reachable and the auto-title model is pulled (non-fatal)
+ * The doctor produces a readiness report that tells you separately
+ * whether local development is ready and whether production
+ * deployment is ready. Each check is tagged with a "track" so the
+ * final report can categorize it.
  *
- * Vercel checks land in a later round.
+ * Configuration model:
+ *
+ *   - `web/.env.local` holds LOCAL DEVELOPMENT values only. DATABASE_URL
+ *     here is always the local Supabase stack.
+ *
+ *   - `web/.env.prod.local` holds values needed to validate and deploy
+ *     to PRODUCTION from a dev machine (currently VERCEL_TOKEN and
+ *     VERCEL_PROJECT_ID). Everything else that's technically needed
+ *     for production is either shared with local (R2 credentials,
+ *     KOOM_ADMIN_SECRET), stored in Vercel itself, or derived live
+ *     from the Supabase CLI link (production Postgres URL).
+ *
+ *   - Both files are auto-forked from their `.example` templates the
+ *     first time the doctor runs, so the user doesn't have to copy
+ *     them by hand.
  */
 
 import {
@@ -29,8 +36,8 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { execFile } from "node:child_process";
+import { copyFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -46,7 +53,23 @@ const execFileAsync = promisify(execFile);
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = dirname(SCRIPT_DIR);
+
 const ENV_LOCAL_PATH = join(REPO_ROOT, "web", ".env.local");
+const ENV_LOCAL_EXAMPLE_PATH = join(REPO_ROOT, "web", ".env.example");
+const ENV_PROD_PATH = join(REPO_ROOT, "web", ".env.prod.local");
+const ENV_PROD_EXAMPLE_PATH = join(REPO_ROOT, "web", ".env.prod.example");
+
+const SUPABASE_TEMP_DIR = join(REPO_ROOT, "supabase", ".temp");
+const SUPABASE_LINKED_PROJECT_PATH = join(
+  SUPABASE_TEMP_DIR,
+  "linked-project.json",
+);
+const SUPABASE_POOLER_URL_PATH = join(SUPABASE_TEMP_DIR, "pooler-url");
+
+// Pinned version must stay in sync with the one package.json uses for
+// db:start / db:push / etc. so the doctor is checking the same CLI the
+// rest of the repo uses.
+const SUPABASE_CLI_SPEC = "supabase@2.87.2";
 
 const TEST_KEY_PREFIX = "_koom-doctor/";
 const TEST_BYTE_COUNT = 1024;
@@ -58,10 +81,6 @@ const R2_REQUIRED_ENV_VARS = [
   "R2_SECRET_ACCESS_KEY",
   "R2_PUBLIC_BASE_URL",
 ] as const;
-
-const POSTGRES_REQUIRED_ENV_VARS = ["DATABASE_URL"] as const;
-
-const SOFT_ENV_VARS = ["KOOM_PUBLIC_BASE_URL", "KOOM_ADMIN_SECRET"] as const;
 const DEFAULT_CODESIGN_IDENTITY = "koom Local Dev";
 const LOGIN_KEYCHAIN_PATH = join(
   process.env.HOME ?? "~",
@@ -92,14 +111,43 @@ const RECORDINGS_EXPECTED_COLUMNS = [
   "object_key",
 ] as const;
 
+// Columns we expect on the `comments` table. Keep in sync with
+// supabase/migrations/*_create_comments.sql.
+const COMMENTS_EXPECTED_COLUMNS = [
+  "id",
+  "recording_id",
+  "commenter_id",
+  "is_admin",
+  "body",
+  "timestamp_seconds",
+  "created_at",
+] as const;
+
+// Columns we expect on the `commenters` table.
+const COMMENTERS_EXPECTED_COLUMNS = ["id", "created_at"] as const;
+
 // ────────────────────────────────────────────────────────────────────
 // Result tracking
 // ────────────────────────────────────────────────────────────────────
+//
+// Every check is tagged with a "readiness track" so the final summary
+// can tell you separately whether local development is usable and
+// whether production deployment is usable. A user who only cares
+// about production should still be able to look at the report and see
+// exactly what's missing for prod, even if their local environment is
+// deliberately unset.
 
-let passCount = 0;
-let failCount = 0;
-let warnCount = 0;
-let skipCount = 0;
+type Track = "local" | "prod" | "both" | "neither";
+type Status = "pass" | "fail" | "warn" | "skip";
+
+interface CheckResult {
+  name: string;
+  status: Status;
+  track: Track;
+  message?: string;
+}
+
+const results: CheckResult[] = [];
 
 function log(message = ""): void {
   process.stdout.write(message + "\n");
@@ -110,39 +158,40 @@ function logSection(name: string): void {
   log(name);
 }
 
-function pass(name: string, detail?: string): void {
+function pass(name: string, track: Track, detail?: string): void {
   log(`  ✓ ${name}${detail ? ` ${detail}` : ""}`);
-  passCount++;
+  results.push({ name, status: "pass", track, message: detail });
 }
 
-function fail(name: string, message: string): void {
+function fail(name: string, track: Track, message: string): void {
   log(`  ✗ ${name}`);
   for (const line of message.split("\n")) log(`      ${line}`);
-  failCount++;
+  results.push({ name, status: "fail", track, message });
 }
 
-function warn(name: string, message: string): void {
+function warn(name: string, track: Track, message: string): void {
   log(`  ⚠ ${name}`);
   for (const line of message.split("\n")) log(`      ${line}`);
-  warnCount++;
+  results.push({ name, status: "warn", track, message });
 }
 
-function skip(name: string, reason: string): void {
+function skip(name: string, track: Track, reason: string): void {
   log(`  ⊘ ${name} — ${reason}`);
-  skipCount++;
+  results.push({ name, status: "skip", track, message: reason });
 }
 
 async function runCheck(
   name: string,
+  track: Track,
   fn: () => Promise<string | undefined>,
 ): Promise<boolean> {
   try {
     const detail = await fn();
-    pass(name, detail);
+    pass(name, track, detail);
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    fail(name, msg);
+    fail(name, track, msg);
     return false;
   }
 }
@@ -173,16 +222,31 @@ function parseEnvFile(content: string): Record<string, string> {
   return result;
 }
 
-async function loadEnvLocal(): Promise<Record<string, string>> {
+/**
+ * Load both env files, bootstrapping either from its `.example`
+ * template if it doesn't exist yet. A freshly-bootstrapped file will
+ * have empty placeholder values, which makes the downstream checks
+ * fail loudly with actionable messages — exactly what we want.
+ */
+async function loadEnvFiles(): Promise<{
+  local: Record<string, string>;
+  prod: Record<string, string>;
+  bootstrapped: { local: boolean; prod: boolean };
+}> {
+  const bootstrapped = { local: false, prod: false };
+
   if (!existsSync(ENV_LOCAL_PATH)) {
-    log("");
-    log(`Error: web/.env.local not found.`);
-    log("");
-    log(`Copy web/.env.example to web/.env.local and fill it in before`);
-    log(`running the doctor.`);
-    process.exit(1);
+    await copyFile(ENV_LOCAL_EXAMPLE_PATH, ENV_LOCAL_PATH);
+    bootstrapped.local = true;
   }
-  return parseEnvFile(await readFile(ENV_LOCAL_PATH, "utf-8"));
+  if (!existsSync(ENV_PROD_PATH)) {
+    await copyFile(ENV_PROD_EXAMPLE_PATH, ENV_PROD_PATH);
+    bootstrapped.prod = true;
+  }
+
+  const local = parseEnvFile(await readFile(ENV_LOCAL_PATH, "utf-8"));
+  const prod = parseEnvFile(await readFile(ENV_PROD_PATH, "utf-8"));
+  return { local, prod, bootstrapped };
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -205,35 +269,139 @@ function buildTestBytes(): Buffer {
 // Main
 // ────────────────────────────────────────────────────────────────────
 
+/**
+ * True if a URL value is pointing at localhost.
+ */
+function isLocalHost(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    return (
+      u.hostname === "127.0.0.1" ||
+      u.hostname === "localhost" ||
+      u.hostname === "::1"
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function main(): Promise<void> {
   log("koom Doctor");
   log("───────────");
 
-  const env = await loadEnvLocal();
+  const { local: env, prod: prodEnv, bootstrapped } = await loadEnvFiles();
 
-  // ── Section: Configuration ────────────────────────────────────────
-  logSection("Configuration");
+  if (bootstrapped.local || bootstrapped.prod) {
+    log("");
+    log("Bootstrapped missing env files from their .example templates:");
+    if (bootstrapped.local) log("  + web/.env.local");
+    if (bootstrapped.prod) log("  + web/.env.prod.local");
+    log("Fill in the placeholder values in each file before relying on the");
+    log("readiness report below.");
+  }
 
-  for (const key of [...R2_REQUIRED_ENV_VARS, ...POSTGRES_REQUIRED_ENV_VARS]) {
+  // ── Section: Configuration (web/.env.local) ──────────────────────
+  logSection("Configuration — web/.env.local (local development)");
+
+  // R2 credentials are shared between local and prod — the same
+  // bucket is hit by both the dev server and the production Vercel
+  // deploy at koom's scale.
+  for (const key of R2_REQUIRED_ENV_VARS) {
     if (env[key]) {
-      pass(`${key} present`);
+      pass(`${key} present`, "both");
     } else {
-      fail(`${key} present`, `Not set in web/.env.local`);
+      fail(`${key} present`, "both", `Not set in web/.env.local`);
     }
   }
-  for (const key of SOFT_ENV_VARS) {
-    if (env[key]) {
-      pass(`${key} present`);
-    } else {
-      warn(
-        `${key} present`,
-        `Not set. The web app will need this at runtime, but downstream checks can still run.`,
-      );
-    }
+
+  // DATABASE_URL is strictly local-only in the new model. Production
+  // Postgres is derived from the Supabase CLI link, not from this
+  // file. Flag any attempt to point this value at a remote host.
+  if (!env.DATABASE_URL) {
+    fail(
+      "DATABASE_URL present",
+      "local",
+      `Not set in web/.env.local. Expected the local Supabase stack URL:\n    postgresql://postgres:postgres@127.0.0.1:54322/postgres`,
+    );
+  } else if (!isLocalHost(env.DATABASE_URL)) {
+    fail(
+      "DATABASE_URL points at the local stack",
+      "local",
+      `DATABASE_URL in web/.env.local is pointed at a remote host. In koom's current configuration model, this file is LOCAL ONLY — production Postgres is derived from the Supabase CLI link (supabase/.temp/), not from DATABASE_URL. Set DATABASE_URL back to the local Supabase stack URL:\n    postgresql://postgres:postgres@127.0.0.1:54322/postgres`,
+    );
+  } else {
+    pass("DATABASE_URL points at the local stack", "local");
+  }
+
+  // KOOM_PUBLIC_BASE_URL: local-only in this file. The production
+  // value lives in Vercel's project environment variable settings.
+  if (!env.KOOM_PUBLIC_BASE_URL) {
+    warn(
+      "KOOM_PUBLIC_BASE_URL present",
+      "local",
+      `Not set. The dev server uses this to construct share URLs returned to the desktop client. The default 'http://localhost:3000' is fine.`,
+    );
+  } else if (!isLocalHost(env.KOOM_PUBLIC_BASE_URL)) {
+    warn(
+      "KOOM_PUBLIC_BASE_URL points at the local dev server",
+      "local",
+      `KOOM_PUBLIC_BASE_URL in web/.env.local is ${env.KOOM_PUBLIC_BASE_URL}, which isn't localhost. This file is local-dev-only — set the production base URL in your Vercel project's environment variable settings instead. Fix by setting KOOM_PUBLIC_BASE_URL=http://localhost:3000 here.`,
+    );
+  } else {
+    pass("KOOM_PUBLIC_BASE_URL points at the local dev server", "local");
+  }
+
+  // KOOM_ADMIN_SECRET is the same value in local and production, so
+  // it's required on both tracks. Production deploys paste the same
+  // value into Vercel env vars.
+  if (env.KOOM_ADMIN_SECRET) {
+    pass("KOOM_ADMIN_SECRET present", "both");
+  } else {
+    fail(
+      "KOOM_ADMIN_SECRET present",
+      "both",
+      `Not set. The web app and desktop client both need this at runtime to authenticate admin actions. Generate one with:\n    openssl rand -hex 32`,
+    );
+  }
+
+  // SUPABASE_DB_PASSWORD is only needed when pushing migrations to
+  // the hosted Supabase project via the Supabase CLI. Purely a
+  // production-track concern.
+  if (env.SUPABASE_DB_PASSWORD) {
+    pass("SUPABASE_DB_PASSWORD present", "prod");
+  } else {
+    warn(
+      "SUPABASE_DB_PASSWORD present",
+      "prod",
+      `Not set. Needed by 'npm run db:push' and by the doctor's remote Postgres connectivity check. Find it at Supabase dashboard → Project Settings → Database → Database password.`,
+    );
+  }
+
+  // ── Section: Configuration (web/.env.prod.local) ─────────────────
+  logSection("Configuration — web/.env.prod.local (production deploy)");
+
+  if (prodEnv.VERCEL_TOKEN) {
+    pass("VERCEL_TOKEN present", "prod");
+  } else {
+    warn(
+      "VERCEL_TOKEN present",
+      "prod",
+      `Not set in web/.env.prod.local. Mint a token at https://vercel.com/account/tokens so the doctor can verify your Vercel project is reachable. A future 'npm run vercel:sync' script will also use this to push production env vars into Vercel.`,
+    );
+  }
+
+  if (prodEnv.VERCEL_PROJECT_ID) {
+    pass("VERCEL_PROJECT_ID present", "prod");
+  } else {
+    warn(
+      "VERCEL_PROJECT_ID present",
+      "prod",
+      `Not set in web/.env.prod.local. Find it at Vercel dashboard → koom project → Settings → General → Project ID (the 'prj_...' string, not the slug).`,
+    );
   }
 
   const r2VarsPresent = R2_REQUIRED_ENV_VARS.every((k) => !!env[k]);
-  const postgresVarsPresent = POSTGRES_REQUIRED_ENV_VARS.every((k) => !!env[k]);
 
   // ── Section: R2 ───────────────────────────────────────────────────
   logSection("Cloudflare R2");
@@ -241,23 +409,29 @@ async function main(): Promise<void> {
   if (!r2VarsPresent) {
     skip(
       "R2 connectivity",
+      "both",
       "skipped because required R2_* env vars are missing",
     );
   } else {
     await runR2Checks(env);
   }
 
-  // ── Section: Postgres ─────────────────────────────────────────────
-  logSection("Postgres (Supabase)");
+  // ── Section: Postgres (local) ────────────────────────────────────
+  logSection("Postgres (Supabase) — local stack");
 
-  if (!postgresVarsPresent) {
+  if (!env.DATABASE_URL || !isLocalHost(env.DATABASE_URL)) {
     skip(
-      "Postgres connectivity",
-      "skipped because DATABASE_URL is not set in web/.env.local",
+      "Local Postgres connectivity",
+      "local",
+      "skipped because DATABASE_URL is missing or not pointed at the local stack",
     );
   } else {
-    await runPostgresChecks(env);
+    await runLocalPostgresChecks(env);
   }
+
+  // ── Section: Postgres (remote, via Supabase CLI link) ────────────
+  logSection("Postgres (Supabase) — remote, via supabase link");
+  await runRemoteSupabaseChecks(env);
 
   // ── Section: Auto-title (Ollama) ──────────────────────────────────
   logSection("Auto-title (Ollama)");
@@ -267,16 +441,9 @@ async function main(): Promise<void> {
   logSection("Desktop client (macOS)");
   await runDesktopClientChecks();
 
-  // ── Section: Vercel (optional) ────────────────────────────────────
+  // ── Section: Vercel ───────────────────────────────────────────────
   logSection("Vercel");
-  if (env.VERCEL_TOKEN && env.VERCEL_PROJECT_ID) {
-    skip("Vercel project reachable", "not yet implemented (later round)");
-  } else {
-    skip(
-      "Vercel project reachable",
-      "VERCEL_TOKEN / VERCEL_PROJECT_ID not set (optional, skipped)",
-    );
-  }
+  await runVercelChecks(prodEnv);
 
   finish();
 }
@@ -307,6 +474,7 @@ async function runR2Checks(env: Record<string, string>): Promise<void> {
     // PUT
     const putOk = await runCheck(
       `Test PUT to s3://${bucket}/${testKey} (${TEST_BYTE_COUNT} bytes)`,
+      "both",
       async () => {
         await s3.send(
           new PutObjectCommand({
@@ -326,47 +494,56 @@ async function runR2Checks(env: Record<string, string>): Promise<void> {
     testObjectExists = true;
 
     // HEAD via S3
-    await runCheck("HEAD confirms object exists and size matches", async () => {
-      const head = await s3.send(
-        new HeadObjectCommand({ Bucket: bucket, Key: testKey }),
-      );
-      if (head.ContentLength !== TEST_BYTE_COUNT) {
-        throw new Error(
-          `Expected ContentLength=${TEST_BYTE_COUNT}, got ${head.ContentLength}`,
+    await runCheck(
+      "HEAD confirms object exists and size matches",
+      "both",
+      async () => {
+        const head = await s3.send(
+          new HeadObjectCommand({ Bucket: bucket, Key: testKey }),
         );
-      }
-      return `(Content-Length=${head.ContentLength})`;
-    });
+        if (head.ContentLength !== TEST_BYTE_COUNT) {
+          throw new Error(
+            `Expected ContentLength=${TEST_BYTE_COUNT}, got ${head.ContentLength}`,
+          );
+        }
+        return `(Content-Length=${head.ContentLength})`;
+      },
+    );
 
     // Public GET — full object
     const publicUrl = `${publicBaseUrl}/${testKey}`;
-    await runCheck(`Public URL serves the test object (no Range)`, async () => {
-      const res = await fetch(publicUrl);
-      if (res.status === 404) {
-        throw new Error(
-          `404 from ${publicUrl} — the .r2.dev URL may need a few\n` +
-            `seconds to start serving newly written objects. Try re-running\n` +
-            `the doctor in 5–10 seconds.`,
-        );
-      }
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} from ${publicUrl}`);
-      }
-      const body = Buffer.from(await res.arrayBuffer());
-      if (body.length !== TEST_BYTE_COUNT) {
-        throw new Error(
-          `Expected ${TEST_BYTE_COUNT} bytes, got ${body.length}`,
-        );
-      }
-      if (!body.equals(testBytes)) {
-        throw new Error(`Returned bytes do not match what we PUT`);
-      }
-      return `(${body.length} bytes match)`;
-    });
+    await runCheck(
+      `Public URL serves the test object (no Range)`,
+      "both",
+      async () => {
+        const res = await fetch(publicUrl);
+        if (res.status === 404) {
+          throw new Error(
+            `404 from ${publicUrl} — the .r2.dev URL may need a few\n` +
+              `seconds to start serving newly written objects. Try re-running\n` +
+              `the doctor in 5–10 seconds.`,
+          );
+        }
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status} from ${publicUrl}`);
+        }
+        const body = Buffer.from(await res.arrayBuffer());
+        if (body.length !== TEST_BYTE_COUNT) {
+          throw new Error(
+            `Expected ${TEST_BYTE_COUNT} bytes, got ${body.length}`,
+          );
+        }
+        if (!body.equals(testBytes)) {
+          throw new Error(`Returned bytes do not match what we PUT`);
+        }
+        return `(${body.length} bytes match)`;
+      },
+    );
 
     // Public GET — Range request (the load-bearing assumption)
     await runCheck(
       `Public URL honors Range requests (206 + Content-Range)`,
+      "both",
       async () => {
         const start = 100;
         const end = 199; // inclusive — HTTP Range bytes=100-199 = 100 bytes
@@ -417,11 +594,12 @@ async function runR2Checks(env: Record<string, string>): Promise<void> {
         await s3.send(
           new DeleteObjectCommand({ Bucket: bucket, Key: testKey }),
         );
-        pass("Test object cleaned up");
+        pass("Test object cleaned up", "neither");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         warn(
           "Test object cleanup",
+          "neither",
           `Failed to delete s3://${bucket}/${testKey}: ${msg}\n` +
             `Delete it manually from the R2 dashboard if it's still there.`,
         );
@@ -434,7 +612,10 @@ async function runR2Checks(env: Record<string, string>): Promise<void> {
 // Postgres checks
 // ────────────────────────────────────────────────────────────────────
 
-async function runPostgresChecks(env: Record<string, string>): Promise<void> {
+async function runLocalPostgresChecks(
+  env: Record<string, string>,
+): Promise<void> {
+  const track: Track = "local";
   const client = new PgClient({ connectionString: env.DATABASE_URL });
 
   const testId = `_doctor-test-${Date.now()}`;
@@ -443,29 +624,33 @@ async function runPostgresChecks(env: Record<string, string>): Promise<void> {
 
   try {
     // Connect
-    const connectOk = await runCheck("Connect via DATABASE_URL", async () => {
-      try {
-        await client.connect();
-        connected = true;
-        return undefined;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // Guess the most common root cause so the fix is obvious.
-        if (msg.includes("ECONNREFUSED")) {
-          throw new Error(
-            `${msg}\n` +
-              `Postgres is not reachable at the configured host/port.\n` +
-              `If you're targeting the local Supabase stack, make sure it's\n` +
-              `running: 'npm run db:start'.`,
-          );
+    const connectOk = await runCheck(
+      "Connect via DATABASE_URL (local stack)",
+      track,
+      async () => {
+        try {
+          await client.connect();
+          connected = true;
+          return undefined;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          // Guess the most common root cause so the fix is obvious.
+          if (msg.includes("ECONNREFUSED")) {
+            throw new Error(
+              `${msg}\n` +
+                `Postgres is not reachable at the configured host/port.\n` +
+                `If you're targeting the local Supabase stack, make sure it's\n` +
+                `running: 'npm run db:start'.`,
+            );
+          }
+          throw err;
         }
-        throw err;
-      }
-    });
+      },
+    );
     if (!connectOk) return;
 
     // Basic SELECT
-    await runCheck("Basic SELECT 1 query works", async () => {
+    await runCheck("Basic SELECT 1 query works", track, async () => {
       const { rows } = await client.query<{ n: number }>("SELECT 1::int AS n");
       if (rows[0]?.n !== 1) {
         throw new Error(`Expected 1, got ${JSON.stringify(rows[0])}`);
@@ -476,86 +661,81 @@ async function runPostgresChecks(env: Record<string, string>): Promise<void> {
     // recordings table exists with expected columns
     const tableOk = await runCheck(
       "recordings table exists with expected columns",
-      async () => {
-        const { rows } = await client.query<{ column_name: string }>(
-          `SELECT column_name
-             FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'recordings'
-            ORDER BY ordinal_position`,
-        );
-        if (rows.length === 0) {
-          throw new Error(
-            `No 'recordings' table in the public schema.\n` +
-              `Did you apply migrations? Try 'npm run db:reset'.`,
-          );
-        }
-        const actual = rows.map((r) => r.column_name);
-        const missing = RECORDINGS_EXPECTED_COLUMNS.filter(
-          (c) => !actual.includes(c),
-        );
-        if (missing.length > 0) {
-          throw new Error(
-            `Missing columns: ${missing.join(", ")}\n` +
-              `Present columns: ${actual.join(", ")}\n` +
-              `The migration in supabase/migrations/ may be out of sync\n` +
-              `with the expected schema.`,
-          );
-        }
-        return `(${rows.length} columns, all expected)`;
-      },
+      track,
+      () =>
+        checkTableColumns(client, "recordings", RECORDINGS_EXPECTED_COLUMNS),
     );
     if (!tableOk) return;
 
+    // comments table exists with expected columns
+    await runCheck("comments table exists with expected columns", track, () =>
+      checkTableColumns(client, "comments", COMMENTS_EXPECTED_COLUMNS),
+    );
+
+    // commenters table exists with expected columns
+    await runCheck("commenters table exists with expected columns", track, () =>
+      checkTableColumns(client, "commenters", COMMENTERS_EXPECTED_COLUMNS),
+    );
+
     // INSERT a throwaway row
-    const insertOk = await runCheck("INSERT a throwaway row", async () => {
-      await client.query(
-        `INSERT INTO recordings
-             (id, status, original_filename, size_bytes, bucket, object_key)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-        [
-          testId,
-          "pending",
-          "koom-doctor-test.mp4",
-          1024,
-          env.R2_BUCKET ?? "koom-recordings",
-          "_koom-doctor/placeholder.bin",
-        ],
-      );
-      inserted = true;
-      return `(id=${testId})`;
-    });
+    const insertOk = await runCheck(
+      "INSERT a throwaway row",
+      track,
+      async () => {
+        await client.query(
+          `INSERT INTO recordings
+               (id, status, original_filename, size_bytes, bucket, object_key)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            testId,
+            "pending",
+            "koom-doctor-test.mp4",
+            1024,
+            env.R2_BUCKET ?? "koom-recordings",
+            "_koom-doctor/placeholder.bin",
+          ],
+        );
+        inserted = true;
+        return `(id=${testId})`;
+      },
+    );
     if (!insertOk) return;
 
     // SELECT it back and verify round-trip
-    await runCheck("SELECT the row back and verify round-trip", async () => {
-      const { rows } = await client.query<{
-        id: string;
-        status: string;
-        size_bytes: string; // BIGINT comes back as string from pg by default
-      }>(
-        `SELECT id, status, size_bytes
-             FROM recordings
-            WHERE id = $1`,
-        [testId],
-      );
-      if (rows.length !== 1) {
-        throw new Error(`Expected 1 row, got ${rows.length}`);
-      }
-      const row = rows[0]!;
-      if (row.status !== "pending") {
-        throw new Error(`Expected status='pending', got '${row.status}'`);
-      }
-      if (row.size_bytes !== "1024") {
-        throw new Error(`Expected size_bytes='1024', got '${row.size_bytes}'`);
-      }
-      return undefined;
-    });
+    await runCheck(
+      "SELECT the row back and verify round-trip",
+      track,
+      async () => {
+        const { rows } = await client.query<{
+          id: string;
+          status: string;
+          size_bytes: string; // BIGINT comes back as string from pg by default
+        }>(
+          `SELECT id, status, size_bytes
+               FROM recordings
+              WHERE id = $1`,
+          [testId],
+        );
+        if (rows.length !== 1) {
+          throw new Error(`Expected 1 row, got ${rows.length}`);
+        }
+        const row = rows[0]!;
+        if (row.status !== "pending") {
+          throw new Error(`Expected status='pending', got '${row.status}'`);
+        }
+        if (row.size_bytes !== "1024") {
+          throw new Error(
+            `Expected size_bytes='1024', got '${row.size_bytes}'`,
+          );
+        }
+        return undefined;
+      },
+    );
 
     // Verify the listing-query shape is efficient (uses the index).
     // This is cheap belt-and-suspenders — if the index got dropped,
     // this will catch it before we notice slow listings in production.
-    await runCheck("Listing query shape is indexed", async () => {
+    await runCheck("Listing query shape is indexed", track, async () => {
       const { rows } = await client.query<{ "QUERY PLAN": string }>(
         `EXPLAIN (FORMAT TEXT)
            SELECT id, created_at
@@ -580,11 +760,12 @@ async function runPostgresChecks(env: Record<string, string>): Promise<void> {
     if (inserted) {
       try {
         await client.query("DELETE FROM recordings WHERE id = $1", [testId]);
-        pass("Test row cleaned up");
+        pass("Test row cleaned up", "neither");
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         warn(
           "Test row cleanup",
+          "neither",
           `Failed to DELETE id=${testId}: ${msg}\n` +
             `Delete it manually if it lingers.`,
         );
@@ -597,6 +778,226 @@ async function runPostgresChecks(env: Record<string, string>): Promise<void> {
         // ignore — the connection may already be gone
       }
     }
+  }
+}
+
+/**
+ * Shared helper: look up a table in information_schema.columns and
+ * verify that every expected column is present. Throws with a helpful
+ * message if the table is missing or any column is missing.
+ */
+async function checkTableColumns(
+  client: pg.Client,
+  tableName: string,
+  expectedColumns: readonly string[],
+): Promise<string> {
+  const { rows } = await client.query<{ column_name: string }>(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = $1
+      ORDER BY ordinal_position`,
+    [tableName],
+  );
+  if (rows.length === 0) {
+    throw new Error(
+      `No '${tableName}' table in the public schema.\n` +
+        `Did you apply migrations? Try 'npm run db:reset'.`,
+    );
+  }
+  const actual = rows.map((r) => r.column_name);
+  const missing = expectedColumns.filter((c) => !actual.includes(c));
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing columns: ${missing.join(", ")}\n` +
+        `Present columns: ${actual.join(", ")}\n` +
+        `The migration in supabase/migrations/ may be out of sync\n` +
+        `with the expected schema.`,
+    );
+  }
+  return `(${rows.length} columns, all expected)`;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Remote Supabase checks (via `supabase link` state)
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * Verify that the Supabase CLI is installed, that `supabase link` has
+ * been run at least once against a hosted project, and that the
+ * resulting pooler URL + SUPABASE_DB_PASSWORD can actually connect to
+ * the remote Postgres. We intentionally do NOT validate whether
+ * migrations have been applied — per the doctor's contract, this
+ * check is "do you have something you can migrate against?", not
+ * "is your schema up to date?".
+ */
+async function runRemoteSupabaseChecks(
+  env: Record<string, string>,
+): Promise<void> {
+  const track: Track = "prod";
+
+  const linkExists = existsSync(SUPABASE_LINKED_PROJECT_PATH);
+  const poolerUrlExists = existsSync(SUPABASE_POOLER_URL_PATH);
+
+  if (!linkExists || !poolerUrlExists) {
+    // Fast path failed. Before giving up, try to figure out WHY —
+    // is the Supabase CLI itself missing, or is it installed but
+    // not linked? This is the one place in the doctor where we
+    // actually shell out to the CLI.
+    const cliInstalled = await checkSupabaseCliInstalled();
+    if (!cliInstalled) {
+      fail(
+        "Supabase CLI installed",
+        track,
+        `Could not invoke the Supabase CLI. koom uses 'npx -y ${SUPABASE_CLI_SPEC}' (same as the package.json scripts), so install Node.js + npm and rerun the doctor. If Node is already installed, try priming the CLI cache with:\n    npx -y ${SUPABASE_CLI_SPEC} --version`,
+      );
+      skip(
+        "Supabase project linked",
+        track,
+        "skipped because the Supabase CLI is not usable",
+      );
+      return;
+    }
+
+    pass("Supabase CLI installed", track);
+    fail(
+      "Supabase project linked",
+      track,
+      `No linked project state found under supabase/.temp/. Authenticate and link your hosted Supabase project:\n    npx -y ${SUPABASE_CLI_SPEC} login\n    npx -y ${SUPABASE_CLI_SPEC} link --project-ref=<your-project-ref>\nYou'll find <your-project-ref> in the Supabase dashboard URL for your project.`,
+    );
+    return;
+  }
+
+  // Link state is present — the CLI must be installed and has been
+  // used successfully at least once. Skip the explicit CLI version
+  // shell-out as a performance optimization; linked-project.json
+  // existing is proof enough.
+  pass("Supabase CLI installed", track);
+
+  // Read and parse the linked project metadata.
+  let linkedProject: {
+    name?: string;
+    ref?: string;
+    organization_slug?: string;
+  };
+  try {
+    const raw = await readFile(SUPABASE_LINKED_PROJECT_PATH, "utf-8");
+    linkedProject = JSON.parse(raw);
+  } catch (err) {
+    fail(
+      "Supabase project linked",
+      track,
+      `Found ${SUPABASE_LINKED_PROJECT_PATH} but could not parse it: ${
+        err instanceof Error ? err.message : String(err)
+      }. Re-run 'npx -y ${SUPABASE_CLI_SPEC} link --project-ref=<ref>' to regenerate it.`,
+    );
+    return;
+  }
+
+  const friendly =
+    linkedProject.name && linkedProject.ref
+      ? `(project '${linkedProject.name}', ref ${linkedProject.ref}${
+          linkedProject.organization_slug
+            ? `, org ${linkedProject.organization_slug}`
+            : ""
+        })`
+      : undefined;
+  pass("Supabase project linked", track, friendly);
+
+  // Now try to actually connect to the remote Postgres. We need both
+  // the pooler URL (from the CLI link) and the password (from
+  // .env.local). If the password isn't set, we can't make this call.
+  if (!env.SUPABASE_DB_PASSWORD) {
+    skip(
+      "Remote Postgres reachable",
+      track,
+      "skipped because SUPABASE_DB_PASSWORD is not set in web/.env.local",
+    );
+    return;
+  }
+
+  let poolerUrl: string;
+  try {
+    poolerUrl = (await readFile(SUPABASE_POOLER_URL_PATH, "utf-8")).trim();
+  } catch (err) {
+    fail(
+      "Remote Postgres reachable",
+      track,
+      `Could not read ${SUPABASE_POOLER_URL_PATH}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(poolerUrl);
+  } catch {
+    fail(
+      "Remote Postgres reachable",
+      track,
+      `${SUPABASE_POOLER_URL_PATH} did not contain a valid URL. Re-run 'supabase link' to regenerate it.`,
+    );
+    return;
+  }
+
+  await runCheck("Remote Postgres reachable", track, async () => {
+    // Connect using the URL components pulled straight from the
+    // Supabase CLI's cached pooler URL. We pass host/port/user
+    // explicitly so there's no URL-encoding footgun with the
+    // password, and we force SSL because the Supabase pooler always
+    // requires it.
+    const client = new PgClient({
+      host: parsed.hostname,
+      port: parsed.port ? parseInt(parsed.port, 10) : 5432,
+      user: decodeURIComponent(parsed.username),
+      password: env.SUPABASE_DB_PASSWORD,
+      database: parsed.pathname.replace(/^\//, "") || "postgres",
+      ssl: { rejectUnauthorized: false },
+      connectionTimeoutMillis: 10_000,
+    });
+    try {
+      await client.connect();
+      const { rows } = await client.query<{ n: number }>("SELECT 1::int AS n");
+      if (rows[0]?.n !== 1) {
+        throw new Error(`Expected SELECT 1 to return 1, got ${rows[0]?.n}`);
+      }
+      return `(host ${parsed.hostname}, user ${parsed.username})`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("password authentication failed")) {
+        throw new Error(
+          `Password authentication failed against the remote Supabase Postgres. Double-check SUPABASE_DB_PASSWORD in web/.env.local — it must match the password in Supabase dashboard → Project Settings → Database → Database password.`,
+        );
+      }
+      throw err;
+    } finally {
+      try {
+        await client.end();
+      } catch {
+        // ignore cleanup failures
+      }
+    }
+  });
+}
+
+/**
+ * Probe whether the Supabase CLI can be invoked via npx. Used only
+ * when the faster "link state exists" check fails, so we can give
+ * the user a precise "CLI missing" error vs a "CLI installed but
+ * not linked" error. Runs with a 10s timeout — long enough for a
+ * cold npx download but not so long that a broken install hangs the
+ * doctor indefinitely.
+ */
+async function checkSupabaseCliInstalled(): Promise<boolean> {
+  try {
+    await execFileAsync("npx", ["-y", SUPABASE_CLI_SPEC, "--version"], {
+      timeout: 10_000,
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -613,6 +1014,11 @@ async function runPostgresChecks(env: Record<string, string>): Promise<void> {
  * exits 0 as long as everything else passed.
  */
 async function runOllamaChecks(): Promise<void> {
+  // Ollama is only consulted by the desktop client during local
+  // recording, so failures here only gate local-development readiness.
+  // Production deployment does not run Ollama.
+  const track: Track = "local";
+
   const enabledRaw = process.env.KOOM_AUTOTITLE_ENABLED ?? "true";
   const disabled = ["false", "0", "no", "off"].includes(
     enabledRaw.toLowerCase(),
@@ -620,6 +1026,7 @@ async function runOllamaChecks(): Promise<void> {
   if (disabled) {
     skip(
       "Ollama reachable",
+      track,
       `KOOM_AUTOTITLE_ENABLED=${enabledRaw}; auto-title pipeline is disabled`,
     );
     return;
@@ -634,6 +1041,7 @@ async function runOllamaChecks(): Promise<void> {
   } catch {
     warn(
       "Ollama reachable",
+      track,
       `KOOM_OLLAMA_URL=${ollamaUrlRaw} is not a valid URL. The client will fall back to ${DEFAULT_OLLAMA_URL}.`,
     );
     return;
@@ -654,6 +1062,7 @@ async function runOllamaChecks(): Promise<void> {
     if (!res.ok) {
       warn(
         "Ollama reachable",
+        track,
         `GET ${tagsUrl.href} returned HTTP ${res.status}.\n` +
           `Start Ollama with 'ollama serve' (or the app) to enable auto-titling.`,
       );
@@ -664,6 +1073,7 @@ async function runOllamaChecks(): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     warn(
       "Ollama reachable",
+      track,
       `Could not reach ${tagsUrl.href}: ${msg}\n` +
         `Start Ollama with 'ollama serve' (or the app) to enable auto-titling.\n` +
         `This check is non-fatal — the upload flow still works without it.`,
@@ -671,7 +1081,7 @@ async function runOllamaChecks(): Promise<void> {
     return;
   }
 
-  pass("Ollama reachable", `(${ollamaUrl.origin})`);
+  pass("Ollama reachable", track, `(${ollamaUrl.origin})`);
 
   // Ollama model names can round-trip with or without the ":latest"
   // tag depending on how they were pulled, so accept either as a
@@ -687,10 +1097,11 @@ async function runOllamaChecks(): Promise<void> {
       modelNames.includes(ollamaModel.slice(0, -":latest".length)));
 
   if (hasModel) {
-    pass(`Ollama model '${ollamaModel}' is pulled`);
+    pass(`Ollama model '${ollamaModel}' is pulled`, track);
   } else {
     warn(
       `Ollama model '${ollamaModel}' is pulled`,
+      track,
       `Model not found in /api/tags. Pull it with:\n` +
         `    ollama pull ${ollamaModel}\n` +
         `Known models: ${modelNames.length > 0 ? modelNames.join(", ") : "(none)"}`,
@@ -699,9 +1110,15 @@ async function runOllamaChecks(): Promise<void> {
 }
 
 async function runDesktopClientChecks(): Promise<void> {
+  // The desktop codesigning identity only matters for local
+  // development builds — production deployment doesn't involve a
+  // local Mac.
+  const track: Track = "local";
+
   if (process.platform !== "darwin") {
     skip(
       "Stable local codesigning identity",
+      track,
       "macOS-only check; skipped on non-macOS hosts",
     );
     return;
@@ -723,6 +1140,7 @@ async function runDesktopClientChecks(): Promise<void> {
   } catch (err) {
     warn(
       "Stable local codesigning identity",
+      track,
       `Could not query login keychain identities: ${
         err instanceof Error ? err.message : String(err)
       }`,
@@ -733,6 +1151,7 @@ async function runDesktopClientChecks(): Promise<void> {
   if (!identityOutput.includes(`"${identityName}"`)) {
     warn(
       "Stable local codesigning identity",
+      track,
       `Identity '${identityName}' is missing from ${LOGIN_KEYCHAIN_PATH}.\n` +
         `Run:\n` +
         `    ./scripts/setup-dev-codesign.sh\n` +
@@ -755,10 +1174,15 @@ async function runDesktopClientChecks(): Promise<void> {
       tempBinary,
     ]);
     await execFileAsync("codesign", ["--verify", "--verbose=1", tempBinary]);
-    pass("Stable local codesigning identity", `('${identityName}' is usable)`);
+    pass(
+      "Stable local codesigning identity",
+      track,
+      `('${identityName}' is usable)`,
+    );
   } catch (err) {
     warn(
       "Stable local codesigning identity",
+      track,
       `Identity '${identityName}' exists, but codesign could not use it.\n` +
         `Re-run:\n` +
         `    ./scripts/setup-dev-codesign.sh --force\n` +
@@ -774,17 +1198,173 @@ async function runDesktopClientChecks(): Promise<void> {
   }
 }
 
+// ────────────────────────────────────────────────────────────────────
+// Vercel checks
+// ────────────────────────────────────────────────────────────────────
+
+/**
+ * If VERCEL_TOKEN and VERCEL_PROJECT_ID are set in web/.env.local,
+ * verify the project exists and the token has access. This is the
+ * only check that actively reaches out to Vercel; everything else in
+ * the doctor is local to the dev machine or touches Supabase/R2
+ * directly. Production deploys don't technically need this check to
+ * work — the user can deploy via the Vercel dashboard without ever
+ * putting a token in .env.local — so the check only runs when the
+ * credentials are provided.
+ */
+async function runVercelChecks(env: Record<string, string>): Promise<void> {
+  const track: Track = "prod";
+
+  if (!env.VERCEL_TOKEN || !env.VERCEL_PROJECT_ID) {
+    skip(
+      "Vercel project reachable",
+      track,
+      `VERCEL_TOKEN / VERCEL_PROJECT_ID not set (optional — only needed if you want the doctor to verify your Vercel project is live and the token has access)`,
+    );
+    return;
+  }
+
+  const projectUrl = new URL(
+    `https://api.vercel.com/v9/projects/${encodeURIComponent(
+      env.VERCEL_PROJECT_ID,
+    )}`,
+  );
+
+  try {
+    const res = await fetch(projectUrl, {
+      headers: {
+        Authorization: `Bearer ${env.VERCEL_TOKEN}`,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (res.status === 401 || res.status === 403) {
+      fail(
+        "Vercel project reachable",
+        track,
+        `HTTP ${res.status} from Vercel API. The VERCEL_TOKEN does not have access to project '${env.VERCEL_PROJECT_ID}'. Re-mint a token at https://vercel.com/account/tokens with the right scope.`,
+      );
+      return;
+    }
+    if (res.status === 404) {
+      fail(
+        "Vercel project reachable",
+        track,
+        `HTTP 404: project '${env.VERCEL_PROJECT_ID}' not found. Double-check VERCEL_PROJECT_ID in web/.env.local — it's the project ID string (prj_...), not the project slug.`,
+      );
+      return;
+    }
+    if (!res.ok) {
+      fail(
+        "Vercel project reachable",
+        track,
+        `HTTP ${res.status} from ${projectUrl.href}`,
+      );
+      return;
+    }
+
+    const body = (await res.json()) as { name?: string };
+    pass(
+      "Vercel project reachable",
+      track,
+      body.name ? `(project '${body.name}')` : undefined,
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    fail(
+      "Vercel project reachable",
+      track,
+      `Could not reach ${projectUrl.href}: ${msg}`,
+    );
+  }
+}
+
 function finish(): never {
   log("");
   log("─────────────────────────────────────────────────────");
+  log("Readiness report");
+  log("─────────────────────────────────────────────────────");
+
+  // Header-level counts (every check, regardless of track).
+  const passCount = results.filter((r) => r.status === "pass").length;
+  const failCount = results.filter((r) => r.status === "fail").length;
+  const warnCount = results.filter((r) => r.status === "warn").length;
+  const skipCount = results.filter((r) => r.status === "skip").length;
+
   const bits: string[] = [];
   bits.push(`${passCount} passed`);
   if (failCount > 0) bits.push(`${failCount} failed`);
   if (warnCount > 0)
     bits.push(`${warnCount} warning${warnCount === 1 ? "" : "s"}`);
   if (skipCount > 0) bits.push(`${skipCount} skipped`);
-  log(`Summary: ${bits.join(", ")}`);
+  log(`Totals: ${bits.join(", ")}`);
+  log("");
+
+  reportTrack(
+    "Local development",
+    "You can develop and run the stack on this machine.",
+    ["local", "both"],
+  );
+  log("");
+  reportTrack(
+    "Production deployment",
+    "You can deploy the web app to Vercel against a hosted Postgres + R2.",
+    ["prod", "both"],
+  );
+  log("");
+
+  // Non-zero exit if *any* check failed, regardless of track. Warnings
+  // don't fail the exit code.
   process.exit(failCount > 0 ? 1 : 0);
+}
+
+/**
+ * Print the readiness verdict for a single track. "Ready" means no
+ * fails and no warns in scope. "Not ready" lists every fail and warn
+ * so the user can see exactly what to fix. Skipped checks are listed
+ * separately as informational.
+ */
+function reportTrack(
+  title: string,
+  tagline: string,
+  tracks: readonly Track[],
+): void {
+  const scoped = results.filter((r) => tracks.includes(r.track));
+  const fails = scoped.filter((r) => r.status === "fail");
+  const warns = scoped.filter((r) => r.status === "warn");
+  const skips = scoped.filter((r) => r.status === "skip");
+
+  let verdict: string;
+  if (fails.length === 0 && warns.length === 0) {
+    verdict = "✓ ready";
+  } else if (fails.length === 0) {
+    verdict = "⚠ ready with warnings";
+  } else {
+    verdict = "✗ not ready";
+  }
+
+  log(`${title}: ${verdict}`);
+  log(`  ${tagline}`);
+
+  if (fails.length > 0) {
+    log("  Blocking issues:");
+    for (const r of fails) {
+      log(`    ✗ ${r.name}`);
+    }
+  }
+  if (warns.length > 0) {
+    log("  Warnings:");
+    for (const r of warns) {
+      log(`    ⚠ ${r.name}`);
+    }
+  }
+  if (skips.length > 0) {
+    log("  Skipped (not fatal):");
+    for (const r of skips) {
+      log(`    ⊘ ${r.name}`);
+    }
+  }
 }
 
 main().catch((err) => {

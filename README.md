@@ -11,29 +11,35 @@
 
 `koom` is a self-deployable, Loom-style screen recorder for a single user. You record locally in the macOS app, the finished MP4 auto-uploads to storage you own, and you get a shareable watch URL that opens in any browser. No SaaS subscription, no third party holding your videos, and typically **$0–5/month** at personal scale.
 
-## Why koom
+The problem it solves: Loom is great, but you don't actually own your recordings, you pay a monthly subscription, and the videos live on someone else's infrastructure that can be deprecated, paywalled, or taken down. koom keeps the same core loop — record, auto-upload, share a link — but the bytes sit in your Cloudflare R2 bucket, your Next.js app on Vercel serves the watch page, and the whole stack is narrow enough to fit in your head.
 
-Loom is great, but you don't actually own your recordings, you pay monthly, and the videos live on someone else's infrastructure. koom is the same core loop — record, auto-upload, share a link — but:
+## Highlights
 
-- **You own the bytes.** Videos sit in your Cloudflare R2 bucket. No vendor can deprecate, paywall, or delete them.
-- **Zero-egress storage.** R2 has no bandwidth fees, so cost stays flat no matter how much the links get shared.
-- **Deliberately narrow scope.** Single-tenant, one admin secret, no teams, no stored transcripts, no search beyond a simple list. The whole stack fits in your head.
-- **Cheap steady state.** Vercel Hobby + Supabase free tier + R2 free tier. The only variable cost is R2 storage above 10 GB.
-- **Private auto-titles.** Recordings get a short descriptive title generated locally via WhisperKit + Ollama — the audio never leaves your machine, and the feature is an opt-out, not an extra subscription.
-- **Local thumbnails.** Recordings also get a sidecar JPEG generated on-device and uploaded next to the video in R2, so list views can use a lightweight image instead of seeking into the MP4 whenever the thumbnail is available.
+Features koom is particularly proud of:
 
-v1 intentionally leaves a lot out: no accounts, no stored transcripts or captions, no transcoding, no custom domains. See [`docs/monorepo-backend-plan.md`](docs/monorepo-backend-plan.md) for the full decision record.
+- **Share-link watch pages.** Anyone with the URL can watch at `/r/[id]` in the browser, no account needed. `?t=` deep-linking lands the viewer on an exact moment.
+- **Timestamped comments.** Viewers drop comments anchored to the exact second in the timeline. Anonymous viewers get a stable `koom-commenter` UUID cookie so they can delete their own comments without signing up; admins can reply under the same thread and moderate.
+- **Word-level transcripts.** Every recording gets a Loom-style clickable transcript alongside the video. Words highlight and auto-scroll as the video plays; clicking any word seeks the player. Transcription happens on-device via WhisperKit — the audio never leaves the machine.
+- **Private auto-titles.** The same WhisperKit pass feeds the transcript to a local Ollama model, which generates a short, descriptive title. No cloud API, no subscription.
+- **Local thumbnails.** Each recording gets a JPEG still generated on-device and uploaded alongside the video, so list views are lightweight instead of seeking into the MP4.
+- **Crash recovery.** Force-quit, crash, or lose power mid-recording and the next app launch offers to resume, finish, or discard the in-progress session. Bytes flushed before the crash stay playable without a clean stop.
+- **Inline admin rename.** Admins can click the title on the watch page to rename a recording inline — no separate admin form.
+- **Light/dark/system theme.** The watch page and admin UI respect `prefers-color-scheme` and offer a manual toggle that persists to `localStorage` with no flash of the wrong theme on first paint.
+- **Zero-egress storage.** Cloudflare R2 has no bandwidth fees, so cost stays flat no matter how much the links get shared.
+- **Deliberately narrow scope.** Single-tenant, one admin secret, no teams, no transcoding, no custom domains. The whole stack fits in your head.
+
+Some of these features have longer write-ups — see [Deeper reading](#deeper-reading) at the bottom.
 
 ## Architecture
 
 koom is a small monorepo split by runtime:
 
-| Component   | Stack                                            | Role                                                           |
-| ----------- | ------------------------------------------------ | -------------------------------------------------------------- |
-| `client/`   | Swift 6, SwiftUI, AVFoundation, ScreenCaptureKit | Records the screen, uploads the finished file                  |
-| `web/`      | Next.js 16 (App Router), TypeScript, React 19    | Public watch pages, admin UI, backend API routes               |
-| `supabase/` | Hand-written SQL migrations, managed via `pg`    | `recordings` + `comments` tables (no ORM)                      |
-| `scripts/`  | TypeScript, run through `tsx`                    | R2 provisioning (`r2:setup`) and stack verification (`doctor`) |
+| Component   | Stack                                            | Role                                                      |
+| ----------- | ------------------------------------------------ | --------------------------------------------------------- |
+| `client/`   | Swift 6, SwiftUI, AVFoundation, ScreenCaptureKit | Records the screen, uploads the file, transcribes locally |
+| `web/`      | Next.js 16 (App Router), TypeScript, React 19    | Public watch pages, admin UI, backend API routes          |
+| `supabase/` | Hand-written SQL migrations, managed via `pg`    | `recordings`, `comments`, `commenters` tables (no ORM)    |
+| `scripts/`  | TypeScript, run through `tsx`                    | Operator tooling — `r2:setup`, `doctor`, `r2:orphans`     |
 
 Deployment targets:
 
@@ -44,186 +50,117 @@ Deployment targets:
 
 ### How a recording flows end to end
 
-1. The macOS client records to `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4` and keeps the local copy permanently. Recording is staged through a fragmented MP4 session so a crash mid-capture can be recovered on the next launch (see [Crash recovery](#crash-recovery)).
+1. The macOS client records to `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4` and keeps the local copy permanently.
 2. On completion, the client asks `POST /api/admin/uploads/init` for a presigned R2 `PUT` URL and writes a `pending` row to Postgres.
 3. The client `PUT`s the file straight to R2 — bytes never flow through Vercel.
-4. In parallel with step 3, local post-upload processing kicks off on the Mac. The auto-titler extracts the mic track via `AVAssetReader`, transcribes it in-process with WhisperKit, and asks a local Ollama model for a short title. The thumbnail generator also grabs a JPEG still frame from the finalized MP4. Nothing leaves the machine except the derived title/thumbnail artifacts you choose to upload back into your own stack.
-5. `POST /api/admin/uploads/complete` `HEAD`s the object to confirm it landed, flips the row to `complete`, and returns the share URL. If the auto-titler produced a title, the client `PATCH`es it onto the row. If thumbnail generation succeeded, the client uploads the JPEG to `PUT /api/admin/recordings/[id]/thumbnail`, and the backend stores it in R2 at `recordings/{id}/thumbnail-v1.jpg`.
-6. The client copies the share URL to the clipboard and opens it. Anyone with the link can watch at `/r/[id]` (with `?t=` timestamp deep-linking) and leave timestamped comments. The recordings list APIs expose `thumbnailUrl`; list views prefer that sidecar JPEG and fall back to `videoUrl#t=0.1` if no thumbnail exists.
+4. In parallel, on-device post-upload processing kicks off: WhisperKit produces a word-level transcript, a local Ollama model turns that transcript into a short title, and `AVAssetImageGenerator` grabs a JPEG thumbnail. Nothing leaves the machine except the derived artifacts you choose to upload back into your own stack.
+5. `POST /api/admin/uploads/complete` confirms the object landed, flips the row to `complete`, and returns the share URL. The client then `PATCH`es the title onto the row and uploads the transcript + thumbnail as sidecar artifacts in R2.
+6. The client copies the share URL to the clipboard and opens it. Anyone with the link can watch, read the clickable transcript, leave timestamped comments, and (if admin) rename the recording inline.
 
 The Next.js app holds all R2 and Postgres credentials. The desktop client only knows the web URL and the admin secret; every interaction with R2 is gated by short-lived presigned URLs.
 
-## Repository layout
-
-```text
-client/                  macOS Swift package (recorder + uploader)
-  Sources/koom/          SwiftUI app, ScreenCaptureKit, upload pipeline
-  Package.swift
-  scripts/               build-app.sh, run.sh, install-app.sh
-web/                     Next.js app (frontend + backend)
-  app/                   App Router pages
-    r/[id]/              public watch page + comments pane
-    login/               public login page
-    app/                 admin UI (recordings list)
-    api/public/          public JSON endpoints (recordings, comments)
-    api/admin/           admin JSON endpoints (session, uploads, recordings)
-  lib/
-    db/                  thin `pg` Pool + parameterized query helpers
-    r2/                  S3-compatible R2 client + presigning
-    auth/                admin session, bearer validation, commenter identity
-  tests/                 Vitest integration + Playwright E2E
-supabase/
-  migrations/            hand-written SQL, applied via the Supabase CLI
-  config.toml            local stack configuration
-scripts/
-  doctor.ts              read-only verification sweep across the full stack
-  r2-orphans.ts          audit or delete orphaned recording objects in R2
-  r2-setup.ts            provisions the production R2 bucket + credentials
-  r2-setup-test.ts       provisions the isolated E2E test bucket
-  test.sh                unified test runner (web + client)
-  clean-web-cache.js     removes rebuildable web workspace artifacts
-  build-app.sh, run.sh, install-app.sh   thin wrappers that delegate into client/scripts
-docs/
-  monorepo-backend-plan.md   architectural decision record
-```
-
 ## Requirements
 
-- macOS 26 Tahoe or later for the desktop client
-- Node.js 20+ for the web app and operator scripts
-- A Cloudflare account (R2 free tier is enough to start)
-- A Supabase project — or Docker, for the local Supabase stack via `npm run db:start`
-- Optional: [Ollama](https://ollama.com) if you want local title generation (`brew install ollama && ollama pull gemma4:e4b`). koom uses Ollama as the local LLM that turns Whisper transcripts into short recording titles. The shipped client defaults to `http://localhost:11434` + `gemma4:e4b`, warms that model in-app at launch, and will auto-start `ollama serve` for the default local URL when it can. Auto-title stays best-effort: the app keeps launching even if Ollama is unavailable, and the failure is logged under `~/Library/Logs/koom/`.
-- Optional local tooling so the pre-commit hook can run: `brew install gitleaks shellcheck`
+### Must-haves
 
-The macOS client also needs Screen Recording permission, Camera permission (if using the face overlay), and Microphone permission (if recording narration).
+- **macOS 26 Tahoe or later** — the recorder is a native SwiftUI + ScreenCaptureKit app, Mac-only for now.
+- **A [Cloudflare](https://dash.cloudflare.com) account with R2 enabled** — stores the actual video files and serves them via R2's built-in CDN. Cloudflare requires a payment method on file to enable R2 even on the free tier, but at koom's scale you'll stay well inside the free quota.
+- **A [Supabase](https://supabase.com) project** — used purely as a hosted Postgres provider for the `recordings`, `comments`, and `commenters` tables. Supabase Auth, Storage, and PostgREST are not used and are [explicitly locked down](CLAUDE.md#database-access-model-supabase-lockdown). The free tier is plenty.
+- **A [Vercel](https://vercel.com) account** — deploys the Next.js web app (watch pages, admin UI, backend API routes). Vercel Hobby is plenty.
+- **Node.js 24.14.1+ and npm 11.11.0+** — pinned in `.nvmrc` and `package.json` engines. Needed for the web app and the operator scripts.
+- **Screen Recording, Camera, and Microphone permissions** on macOS — granted at first launch. Camera is only needed if you use the face overlay; microphone is only needed if you want narration + transcripts + auto-titles.
+
+### Nice-to-haves
+
+- **[Ollama](https://ollama.com)** — enables local auto-title generation. Install with `brew install ollama && ollama pull gemma4:e4b`. The app will auto-start `ollama serve` on first use and is fine running without it — auto-title and transcript extraction gracefully degrade when Ollama is unreachable.
+- **Docker Desktop** — lets you run the local Supabase stack via `npm run db:start` instead of developing directly against a hosted Supabase project. Recommended if you plan to touch migrations.
+- **`brew install gitleaks shellcheck`** — so the pre-commit hook can run locally with the same checks CI runs.
+
+## Configuration model
+
+koom has two environment files — keep this in mind while reading the setup instructions below:
+
+- **`web/.env.local`** holds everything needed for local development, plus the handful of shared secrets that are the same in local and production (R2 credentials, `KOOM_ADMIN_SECRET`). `DATABASE_URL` here is **always** the local Supabase stack.
+- **`web/.env.prod.local`** holds values used only to validate and deploy to production from your dev machine (currently `VERCEL_TOKEN` and `VERCEL_PROJECT_ID`). A future `npm run vercel:sync` will read this file to push env vars into Vercel in one command.
+- **The production Postgres URL is never stored in either file.** It's derived live from the Supabase CLI link state (`supabase/.temp/`) after you run `supabase link --project-ref=…`. The doctor script reads those files directly and uses `SUPABASE_DB_PASSWORD` from `.env.local` for authentication. No swapping, no duplication, no drift.
+
+Both files are gitignored and auto-bootstrapped from their `.example` templates the first time you run the doctor, so you usually won't copy them by hand.
 
 ## Getting started
 
+First-time setup from a clean machine.
+
 ```bash
-# 1. install dependencies (npm workspaces, husky, etc.)
+# 1. Clone the repo and install Node dependencies (npm workspaces, husky, etc.)
+git clone https://github.com/akurilin/koom.git
+cd koom
 npm install
 
-# 2. bring up local Postgres via the Supabase CLI and apply migrations
-npm run db:start
-npm run db:reset
-
-# 3. provision a Cloudflare R2 bucket + credentials (writes back into web/.env.local)
-npm run r2:setup
-
-# 4. verify the stack end to end (db reachable, R2 works, range requests OK)
+# 2. Bootstrap the env files. Running the doctor creates both
+#    web/.env.local and web/.env.prod.local from their .example
+#    templates, then reports exactly what's missing.
 npm run doctor
+```
 
-# 5. create the local macOS code-signing identity once
-#    (recommended before first client launch so Keychain trust survives rebuilds)
-./scripts/setup-dev-codesign.sh
+The first doctor run will fail loudly because the env files are empty. Work through each blocked check in order:
 
-# 6. run the web app
+1. **Cloudflare R2.** Create a Cloudflare account, enable R2 (requires a card — free tier is plenty), copy your Account ID, and mint an API token with `Workers R2 Storage → Edit` + `User API Tokens → Edit` permissions. Paste the token and account ID into `web/.env.local`. The file's comments walk through every click. Then run `npm run r2:setup` — it creates the bucket, generates the runtime S3 credentials, configures CORS, and fills in the remaining `R2_*` values for you.
+2. **Local Supabase.** Install Docker Desktop, then `npm run db:start` + `npm run db:reset` to boot the local stack and apply migrations.
+3. **`KOOM_ADMIN_SECRET`.** Generate with `openssl rand -hex 32` and paste into `web/.env.local`. Same value is used for local dev and production — the desktop client uses it as a bearer token, the web admin login uses it as a password.
+4. **Hosted Supabase project (for production).** Create a project at supabase.com, then link the repo to it:
+   ```bash
+   npx -y supabase@2.87.2 login
+   npx -y supabase@2.87.2 link --project-ref=<your-project-ref>
+   ```
+   After linking, paste the project's database password into `SUPABASE_DB_PASSWORD` in `web/.env.local` (find it at Project Settings → Database → Database password). The doctor will now be able to connect to your production Postgres live.
+5. **Vercel.** Push the koom repo to GitHub and import it at [vercel.com/new](https://vercel.com/new). In the Vercel project settings → Environment Variables, paste the values that apply in production: `DATABASE_URL` (your hosted Supabase pooler URL, from Project Settings → Database → Connection string), `R2_*`, `KOOM_PUBLIC_BASE_URL` (your Vercel URL), and `KOOM_ADMIN_SECRET`. Then mint a Vercel token at [vercel.com/account/tokens](https://vercel.com/account/tokens), grab the project ID from Vercel → Settings → General → Project ID, and paste both into `web/.env.prod.local`. (We plan to automate this step with `npm run vercel:sync` in a later round.)
+6. **macOS code-signing identity.** `./scripts/setup-dev-codesign.sh` creates a stable local identity so rebuilds don't break Keychain trust.
+7. **Rerun `npm run doctor`** until both readiness tracks are green.
+
+Once the doctor is happy, start the stack:
+
+```bash
+# Web app
 npm run dev -w web
 
-# 7. build and run the macOS client for development
+# macOS client (development build)
 ./scripts/run.sh
 
-# 8. install the signed release app into /Applications
+# Install the signed release app into /Applications when you're ready
 ./scripts/install-app.sh
 ```
 
-`npm run doctor` is the authoritative "is this environment actually usable?" check. It's always safe to re-run and exercises the database, R2 credentials, HTTP range support that browser `<video>` scrubbing depends on, and on macOS it warns if the local desktop-client signing identity is missing or unusable.
+## Doctor script
 
-`npm run r2:orphans` audits the shared R2 bucket for `recordings/{id}/...` objects that no longer have a matching row in the configured database set. It is dry-run by default; add `-- --delete` to remove confirmed orphans, and add `-- --prod-db-url ...` or `-- --prod-env-file ...` when you want to union a production database into the check.
+`npm run doctor` is the single "is this environment actually usable?" check. It's safe to re-run any time. It produces a readiness report that tells you separately whether local development is ready and whether production deployment is ready — and exactly what's missing if either isn't.
 
-## Development
+It exercises:
 
-| Task                                | Command                            |
-| ----------------------------------- | ---------------------------------- |
-| Clean rebuildable web caches        | `npm run web:clean`                |
-| Lint the web workspace              | `npm run lint`                     |
-| Check formatting (Prettier)         | `npm run format:check`             |
-| Auto-fix formatting                 | `npm run format`                   |
-| Lint Swift sources                  | `npm run swift:lint`               |
-| Auto-fix Swift formatting           | `npm run swift:format`             |
-| ShellCheck every tracked `.sh`      | `npm run shellcheck`               |
-| Push migrations to production       | `npm run db:push`                  |
-| Audit orphaned R2 recording files   | `npm run r2:orphans`               |
-| Web unit + integration tests        | `npm test -w web`                  |
-| Web end-to-end tests (Playwright)   | `npm run test:e2e -w web`          |
-| Build the macOS client bundle       | `./scripts/build-app.sh`           |
-| Build a release macOS client bundle | `./scripts/build-app.sh --release` |
-| Install the signed release app      | `./scripts/install-app.sh`         |
-| Run the macOS client in foreground  | `./scripts/run.sh`                 |
+- **Environment variables** — every required and optional var in `web/.env.local` and `web/.env.prod.local`, with bootstrap-from-template if either file is missing.
+- **Cloudflare R2** — credentials work, test PUT/HEAD/GET round-trips, public URL serves the bytes, and crucially `Range` requests return `HTTP 206` (the load-bearing assumption for video scrubbing). Counts toward both tracks because the same bucket is shared between local and production.
+- **Local Postgres** — connectivity, schema matches migrations (`recordings`, `comments`, `commenters`), and a round-trip INSERT/SELECT/DELETE on `recordings`.
+- **Remote Supabase** — verifies the Supabase CLI is installed, that `supabase link` has been run against a hosted project, and that the cached pooler URL + `SUPABASE_DB_PASSWORD` can actually connect to the remote Postgres with a `SELECT 1`. The doctor does **not** validate whether migrations have been applied to the remote DB — just that you have something you can migrate against. No test rows are written to production.
+- **Ollama (auto-title)** — server is reachable and the configured model is pulled (non-fatal).
+- **Desktop code signing** — local dev codesign identity is present and usable on macOS.
+- **Vercel** — if `VERCEL_TOKEN` and `VERCEL_PROJECT_ID` are set in `web/.env.prod.local`, the project is reachable and the token has access.
 
-`npm run web:clean` removes the web workspace's rebuildable artifacts (`web/.next`, `web/node_modules/.vite`, and Playwright/Vitest output directories). It refuses to run while a live `next dev` process still owns the workspace.
+The final summary splits the checks into two readiness tracks:
 
-A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, `swift format`, ShellCheck, and gitleaks against staged changes before any commit lands. Swift sources use Apple's official `swift-format` (ships with the Swift 6 toolchain) against the repo-level `.swift-format` config. The rest of the checks also run in GitHub Actions on push and pull requests, plus a full-history gitleaks scan.
+- **Local development** — everything you need to run the recorder + web app against local Postgres.
+- **Production deployment** — everything you need to deploy to Vercel, with a hosted Supabase + R2 bucket to back it.
 
-The desktop app writes persistent logs to `~/Library/Logs/koom/koom.log` and keeps one rotated `koom.previous.log`. From the app itself, use **Troubleshooting → Reveal Logs in Finder** to jump straight to that directory.
+Either track can be "ready" independently. If you don't care about local development and just want to run koom in production, the doctor still tells you exactly what's missing for prod, and vice versa.
 
-## Recording output
+A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, `swift format`, ShellCheck, and gitleaks against staged changes before any commit lands. The same checks run in GitHub Actions on push and pull requests, plus a full-history gitleaks scan.
 
-The macOS client captures with ScreenCaptureKit and writes directly to disk as H.264 MP4 — there is no post-capture transcode or resize pass during normal recording. koom keeps that local recording untouched. If upload optimization is enabled in Settings, the upload path can also create and upload a smaller MP4 derivative via `ffmpeg` when that re-encode is meaningfully smaller. Recordings stitched back together after a crash go through an `AVAssetExportSession` passthrough mux — see [Crash recovery](#crash-recovery) — but even then nothing is re-encoded.
+## Deeper reading
 
-- **Path:** `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4`
-- **Codec:** H.264 (High Auto Level)
-- **Capture cadence:** 15 fps by default, 30 fps optional in Settings, keyframe every ~2 seconds
-- **Resolution:** native capture size of the selected display (no preset, no downscaling)
-- **Bitrate heuristic:** `max(width × height × 4, 8 Mb/s)`
-- **Upload optimization:** optional best-effort `ffmpeg` pass (`libx264 -preset slow -crf 18`) that keeps the local file and uploads a smaller derivative only when it saves at least 10%
-- **Audio:** screen/system audio disabled; microphone optional
-- **Cursor:** included
+Longer-form write-ups of individual subsystems live in [`docs/`](docs/):
 
-Approximate worst-case local file sizes under the current bitrate heuristic, before any optional upload optimization:
+- [`docs/recording-output.md`](docs/recording-output.md) — codec, bitrate heuristic, and approximate file sizes produced by the macOS client.
+- [`docs/crash-recovery.md`](docs/crash-recovery.md) — how the fragmented-MP4 session manager keeps a recording alive across force-quits and crashes.
+- [`docs/post-upload-processing.md`](docs/post-upload-processing.md) — the on-device pipeline for auto-titles, word-level transcripts, and thumbnails.
+- [`docs/monorepo-backend-plan.md`](docs/monorepo-backend-plan.md) — the original architectural decision record for the monorepo split.
+- [`CLAUDE.md`](CLAUDE.md) — working rules, migration workflow, and the Supabase lockdown model used by every public table in the database.
 
-| Resolution | Bitrate    | ~Size per minute |
-| ---------- | ---------- | ---------------- |
-| 1920×1080  | ~8.3 Mb/s  | ~62 MB           |
-| 2560×1440  | ~14.7 Mb/s | ~111 MB          |
-| 3840×2160  | ~33.2 Mb/s | ~249 MB          |
-
-The file is already compressed during capture, so it is not a raw or ProRes master — but 4K recordings can still get large quickly. Static screen recordings usually land well below those ceilings, especially at 15 fps. The client never deletes local files, and upload failures never destroy the source.
-
-## Crash recovery
-
-If koom is force-quit, crashes, or loses power mid-recording, the next launch finds the unfinished recording and offers to recover it. The writer flushes a fresh MP4 fragment every ~2 seconds, so the bytes already on disk stay playable without a clean stop.
-
-Under the hood:
-
-- While recording, the client writes fragmented MP4 segments under `~/Movies/koom/.sessions/<session-id>/segment-NNNN.mp4` next to a `session.json` manifest tracking the display, camera, mic, and per-segment status.
-- On a clean stop of a single-segment session, the segment is moved into its `koom_*.mp4` final path and the session directory is deleted — no copy, no re-encode.
-- On the next launch after a crash, the orphaned session triggers an "Interrupted recording found" dialog with four options: **Resume Recording** appends a new segment on top of the existing ones and keeps going; **Finish Partial** stitches whatever segments exist into the final file now; **Not Now** leaves it for later; **Discard** deletes the session directory.
-- Multi-segment finalizations (resumed recordings and partial finishes) go through `AVAssetExportSession`'s passthrough preset, so the stitch still has no re-encode.
-- Quitting while a recording is active first triggers a "Stop and Save / Discard / Keep Recording" prompt before the app shuts down.
-
-## Auto-titling
-
-Recordings that otherwise would have stayed untitled get a short descriptive title generated on the same machine that did the recording — no cloud APIs, no third-party telemetry, no server-side worker. The pipeline runs once per recording during post-upload processing. The title-generation steps themselves remain best-effort: any failure (no mic track, Ollama request failure, empty transcript) logs a line and leaves the `title` column `NULL`.
-
-Stages, all in-process on the macOS client:
-
-1. **Extract.** `AVAssetReader` pulls the mic audio out of the finalized MP4 into 16 kHz mono float PCM. No ffmpeg, no temp files.
-2. **Transcribe.** An actor-wrapped `WhisperKit` instance runs the CoreML model against the PCM buffer. The instance is loaded lazily on first use and memoized for the rest of the process, so the ~500 MB model download only happens once (into the standard HuggingFace Hub cache at `~/.cache/huggingface/hub/`).
-3. **Summarize.** The transcript is sent to a local Ollama model via `POST http://localhost:11434/api/generate` with `think: false` (important — reasoning-capable models like `gemma4:e4b` otherwise route their output into a separate `thinking` field and return an empty `response`). The client asks for a 4–10 word title and sanitizes it (strips `Title:` prefixes, smart/straight quotes, trailing punctuation, clamps to 10 words).
-4. **Persist.** The title is `PATCH`ed onto the `recordings` row via `PATCH /api/admin/recordings/[id]`. Pending rows (upload still in flight) are also allowed to take a title so the auto-titler can land early on fast uploads.
-
-The shipped client defaults are compiled into `AutotitleConfiguration.swift`:
-
-- Whisper model: `openai_whisper-small.en`
-- Ollama URL: `http://localhost:11434`
-- Ollama model: `gemma4:e4b`
-- Auto-title enabled: yes
-
-At launch the app now performs a best-effort Ollama warmup itself. If the configured URL is the default local HTTP endpoint, koom will try to start `ollama serve` automatically before giving up. Missing Ollama or a missing model no longer blocks app launch; the app logs the issue, surfaces a small status warning, and skips auto-title work until Ollama becomes available again.
-
-`npm run doctor` still has an "Auto-title (Ollama)" section that verifies Ollama is reachable and the configured model has been pulled. Those checks remain non-fatal so the rest of the doctor sweep still runs.
-
-## Thumbnail generation
-
-Each completed recording also gets a best-effort JPEG thumbnail generated locally on the macOS client. This stays intentionally simple: no queue, no worker, no background cloud media pipeline.
-
-Stages, all on the macOS client:
-
-1. **Extract.** `AVAssetImageGenerator` reads a still frame from the finalized MP4 and encodes it as JPEG. No `ffmpeg`, no full-file re-download from R2, and no mutation of the source recording.
-2. **Upload.** The client sends that JPEG to `PUT /api/admin/recordings/[id]/thumbnail`.
-3. **Store.** The web backend writes the sidecar object to Cloudflare R2 at `recordings/{id}/thumbnail-v1.jpg`.
-4. **Render.** Admin/public recording payloads expose `thumbnailUrl`, and list views use that image first, falling back to `videoUrl#t=0.1` if the sidecar JPEG is missing.
-
-Like auto-titling, thumbnail generation is best-effort. A thumbnail failure never blocks the MP4 upload, never prevents the share URL from opening, and never deletes or mutates the local recording.
+The desktop app writes persistent logs to `~/Library/Logs/koom/koom.log` (with one rotated `koom.previous.log`). From the app itself, **Troubleshooting → Reveal Logs in Finder** jumps straight to that directory.

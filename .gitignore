@@ -30,9 +30,12 @@ xcuserdata/
 
 # Local environment files. The bare `.env*` pattern catches edge cases
 # like Finder duplicates ('.env copy.example') and any .env-prefixed
-# file at any depth. The negation re-includes the committed template.
+# file at any depth. The negations re-include the committed templates:
+# one for local development (`.env.example`) and one for validating
+# production from a dev machine (`.env.prod.example`).
 .env*
 !.env.example
+!.env.prod.example
 
 # Node
 node_modules/

@@ -57,6 +57,7 @@ final class AppModel: ObservableObject {
     @Published var uploadState: UploadState = .idle
     @Published var catchUpState: CatchUpState = .idle
     @Published var isCatchingUp: Bool = false
+    @Published var isDrawingModeActive = false
 
     var isRecordingInProgress: Bool {
         recorder != nil
@@ -71,6 +72,7 @@ final class AppModel: ObservableObject {
 
     private let cameraPreviewManager = CameraPreviewManager()
     private let overlayWindowController = CameraOverlayWindowController()
+    private let drawingOverlayWindowController = DrawingOverlayWindowController()
     private let settingsStore: AppSettingsStore
     private let uploader = Uploader()
     private let sessionStore = RecordingSessionStore()
@@ -106,6 +108,17 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             Task { @MainActor in
                 self.catchUpRecordings()
+            }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .koomToggleDrawingMode,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                self.toggleDrawingMode()
             }
         }
 
@@ -248,6 +261,17 @@ final class AppModel: ObservableObject {
         guard let url = lastRecordingURL, FileManager.default.fileExists(atPath: url.path) else { return }
         AppLog.info("Revealing recording at \(url.path)")
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    func toggleDrawingMode() {
+        isDrawingModeActive.toggle()
+        if isDrawingModeActive {
+            AppLog.info("Drawing mode activated on display \(selectedDisplayID).")
+            drawingOverlayWindowController.activate(displayID: selectedDisplayID)
+        } else {
+            AppLog.info("Drawing mode deactivated.")
+            drawingOverlayWindowController.deactivate()
+        }
     }
 
     func startRecording() {

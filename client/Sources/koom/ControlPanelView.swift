@@ -247,6 +247,18 @@ struct ControlPanelView: View {
 
             HStack(spacing: 10) {
                 Button {
+                    model.toggleDrawingMode()
+                } label: {
+                    ToolbarIcon(
+                        symbol: "pencil.tip",
+                        isActive: model.isDrawingModeActive
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(model.isDrawingModeActive ? "Exit drawing mode" : "Draw on screen")
+                .accessibilityLabel("Toggle drawing mode")
+
+                Button {
                     model.refreshHardware()
                 } label: {
                     ToolbarIcon(symbol: "arrow.clockwise")
@@ -268,6 +280,9 @@ struct ControlPanelView: View {
 
     private var primaryRecordButton: some View {
         Button {
+            if model.isDrawingModeActive {
+                model.toggleDrawingMode()
+            }
             if model.recordingState == .idle {
                 model.startRecording()
             } else {
@@ -469,15 +484,16 @@ private struct SourceMenuRow<Value: Hashable>: View {
 
 private struct ToolbarIcon: View {
     let symbol: String
+    var isActive: Bool = false
 
     var body: some View {
         Image(systemName: symbol)
             .font(.system(size: 20, weight: .medium))
-            .foregroundStyle(Color.primary.opacity(0.72))
+            .foregroundStyle(isActive ? Color.white : Color.primary.opacity(0.72))
             .frame(width: 48, height: 48)
             .background(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.white.opacity(0.62))
+                    .fill(isActive ? Color.accentColor : Color.white.opacity(0.62))
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)

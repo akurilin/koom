@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = AppModel()
     private var controlPanelWindow: NSWindow?
     private var recorderRemoteController: RecorderRemoteWindowController?
+    private var panelSizeObservation: NSKeyValueObservation?
     private var isResolvingTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -125,13 +126,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // traffic lights. The in-panel X quits the app (going through
         // the usual recording-in-progress termination guard).
         let window = BorderlessPanelWindow(
-            contentRect: NSRect(origin: .zero, size: AppModel.panelSize),
+            contentRect: NSRect(
+                origin: .zero,
+                size: NSSize(width: AppModel.panelWidth, height: 400)
+            ),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
 
-        window.contentViewController = NSHostingController(rootView: contentView)
+        // The panel sizes itself to its content: the hosting
+        // controller publishes SwiftUI's ideal size through
+        // preferredContentSize, and the window follows it, keeping
+        // the top edge anchored so growth extends downward.
+        let hostingController = NSHostingController(rootView: contentView)
+        hostingController.sizingOptions = .preferredContentSize
+        window.contentViewController = hostingController
+
+        panelSizeObservation = hostingController.observe(
+            \.preferredContentSize,
+            options: [.initial, .new]
+        ) { [weak window] _, change in
+            guard let window, let size = change.newValue, size.height > 1 else { return }
+            Task { @MainActor in
+                let frame = window.frame
+                guard abs(frame.height - size.height) > 0.5 else { return }
+                window.setFrame(
+                    NSRect(
+                        x: frame.minX,
+                        y: frame.maxY - size.height,
+                        width: frame.width,
+                        height: size.height
+                    ),
+                    display: true,
+                    animate: true
+                )
+            }
+        }
+
         window.isReleasedWhenClosed = false
         return window
     }

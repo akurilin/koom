@@ -334,7 +334,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    static let panelSize = CGSize(width: 430, height: 580)
+    // Only the width is fixed; the panel's height follows its content
+    // (the window resizes via the preferredContentSize observation in
+    // AppDelegate).
+    static let panelWidth: CGFloat = 430
 
     func showSettingsTab() {
         // The main panel is hidden (and irrelevant) while recording.

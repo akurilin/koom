@@ -153,10 +153,7 @@ struct ControlPanelView: View {
             .padding(.top, 20)
             .padding(.bottom, 24)
         }
-        .frame(
-            width: AppModel.panelSize.width,
-            height: AppModel.panelSize.height
-        )
+        .frame(width: AppModel.panelWidth)
         // The window is borderless and transparent; this is the
         // panel's actual chrome.
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
@@ -216,22 +213,15 @@ struct ControlPanelView: View {
 
             primaryRecordButton
 
-            Spacer(minLength: 0)
-
             VStack(spacing: 12) {
                 statusFooter
 
                 if showsDetailCard {
-                    // Render the card at its natural height while it
-                    // fits below the record button; once it outgrows
-                    // that space, swap in a scroll view so the log is
-                    // reachable instead of running off the window.
-                    ViewThatFits(in: .vertical) {
+                    // Natural height while the log is short; scrolls
+                    // once it passes the cap so the window never grows
+                    // unboundedly.
+                    HuggingScrollView(maxHeight: 260) {
                         detailCard
-
-                        ScrollView {
-                            detailCard
-                        }
                     }
                     .transition(
                         .move(edge: .bottom).combined(with: .opacity)

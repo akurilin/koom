@@ -51,7 +51,7 @@ struct SettingsView: View {
     @State private var confirmationMessage: String?
 
     var body: some View {
-        ScrollView {
+        HuggingScrollView(maxHeight: 620) {
             VStack(alignment: .leading, spacing: 12) {
                 settingsCard(header: "Active environment") {
                     Picker("Active environment", selection: $activeEnvironment) {

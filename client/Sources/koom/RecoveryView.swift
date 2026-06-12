@@ -16,7 +16,7 @@ struct RecoveryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            ScrollView {
+            HuggingScrollView(maxHeight: 320) {
                 VStack(alignment: .leading, spacing: 10) {
                     sectionTitle("Interrupted recordings")
 
@@ -33,8 +33,6 @@ struct RecoveryView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Spacer(minLength: 0)
 
             catchUpSection
         }

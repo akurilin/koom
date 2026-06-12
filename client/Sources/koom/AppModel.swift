@@ -773,6 +773,7 @@ final class AppModel: ObservableObject {
             self.currentSessionWasRecovered = recovered
             self.recorder = recorder
             lastRecordingURL = nil
+            clearFinishedTransferStatus()
             recordingState = .recording
             setControlWindowCaptureSuppressed(false)
             statusMessage =
@@ -1046,6 +1047,27 @@ final class AppModel: ObservableObject {
             statusMessage = "Recording interrupted. Saved partial recording as \(lastRecordingURL.lastPathComponent)."
         } else if !stopSucceeded {
             statusMessage = "Recording interrupted. Relaunch koom if you need to recover the partial session."
+        }
+    }
+
+    /// A new recording makes the previous video's terminal upload/sync
+    /// badge stale: the footer and detail card prefer a non-idle
+    /// `uploadState`/`catchUpState` over the live status message, so a
+    /// leftover "Uploaded" would mask the next stop's processing stages.
+    /// Mid-flight transfers are left alone — they keep emitting state and
+    /// should keep owning the badge.
+    private func clearFinishedTransferStatus() {
+        switch uploadState {
+        case .completed, .failed:
+            uploadState = .idle
+        default:
+            break
+        }
+        switch catchUpState {
+        case .completed, .noMissingFiles, .failed:
+            catchUpState = .idle
+        default:
+            break
         }
     }
 

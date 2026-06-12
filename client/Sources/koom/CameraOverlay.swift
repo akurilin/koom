@@ -12,8 +12,19 @@ final class CameraPreviewManager: @unchecked Sendable {
         session.sessionPreset = .high
     }
 
-    func setCamera(uniqueID: String?) {
+    func setCamera(
+        uniqueID: String?,
+        onConfigured: (@MainActor @Sendable () -> Void)? = nil
+    ) {
         sessionQueue.async {
+            if let uniqueID, self.activeInput?.device.uniqueID == uniqueID {
+                if !self.session.isRunning {
+                    self.session.startRunning()
+                }
+                self.notifyConfigurationCompleted(onConfigured)
+                return
+            }
+
             self.session.beginConfiguration()
 
             if let activeInput = self.activeInput {
@@ -31,6 +42,7 @@ final class CameraPreviewManager: @unchecked Sendable {
                 if self.session.isRunning {
                     self.session.stopRunning()
                 }
+                self.notifyConfigurationCompleted(onConfigured)
                 return
             }
 
@@ -41,6 +53,16 @@ final class CameraPreviewManager: @unchecked Sendable {
             if !self.session.isRunning {
                 self.session.startRunning()
             }
+            self.notifyConfigurationCompleted(onConfigured)
+        }
+    }
+
+    private func notifyConfigurationCompleted(
+        _ completion: (@MainActor @Sendable () -> Void)?
+    ) {
+        guard let completion else { return }
+        Task { @MainActor in
+            completion()
         }
     }
 }
@@ -150,7 +172,12 @@ private struct CameraPreviewView: NSViewRepresentable {
 
 private final class CameraPreviewHostView: NSView {
     private var pendingMirroringWorkItem: DispatchWorkItem?
-    private var remainingMirroringAttempts = 0
+
+    private enum MirroringResult {
+        case applied
+        case awaitingConnection
+        case unsupported
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -173,47 +200,42 @@ private final class CameraPreviewHostView: NSView {
     }
 
     func applyMirroring() {
-        if applyMirroringIfPossible() {
+        switch applyMirroringIfPossible() {
+        case .applied, .unsupported:
             pendingMirroringWorkItem?.cancel()
             pendingMirroringWorkItem = nil
-            remainingMirroringAttempts = 0
-            return
+        case .awaitingConnection:
+            scheduleMirroringRetry()
         }
-
-        scheduleMirroringRetry()
     }
 
-    @discardableResult
-    private func applyMirroringIfPossible() -> Bool {
-        guard let connection = previewLayer.connection, connection.isVideoMirroringSupported else {
-            return false
+    private func applyMirroringIfPossible() -> MirroringResult {
+        guard let connection = previewLayer.connection else {
+            return .awaitingConnection
+        }
+        guard connection.isVideoMirroringSupported else {
+            return .unsupported
         }
 
         connection.automaticallyAdjustsVideoMirroring = false
         connection.isVideoMirrored = true
-        return true
+        return .applied
     }
 
     private func scheduleMirroringRetry() {
-        guard pendingMirroringWorkItem == nil else {
+        guard pendingMirroringWorkItem == nil, previewLayer.session?.isRunning == true else {
             return
         }
 
-        remainingMirroringAttempts = max(remainingMirroringAttempts, 20)
         queueMirroringRetry()
     }
 
     private func queueMirroringRetry() {
-        guard remainingMirroringAttempts > 0 else {
-            pendingMirroringWorkItem = nil
-            return
-        }
-
-        remainingMirroringAttempts -= 1
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingMirroringWorkItem = nil
-            if !self.applyMirroringIfPossible() {
+            guard self.previewLayer.session?.isRunning == true else { return }
+            if self.applyMirroringIfPossible() == .awaitingConnection {
                 self.queueMirroringRetry()
             }
         }

@@ -101,7 +101,15 @@ final class AppModel: ObservableObject {
     private let uploader = Uploader()
     private let sessionStore = RecordingSessionStore()
     private let assembler = RecordingAssembler()
-    private let fragmentIntervalSeconds: TimeInterval = 2
+    /// Recordings roll onto a fresh segment file after this much media
+    /// time, so a crash loses at most one segment and the writer never
+    /// runs in fragmented mode (macOS's fragment flush intermittently
+    /// killed writers with -16341; segment rollover replaced it).
+    /// KOOM_SEGMENT_SECONDS overrides for testing; 0 disables rollover
+    /// and records each session as a single file.
+    private let segmentDurationSeconds: TimeInterval =
+        ProcessInfo.processInfo.environment["KOOM_SEGMENT_SECONDS"]
+        .flatMap(TimeInterval.init) ?? 30
 
     private var recorder: ScreenRecorder?
     private weak var controlWindow: NSWindow?
@@ -110,6 +118,10 @@ final class AppModel: ObservableObject {
     private var currentSession: RecordingSessionStore.SessionHandle?
     private var currentSessionWasRecovered = false
     private var isHandlingRecorderRuntimeIssue = false
+
+    /// Recordings interrupted by a recorder runtime issue since launch.
+    /// The soak driver compares this across runs to attribute failures.
+    private var recorderRuntimeIssueCount = 0
     private var elapsedTimerTask: Task<Void, Never>?
 
     init(settingsStore: AppSettingsStore = AppSettingsStore()) {
@@ -441,6 +453,96 @@ final class AppModel: ObservableObject {
         )
     }
 
+    /// Unattended repro driver for the intermittent -16341 recorder
+    /// failure: records short clips back-to-back with the restored
+    /// device settings and exits with status 1 if any run was
+    /// interrupted. The failure needs real SCK capture (the synthetic
+    /// replay harness in koomTests could not trigger it), and only the
+    /// app bundle holds the screen/mic permissions, so this lives here
+    /// rather than in the test suite.
+    ///
+    /// Enable by launching with KOOM_SOAK_RECORDINGS=<runs>, e.g.:
+    ///   KOOM_SOAK_RECORDINGS=10 ./scripts/run.sh
+    /// KOOM_SOAK_SECONDS overrides the per-run duration (default 15;
+    /// use >= 2x KOOM_SEGMENT_SECONDS to exercise segment-rollover
+    /// seams). Clean runs are discarded, nothing uploads; interrupted
+    /// runs leave their salvaged partial recording and the forensic
+    /// dump in the log as evidence. KOOM_SOAK_KEEP=1 stops normally
+    /// instead of discarding, exercising segment assembly and leaving
+    /// the final files on disk for inspection.
+    func runRecordingSoakIfRequested() {
+        let environment = ProcessInfo.processInfo.environment
+        guard let runsValue = environment["KOOM_SOAK_RECORDINGS"],
+            let runs = Int(runsValue), runs > 0
+        else {
+            return
+        }
+        let secondsPerRun = environment["KOOM_SOAK_SECONDS"].flatMap(Double.init) ?? 15
+        let keepRecordings = environment["KOOM_SOAK_KEEP"] == "1"
+
+        AppLog.info(
+            "[soak] Starting recording soak: \(runs) run(s) of \(secondsPerRun)s each."
+        )
+
+        Task {
+            // Let launch settle (hardware refresh, panel placement)
+            // before the first run.
+            try? await Task.sleep(for: .seconds(2))
+
+            var interruptedRuns = 0
+            var startFailures = 0
+
+            for run in 1...runs {
+                let issuesBefore = recorderRuntimeIssueCount
+                AppLog.info("[soak] Run \(run)/\(runs) starting.")
+                await startRecordingTask()
+
+                guard recordingState == .recording else {
+                    startFailures += 1
+                    AppLog.error("[soak] Run \(run)/\(runs) failed to start: \(statusMessage)")
+                    try? await Task.sleep(for: .seconds(2))
+                    continue
+                }
+
+                // The runtime-issue handler stops the recording itself on
+                // failure, so the state flipping back to idle before the
+                // deadline means this run died.
+                let deadline = Date().addingTimeInterval(secondsPerRun)
+                while Date() < deadline, recordingState == .recording {
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+
+                var interrupted = recordingState != .recording
+                if recordingState == .recording {
+                    let stopped = await stopRecordingTask(
+                        discardOutput: !keepRecordings,
+                        restartAfterStop: false,
+                        uploadAfterStop: false,
+                        awaitUploadAfterStop: false
+                    )
+                    interrupted = !stopped
+                }
+                if recorderRuntimeIssueCount > issuesBefore {
+                    interrupted = true
+                }
+
+                if interrupted {
+                    interruptedRuns += 1
+                    AppLog.error("[soak] Run \(run)/\(runs) INTERRUPTED.")
+                } else {
+                    AppLog.info("[soak] Run \(run)/\(runs) completed cleanly.")
+                }
+
+                try? await Task.sleep(for: .seconds(2))
+            }
+
+            AppLog.info(
+                "[soak] Done. runs=\(runs) interrupted=\(interruptedRuns) startFailures=\(startFailures)"
+            )
+            exit(interruptedRuns == 0 && startFailures == 0 ? 0 : 1)
+        }
+    }
+
     func togglePause() {
         guard let recorder else { return }
         guard var currentSession else { return }
@@ -607,8 +709,7 @@ final class AppModel: ObservableObject {
                     environment: KoomConfig.activeEnvironment,
                     display: displaySnapshot,
                     cameraID: selectedCameraID.isEmpty ? nil : selectedCameraID,
-                    microphoneID: selectedMicrophoneID.isEmpty ? nil : selectedMicrophoneID,
-                    fragmentIntervalSeconds: fragmentIntervalSeconds
+                    microphoneID: selectedMicrophoneID.isEmpty ? nil : selectedMicrophoneID
                 )
             }
 
@@ -625,16 +726,23 @@ final class AppModel: ObservableObject {
                     displayID: selectedDisplayID,
                     microphoneID: selectedMicrophoneID.isEmpty ? nil : selectedMicrophoneID,
                     outputURL: segmentURL,
-                    movieFragmentInterval: CMTime(
-                        seconds: fragmentIntervalSeconds,
-                        preferredTimescale: 600
-                    ),
+                    segmentDuration: segmentDurationSeconds > 0
+                        ? CMTime(
+                            seconds: segmentDurationSeconds,
+                            preferredTimescale: 600
+                        )
+                        : nil,
                     expectedFrameRate: compressionSettings.captureFrameRate
                         .framesPerSecond
                 ),
                 onRuntimeIssue: { [weak self] message in
                     Task { [weak self] in
                         await self?.handleRecorderRuntimeIssue(message)
+                    }
+                },
+                onSegmentRolloverNeeded: { [weak self] recorder in
+                    Task { @MainActor [weak self] in
+                        self?.handleSegmentRolloverRequest(from: recorder)
                     }
                 }
             )
@@ -670,6 +778,35 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Allocates the next segment file (recording the new segment in
+    /// the session manifest first, so crash recovery can find it) and
+    /// hands it to the recorder, which swaps writers without stopping
+    /// capture. The recorder keeps writing to the current segment
+    /// until the swap lands, so this round trip drops no media.
+    private func handleSegmentRolloverRequest(from recorder: ScreenRecorder) {
+        // A stale request after stop/restart must not roll the next
+        // recording's first segment: the requesting recorder has to be
+        // the live one, with no stop in flight.
+        guard recorder === self.recorder, recordingState != .idle, !isBusy,
+            var workingSession = currentSession
+        else {
+            return
+        }
+
+        do {
+            let segmentURL = try sessionStore.createNextSegment(in: &workingSession)
+            currentSession = workingSession
+            recorder.rollToNextSegment(to: segmentURL)
+        } catch {
+            // The recorder stays on its current segment (its rollover
+            // latch stays set, so it won't re-request); the recording
+            // simply continues as one long segment.
+            AppLog.error(
+                "Could not create the next recording segment: \(error.localizedDescription)"
+            )
+        }
+    }
+
     private func stopRecordingTask(
         discardOutput: Bool,
         restartAfterStop: Bool,
@@ -699,14 +836,28 @@ final class AppModel: ObservableObject {
                 lastRecordingURL = nil
                 statusMessage = "Previous recording discarded."
             } else {
-                let inspection = try await assembler.inspectSegment(at: segmentURL)
-                try sessionStore.markLatestSegmentStopped(
-                    in: &currentSession,
-                    cleanStop: true,
-                    durationSeconds: inspection.durationSeconds,
-                    hasVideo: inspection.hasVideo,
-                    hasAudio: inspection.hasAudio
-                )
+                do {
+                    let inspection = try await assembler.inspectSegment(at: segmentURL)
+                    try sessionStore.markLatestSegmentStopped(
+                        in: &currentSession,
+                        cleanStop: true,
+                        durationSeconds: inspection.durationSeconds,
+                        hasVideo: inspection.hasVideo,
+                        hasAudio: inspection.hasAudio
+                    )
+                } catch {
+                    // The tail segment can be unusable when stop lands
+                    // moments after a rollover (milliseconds of media,
+                    // possibly no video frame yet). Drop it and finalize
+                    // from the remaining segments.
+                    try sessionStore.removeLatestSegment(in: &currentSession)
+                    guard !currentSession.session.segments.isEmpty else {
+                        throw error
+                    }
+                    AppLog.error(
+                        "Dropped unusable tail segment \(segmentURL.lastPathComponent): \(error.localizedDescription)"
+                    )
+                }
                 try sessionStore.updateState(.finalizing, in: &currentSession)
 
                 let finalURL: URL
@@ -756,6 +907,14 @@ final class AppModel: ObservableObject {
             }
             return true
         } catch {
+            let nsError = error as NSError
+            let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError
+            AppLog.error(
+                "Stop finalization failed: domain=\(nsError.domain) code=\(nsError.code) \(nsError.localizedDescription)"
+                    + (underlying.map {
+                        " underlyingDomain=\($0.domain) underlyingCode=\($0.code) underlyingDescription=\($0.localizedDescription)"
+                    } ?? "")
+            )
             if !discardOutput,
                 let salvagedURL = await salvageInterruptedRecording(
                     from: &currentSession
@@ -843,6 +1002,7 @@ final class AppModel: ObservableObject {
         isHandlingRecorderRuntimeIssue = true
         defer { isHandlingRecorderRuntimeIssue = false }
 
+        recorderRuntimeIssueCount += 1
         AppLog.error("Recorder runtime issue detected: \(message)")
         statusMessage = "Recording interrupted internally. Saving the partial recording..."
 

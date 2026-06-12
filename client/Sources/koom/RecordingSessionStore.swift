@@ -57,7 +57,6 @@ final class RecordingSessionStore: @unchecked Sendable {
         let display: DisplaySnapshot
         let cameraID: String?
         let microphoneID: String?
-        let fragmentIntervalSeconds: Double
         var segments: [Segment]
     }
 
@@ -72,8 +71,7 @@ final class RecordingSessionStore: @unchecked Sendable {
         environment: KoomEnvironment,
         display: RecordingSession.DisplaySnapshot,
         cameraID: String?,
-        microphoneID: String?,
-        fragmentIntervalSeconds: TimeInterval
+        microphoneID: String?
     ) throws -> SessionHandle {
         try ensureBaseDirectoriesExist(for: environment)
 
@@ -100,7 +98,6 @@ final class RecordingSessionStore: @unchecked Sendable {
             display: display,
             cameraID: normalizedOptionalID(cameraID),
             microphoneID: normalizedOptionalID(microphoneID),
-            fragmentIntervalSeconds: fragmentIntervalSeconds,
             segments: []
         )
 

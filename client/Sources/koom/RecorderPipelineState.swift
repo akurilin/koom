@@ -30,6 +30,12 @@ struct RecorderTimelineController {
         var firstPTS: CMTime?
         var lastRetimedPTS: CMTime?
         var hasSeenFirstSample = false
+        // The session retime offset converted once into this track's
+        // source timescale. Subtracting a cross-timescale offset per
+        // buffer makes CMTime round, leaking ~1ns gaps that break the
+        // audio track's sample contiguity; converting once at anchor
+        // time keeps every subtraction exact.
+        var convertedRetimeOffset: CMTime?
     }
 
     private struct PauseState {
@@ -84,6 +90,10 @@ struct RecorderTimelineController {
 
             pauseState.pausePTS = nil
             pauseState.needsResumeOffset = false
+            // The retime offset changed; re-derive each track's
+            // timescale-converted copy from the new value.
+            videoState.convertedRetimeOffset = nil
+            audioState.convertedRetimeOffset = nil
         }
 
         var trackState = state(for: track)
@@ -124,10 +134,19 @@ struct RecorderTimelineController {
             )
         }
 
-        let retimeOffset = CMTimeAdd(
-            sessionStartPTS,
-            pauseState.accumulatedOffset
-        )
+        let retimeOffset: CMTime
+        if let converted = trackState.convertedRetimeOffset,
+            converted.timescale == sourcePTS.timescale
+        {
+            retimeOffset = converted
+        } else {
+            retimeOffset = CMTimeConvertScale(
+                CMTimeAdd(sessionStartPTS, pauseState.accumulatedOffset),
+                timescale: sourcePTS.timescale,
+                method: .default
+            )
+            trackState.convertedRetimeOffset = retimeOffset
+        }
         let retimedPTS = CMTimeSubtract(sourcePTS, retimeOffset)
 
         if let lastRetimedPTS = trackState.lastRetimedPTS,

@@ -100,6 +100,11 @@ final class RecordingAssembler: @unchecked Sendable {
     }
 
     private struct PreparedSegment {
+        // Keeps the tracks' parent asset alive: AVAssetTrack does not
+        // retain its asset, and inserting a track whose asset has been
+        // deallocated fails with AVFoundationError -11800 (OSStatus
+        // -12780).
+        let asset: AVURLAsset
         let duration: CMTime
         let videoTrack: AVAssetTrack
         let audioTrack: AVAssetTrack?
@@ -118,36 +123,46 @@ final class RecordingAssembler: @unchecked Sendable {
                 continue
             }
 
-            let asset = AVURLAsset(url: segmentURL)
-            let duration = try await asset.load(.duration)
-            let tracks = try await asset.load(.tracks)
+            // One corrupt segment (e.g. a writer that died mid-file)
+            // must not sink the rest of the recording: skip it and
+            // stitch what's readable.
+            do {
+                let asset = AVURLAsset(url: segmentURL)
+                let duration = try await asset.load(.duration)
+                let tracks = try await asset.load(.tracks)
 
-            let seconds = CMTimeGetSeconds(duration)
-            guard seconds.isFinite, seconds > 0 else {
-                continue
-            }
+                let seconds = CMTimeGetSeconds(duration)
+                guard seconds.isFinite, seconds > 0 else {
+                    continue
+                }
 
-            guard let videoTrack = tracks.first(where: { $0.mediaType == .video }) else {
-                continue
-            }
+                guard let videoTrack = tracks.first(where: { $0.mediaType == .video }) else {
+                    continue
+                }
 
-            let audioTrack = tracks.first(where: { $0.mediaType == .audio })
-            let audioDuration: CMTime?
-            if let audioTrack {
-                let audioTimeRange = try await audioTrack.load(.timeRange)
-                audioDuration = CMTimeMinimum(duration, audioTimeRange.duration)
-            } else {
-                audioDuration = nil
-            }
+                let audioTrack = tracks.first(where: { $0.mediaType == .audio })
+                let audioDuration: CMTime?
+                if let audioTrack {
+                    let audioTimeRange = try await audioTrack.load(.timeRange)
+                    audioDuration = CMTimeMinimum(duration, audioTimeRange.duration)
+                } else {
+                    audioDuration = nil
+                }
 
-            preparedSegments.append(
-                PreparedSegment(
-                    duration: duration,
-                    videoTrack: videoTrack,
-                    audioTrack: audioTrack,
-                    audioDuration: audioDuration
+                preparedSegments.append(
+                    PreparedSegment(
+                        asset: asset,
+                        duration: duration,
+                        videoTrack: videoTrack,
+                        audioTrack: audioTrack,
+                        audioDuration: audioDuration
+                    )
                 )
-            )
+            } catch {
+                AppLog.error(
+                    "Skipping unreadable segment \(segment.filename): \(error.localizedDescription)"
+                )
+            }
         }
 
         return preparedSegments

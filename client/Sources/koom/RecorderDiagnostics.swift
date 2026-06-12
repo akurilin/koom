@@ -49,8 +49,34 @@ struct RecorderDiagnosticsCollector {
     private(set) var audioBackpressureSamples: Int = 0
     private(set) var successfulVideoAppends: Int = 0
     private(set) var droppedVideoSamples: Int = 0
+    private(set) var skippedNonCompleteVideoFrames: Int = 0
     private(set) var audioFormatDriftEventCount: Int = 0
     private var lastSuccessfulAudioAppendAt: Date?
+
+    // MARK: - PTS continuity tracking
+    //
+    // The -16341 fragment-flush failure could not be reproduced from
+    // the anchor values alone (see RecorderAudioRetimingReproTests),
+    // so the leading suspect is a timing irregularity invisible at
+    // the ring buffer's 4-decimal seconds rendering. These counters
+    // compare exact CMTime values across the WHOLE recording: each
+    // buffer's PTS must equal the previous buffer's PTS plus its
+    // sample count. Source continuity is checked on every buffer SCK
+    // delivers; retimed continuity on appended buffers only (drops
+    // legitimately interrupt the appended timeline).
+
+    private var lastAudioSourcePTS: CMTime?
+    private var lastAudioSourceSampleCount: CMItemCount = 0
+    private(set) var audioSourcePTSDiscontinuities: Int = 0
+    private var sourceDiscontinuityExamples: [String] = []
+    private var lastAppendedRetimedPTS: CMTime?
+    private var lastAppendedRetimedSampleCount: CMItemCount = 0
+    private(set) var retimedPTSDiscontinuities: Int = 0
+    private var maxRetimedGapSeconds: Double = 0
+    private var retimedDiscontinuityExample: String?
+    private(set) var segmentRollovers: Int = 0
+
+    private static let maxDiscontinuityExamples = 5
 
     // MARK: - Ring buffers
 
@@ -77,8 +103,19 @@ struct RecorderDiagnosticsCollector {
         self.audioBackpressureSamples = 0
         self.successfulVideoAppends = 0
         self.droppedVideoSamples = 0
+        self.skippedNonCompleteVideoFrames = 0
         self.audioFormatDriftEventCount = 0
         self.lastSuccessfulAudioAppendAt = nil
+        self.lastAudioSourcePTS = nil
+        self.lastAudioSourceSampleCount = 0
+        self.audioSourcePTSDiscontinuities = 0
+        self.sourceDiscontinuityExamples.removeAll(keepingCapacity: true)
+        self.lastAppendedRetimedPTS = nil
+        self.lastAppendedRetimedSampleCount = 0
+        self.retimedPTSDiscontinuities = 0
+        self.maxRetimedGapSeconds = 0
+        self.retimedDiscontinuityExample = nil
+        self.segmentRollovers = 0
         self.recentAudioBuffers.removeAll(keepingCapacity: true)
         self.audioDeviceEvents.removeAll(keepingCapacity: true)
 
@@ -111,9 +148,9 @@ struct RecorderDiagnosticsCollector {
             dataBufferLength: RecorderDiagnosticsCollector.dataBufferLength(sampleBuffer),
             isValid: CMSampleBufferIsValid(sampleBuffer),
             dataReady: CMSampleBufferDataIsReady(sampleBuffer),
-            durationSeconds: CMSampleBufferGetDuration(sampleBuffer).seconds,
-            sourcePTSSeconds: CMTIME_IS_VALID(sourcePTS) ? sourcePTS.seconds : nil,
-            retimedPTSSeconds: CMTIME_IS_VALID(retimedPTS) ? retimedPTS.seconds : nil,
+            duration: CMSampleBufferGetDuration(sampleBuffer),
+            sourcePTS: sourcePTS,
+            retimedPTS: retimedPTS,
             format: RecorderDiagnosticsCollector.asbd(of: sampleBuffer),
             channelLayoutSize: RecorderDiagnosticsCollector.channelLayoutSize(of: sampleBuffer),
             outcome: outcome
@@ -143,7 +180,74 @@ struct RecorderDiagnosticsCollector {
             break
         }
 
+        // Source-PTS continuity: each buffer should start exactly where
+        // the previous one ended (previous PTS + previous sample count).
+        // A mismatch means the capture device's timeline jumped — the
+        // prime suspect for the fragment-flush failure.
+        if let sampleRate = snapshot.format?.mSampleRate, sampleRate > 0,
+            CMTIME_IS_VALID(sourcePTS)
+        {
+            let rate = CMTimeScale(sampleRate)
+            if let last = lastAudioSourcePTS {
+                let expected = CMTimeAdd(
+                    last,
+                    CMTime(value: CMTimeValue(lastAudioSourceSampleCount), timescale: rate)
+                )
+                if CMTimeCompare(sourcePTS, expected) != 0 {
+                    audioSourcePTSDiscontinuities += 1
+                    if sourceDiscontinuityExamples.count < Self.maxDiscontinuityExamples {
+                        let gap = CMTimeSubtract(sourcePTS, expected).seconds
+                        sourceDiscontinuityExamples.append(
+                            "t+\(String(format: "%.3f", snapshot.elapsedSinceStart))s expected=\(describeRawCMTime(expected)) got=\(describeRawCMTime(sourcePTS)) gap=\(String(format: "%+.9f", gap))s"
+                        )
+                    }
+                }
+            }
+            lastAudioSourcePTS = sourcePTS
+            lastAudioSourceSampleCount = snapshot.sampleCount
+
+            // Retimed continuity over the appended timeline — this is
+            // what the fragment writer actually sees. We already know
+            // cross-timescale retiming leaks ~1ns gaps, so only count,
+            // track the worst gap, and keep one example.
+            if outcome == .appended, CMTIME_IS_VALID(retimedPTS) {
+                if let last = lastAppendedRetimedPTS {
+                    let expected = CMTimeAdd(
+                        last,
+                        CMTime(
+                            value: CMTimeValue(lastAppendedRetimedSampleCount),
+                            timescale: rate
+                        )
+                    )
+                    if CMTimeCompare(retimedPTS, expected) != 0 {
+                        retimedPTSDiscontinuities += 1
+                        let gap = CMTimeSubtract(retimedPTS, expected).seconds
+                        if abs(gap) > abs(maxRetimedGapSeconds) {
+                            maxRetimedGapSeconds = gap
+                        }
+                        if retimedDiscontinuityExample == nil {
+                            retimedDiscontinuityExample =
+                                "t+\(String(format: "%.3f", snapshot.elapsedSinceStart))s expected=\(describeRawCMTime(expected)) got=\(describeRawCMTime(retimedPTS)) gap=\(String(format: "%+.9f", gap))s"
+                        }
+                    }
+                }
+                lastAppendedRetimedPTS = retimedPTS
+                lastAppendedRetimedSampleCount = snapshot.sampleCount
+            }
+        }
+
         appendRingBuffer(&recentAudioBuffers, snapshot, limit: Self.maxRecentAudioBuffers)
+    }
+
+    /// Each segment's timeline restarts at zero, so the appended
+    /// retimed PTS legitimately jumps backward at a rollover. Reset
+    /// the retimed continuity tracking instead of counting the seam
+    /// as a discontinuity. (Source continuity spans the whole
+    /// recording and is unaffected.)
+    mutating func noteSegmentRollover() {
+        segmentRollovers += 1
+        lastAppendedRetimedPTS = nil
+        lastAppendedRetimedSampleCount = 0
     }
 
     mutating func recordVideoAppend(success: Bool) {
@@ -152,6 +256,14 @@ struct RecorderDiagnosticsCollector {
         } else {
             droppedVideoSamples += 1
         }
+    }
+
+    /// Idle/blank SCK frames (no pixel data) that the recorder
+    /// refused to append. A nonzero count is normal on a static
+    /// screen; the counter exists to correlate frame gaps with any
+    /// future writer failure.
+    mutating func recordSkippedVideoFrame() {
+        skippedNonCompleteVideoFrames += 1
     }
 
     /// Emit a structured forensic dump to AppLog.error at the
@@ -186,8 +298,20 @@ struct RecorderDiagnosticsCollector {
             lines.append("  Failing track: \(failingTrack.rawValue)")
         }
         lines.append("  Audio appends: ok=\(successfulAudioAppends) failed=\(failedAudioAppends) backpressure=\(audioBackpressureSamples)")
-        lines.append("  Video appends: ok=\(successfulVideoAppends) dropped=\(droppedVideoSamples)")
+        lines.append(
+            "  Video appends: ok=\(successfulVideoAppends) dropped=\(droppedVideoSamples) skippedNonComplete=\(skippedNonCompleteVideoFrames)")
         lines.append("  Audio format drift events: \(audioFormatDriftEventCount)")
+        lines.append("  Segment rollovers: \(segmentRollovers)")
+        lines.append("  Audio source PTS discontinuities: \(audioSourcePTSDiscontinuities)")
+        for example in sourceDiscontinuityExamples {
+            lines.append("    \(example)")
+        }
+        lines.append(
+            "  Retimed PTS discontinuities (appended timeline): \(retimedPTSDiscontinuities) maxGap=\(String(format: "%+.9f", maxRetimedGapSeconds))s"
+        )
+        if let retimedDiscontinuityExample {
+            lines.append("    first: \(retimedDiscontinuityExample)")
+        }
         if let last = lastSuccessfulAudioAppendAt {
             let gap = Date().timeIntervalSince(last)
             lines.append("  Time since last successful audio append: \(String(format: "%.3f", gap))s")
@@ -201,12 +325,6 @@ struct RecorderDiagnosticsCollector {
         if let writer {
             lines.append("  status: \(describe(writer.status)) (\(writer.status.rawValue))")
             lines.append("  outputURL: \(writer.outputURL.path)")
-            let fragInterval = writer.movieFragmentInterval
-            if CMTIME_IS_VALID(fragInterval) {
-                lines.append("  movieFragmentInterval: \(String(format: "%.3f", fragInterval.seconds))s")
-            } else {
-                lines.append("  movieFragmentInterval: (invalid / not set)")
-            }
             if let error = writer.error {
                 lines.append("  error:")
                 for line in describeErrorChain(error) {
@@ -274,13 +392,13 @@ struct RecorderDiagnosticsCollector {
             lines.append("  dataReady: \(CMSampleBufferDataIsReady(failingBuffer))")
             let dur = CMSampleBufferGetDuration(failingBuffer)
             if CMTIME_IS_VALID(dur) {
-                lines.append("  duration: \(String(format: "%.6f", dur.seconds))s")
+                lines.append("  duration: \(describeRawCMTime(dur))")
             }
             if let pts = failingBufferSourcePTS, CMTIME_IS_VALID(pts) {
-                lines.append("  sourcePTS: \(String(format: "%.6f", pts.seconds))s")
+                lines.append("  sourcePTS: \(describeRawCMTime(pts))")
             }
             if let pts = failingBufferRetimedPTS, CMTIME_IS_VALID(pts) {
-                lines.append("  retimedPTS: \(String(format: "%.6f", pts.seconds))s")
+                lines.append("  retimedPTS: \(describeRawCMTime(pts))")
             }
             if let asbd = Self.asbd(of: failingBuffer) {
                 for line in describeASBD(asbd) {
@@ -616,13 +734,21 @@ struct RecorderDiagnosticsCollector {
         } else {
             asbdDescription = "(no-fmt)"
         }
-        let srcPTS =
-            snap.sourcePTSSeconds.map { String(format: "%.4f", $0) } ?? "invalid"
-        let rtPTS =
-            snap.retimedPTSSeconds.map { String(format: "%.4f", $0) } ?? "invalid"
         let elapsed = String(format: "%.3fs", snap.elapsedSinceStart)
         return
-            "t+\(elapsed) \(snap.outcome.rawValue) samples=\(snap.sampleCount) bytes=\(snap.totalSize) dbl=\(snap.dataBufferLength ?? -1) valid=\(snap.isValid ? 1 : 0) dataReady=\(snap.dataReady ? 1 : 0) dur=\(String(format: "%.4f", snap.durationSeconds)) srcPTS=\(srcPTS) rtPTS=\(rtPTS) fmt=\(asbdDescription)"
+            "t+\(elapsed) \(snap.outcome.rawValue) samples=\(snap.sampleCount) bytes=\(snap.totalSize) dbl=\(snap.dataBufferLength ?? -1) valid=\(snap.isValid ? 1 : 0) dataReady=\(snap.dataReady ? 1 : 0) dur=\(describeRawCMTime(snap.duration)) srcPTS=\(describeRawCMTime(snap.sourcePTS)) rtPTS=\(describeRawCMTime(snap.retimedPTS)) fmt=\(asbdDescription)"
+    }
+
+    /// Renders a CMTime as seconds plus the exact value/timescale —
+    /// "4.2179(4217915417/1000000000+R)". The replay harness showed
+    /// the failure-relevant detail (1ns retiming gaps) is invisible
+    /// at any fixed decimal rendering, so the raw rational is the
+    /// part that matters. "+R" marks kCMTimeFlags_HasBeenRounded.
+    private func describeRawCMTime(_ time: CMTime) -> String {
+        guard CMTIME_IS_VALID(time) else { return "invalid" }
+        let rounded = time.flags.contains(.hasBeenRounded) ? "+R" : ""
+        return
+            "\(String(format: "%.4f", time.seconds))(\(time.value)/\(time.timescale)\(rounded))"
     }
 
     private func describe(_ event: AudioDeviceChangeEvent) -> String {
@@ -756,9 +882,9 @@ struct AudioBufferSnapshot {
     let dataBufferLength: Int?
     let isValid: Bool
     let dataReady: Bool
-    let durationSeconds: Double
-    let sourcePTSSeconds: Double?
-    let retimedPTSSeconds: Double?
+    let duration: CMTime
+    let sourcePTS: CMTime
+    let retimedPTS: CMTime
     let format: AudioStreamBasicDescription?
     let channelLayoutSize: Int?
     let outcome: AudioAppendOutcome

@@ -28,12 +28,21 @@ enum RecorderError: LocalizedError {
 
 final class ScreenRecorder: NSObject, @unchecked Sendable {
     typealias RuntimeIssueHandler = @Sendable (String) -> Void
+    /// Asks the owner to allocate the next segment file and call
+    /// `rollToNextSegment(to:)` back with it. The recorder keeps
+    /// writing to the current segment until that call arrives, so
+    /// the round trip costs no media.
+    typealias SegmentRolloverHandler = @Sendable (ScreenRecorder) -> Void
 
     struct Configuration {
         let displayID: CGDirectDisplayID
         let microphoneID: String?
         let outputURL: URL
-        let movieFragmentInterval: CMTime?
+        /// Media time after which the recorder finishes the current
+        /// segment file and continues on a fresh one without stopping
+        /// capture, so a crash loses at most one segment. nil records
+        /// the whole session into a single file.
+        let segmentDuration: CMTime?
         let expectedFrameRate: Int
     }
 
@@ -44,6 +53,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     private let configuration: Configuration
     private let onRuntimeIssue: RuntimeIssueHandler?
+    private let onSegmentRolloverNeeded: SegmentRolloverHandler?
     private let sampleQueue = DispatchQueue(label: "koom.recording.samples")
 
     private var stream: SCStream?
@@ -55,17 +65,31 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     private var backpressureMonitor = RecorderBackpressureMonitor()
     private var isFinishing = false
     private var isStopping = false
+    private var isPaused = false
+    private var isRollingOver = false
     private var hasLoggedWriterFailure = false
     private var hasReportedRuntimeIssue = false
     private var hasDumpedDiagnostics = false
     private var diagnostics = RecorderDiagnosticsCollector()
 
+    // Captured at start() so rollover can build identically-configured
+    // writers for follow-up segments.
+    private var videoDimensions: (width: Int, height: Int)?
+    private var microphoneWriterConfiguration: MicrophoneConfiguration?
+    private var currentSegmentURL: URL
+    /// Rolled-over writers finalize off the sample queue; stop() waits
+    /// on this group so every segment file is complete before assembly.
+    private let segmentFinishGroup = DispatchGroup()
+
     init(
         configuration: Configuration,
-        onRuntimeIssue: RuntimeIssueHandler? = nil
+        onRuntimeIssue: RuntimeIssueHandler? = nil,
+        onSegmentRolloverNeeded: SegmentRolloverHandler? = nil
     ) {
         self.configuration = configuration
         self.onRuntimeIssue = onRuntimeIssue
+        self.onSegmentRolloverNeeded = onSegmentRolloverNeeded
+        self.currentSegmentURL = configuration.outputURL
     }
 
     func start() async throws {
@@ -131,62 +155,24 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             )
         }
 
-        let writer = try AVAssetWriter(
-            outputURL: configuration.outputURL,
-            fileType: .mp4
-        )
-        if let movieFragmentInterval = configuration.movieFragmentInterval {
-            writer.movieFragmentInterval = movieFragmentInterval
-        }
-
-        let videoInput = AVAssetWriterInput(
-            mediaType: .video,
-            outputSettings: Self.videoSettings(
-                width: display.width,
-                height: display.height,
-                frameRate: configuration.expectedFrameRate
-            )
-        )
-        videoInput.expectsMediaDataInRealTime = true
-
-        guard writer.canAdd(videoInput) else {
-            throw RecorderError.writerFailed(
-                "koom could not add a video track to the recording."
-            )
-        }
-
-        writer.add(videoInput)
-
-        self.writer = writer
-        self.videoInput = videoInput
-
+        self.videoDimensions = (display.width, display.height)
+        self.microphoneWriterConfiguration = microphoneConfiguration
         if let microphoneConfiguration {
-            let audioInput = AVAssetWriterInput(
-                mediaType: .audio,
-                outputSettings: microphoneConfiguration.writerSettings,
-                sourceFormatHint: microphoneConfiguration.sourceFormatHint
-            )
-            audioInput.expectsMediaDataInRealTime = true
-
-            guard writer.canAdd(audioInput) else {
-                throw RecorderError.writerFailed(
-                    "koom could not add an audio track to the recording."
-                )
-            }
-
-            writer.add(audioInput)
-            self.audioInput = audioInput
             AppLog.info(
                 "Using microphone writer settings: \(Self.formatSettingsDescription(microphoneConfiguration.writerSettings))"
             )
         }
 
-        guard writer.startWriting() else {
-            throw RecorderError.writerFailed(
-                writer.error?.localizedDescription
-                    ?? "koom could not start writing the movie file."
-            )
-        }
+        let segmentWriter = try makeSegmentWriter(
+            outputURL: configuration.outputURL,
+            width: display.width,
+            height: display.height,
+            microphoneConfiguration: microphoneConfiguration
+        )
+        self.writer = segmentWriter.writer
+        self.videoInput = segmentWriter.videoInput
+        self.audioInput = segmentWriter.audioInput
+        self.currentSegmentURL = configuration.outputURL
 
         self.stream = stream
         diagnostics.start(
@@ -207,6 +193,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     func pause() {
         sampleQueue.async {
+            self.isPaused = true
             self.timeline.pause()
             AppLog.info("Recorder paused.")
         }
@@ -214,13 +201,17 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     func resume() {
         sampleQueue.async {
+            self.isPaused = false
             self.timeline.resume()
             AppLog.info("Recorder resumed.")
         }
     }
 
+    /// Stops capture and finalizes the current segment. Returns the
+    /// current segment's URL; with rollover there may be earlier,
+    /// already-finalized segments that the session manifest tracks.
     func stop(discardOutput: Bool) async throws -> URL {
-        guard let writer else {
+        guard writer != nil else {
             throw RecorderError.recorderNotRunning
         }
 
@@ -229,16 +220,43 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         try? await stream?.stopCapture()
         await drainSampleQueue()
 
-        await withCheckedContinuation { continuation in
+        // Snapshot the writer state on the sample queue: setting
+        // isFinishing there guarantees no rollover can swap the writer
+        // after this point.
+        let (finalWriter, finalSegmentURL, segmentHasMedia): (AVAssetWriter?, URL, Bool) = await withCheckedContinuation { continuation in
             sampleQueue.async {
                 self.isFinishing = true
                 self.videoInput?.markAsFinished()
                 self.audioInput?.markAsFinished()
-                continuation.resume()
+                continuation.resume(
+                    returning: (self.writer, self.currentSegmentURL, self.hasStartedSession)
+                )
             }
         }
 
-        await writer.finishWriting()
+        if let finalWriter {
+            if segmentHasMedia {
+                await finalWriter.finishWriting()
+            } else {
+                // A writer whose session never started (stop landed
+                // before the first sample, e.g. right after a rollover)
+                // cannot finishWriting; cancel it and drop the empty
+                // file so the session's other segments still finalize.
+                finalWriter.cancelWriting()
+                try? FileManager.default.removeItem(at: finalSegmentURL)
+                AppLog.info(
+                    "Discarded empty segment \(finalSegmentURL.lastPathComponent) at stop."
+                )
+            }
+        }
+
+        // Wait for any rolled-over segment still finalizing in the
+        // background before the caller inspects or assembles files.
+        await withCheckedContinuation { continuation in
+            segmentFinishGroup.notify(queue: sampleQueue) {
+                continuation.resume()
+            }
+        }
 
         defer {
             stream = nil
@@ -250,6 +268,10 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             backpressureMonitor = RecorderBackpressureMonitor()
             isFinishing = false
             isStopping = false
+            isPaused = false
+            isRollingOver = false
+            videoDimensions = nil
+            microphoneWriterConfiguration = nil
             hasLoggedWriterFailure = false
             hasReportedRuntimeIssue = false
             hasDumpedDiagnostics = false
@@ -258,18 +280,167 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         }
 
         if discardOutput {
-            try? FileManager.default.removeItem(at: configuration.outputURL)
-            AppLog.info("Discarded recording at \(configuration.outputURL.path)")
+            try? FileManager.default.removeItem(at: finalSegmentURL)
+            AppLog.info("Discarded recording segment at \(finalSegmentURL.path)")
+            return finalSegmentURL
         }
 
-        if writer.status == .completed || discardOutput {
-            AppLog.info("Recorder finished writing \(configuration.outputURL.path)")
-            return configuration.outputURL
+        if !segmentHasMedia || finalWriter?.status == .completed {
+            AppLog.info("Recorder finished writing \(finalSegmentURL.path)")
+            return finalSegmentURL
         }
 
-        let reason = Self.writerFailureDescription(writer)
+        let reason = Self.writerFailureDescription(finalWriter)
         AppLog.error("Recorder failed to finalize: \(reason)")
         throw RecorderError.writerFailed(reason)
+    }
+
+    // MARK: - Segment rollover
+
+    /// Called on the sample queue after each appended video frame.
+    /// Triggering on video (not audio) guarantees the segment being
+    /// closed contains video, which the assembler requires of every
+    /// segment it stitches.
+    private func requestSegmentRolloverIfNeeded(retimedVideoPTS: CMTime) {
+        guard let segmentDuration = configuration.segmentDuration,
+            !isRollingOver, !isFinishing, !isStopping,
+            CMTIME_IS_VALID(retimedVideoPTS),
+            CMTimeCompare(retimedVideoPTS, segmentDuration) >= 0
+        else {
+            return
+        }
+
+        isRollingOver = true
+        AppLog.info(
+            "Segment \(currentSegmentURL.lastPathComponent) reached \(String(format: "%.2f", retimedVideoPTS.seconds))s of media; requesting rollover."
+        )
+        onSegmentRolloverNeeded?(self)
+    }
+
+    /// Completes a rollover started by `onSegmentRolloverNeeded`: the
+    /// new writer starts before the old one finalizes, so capture and
+    /// appends continue gaplessly. The fresh timeline restarts each
+    /// segment at PTS zero, which is what the assembler's
+    /// back-to-back concatenation expects.
+    func rollToNextSegment(to outputURL: URL) {
+        sampleQueue.async {
+            guard self.isRollingOver, !self.isFinishing, !self.isStopping,
+                let oldWriter = self.writer,
+                let dimensions = self.videoDimensions
+            else {
+                return
+            }
+
+            let oldVideoInput = self.videoInput
+            let oldAudioInput = self.audioInput
+            let finishedSegmentURL = self.currentSegmentURL
+
+            do {
+                let next = try self.makeSegmentWriter(
+                    outputURL: outputURL,
+                    width: dimensions.width,
+                    height: dimensions.height,
+                    microphoneConfiguration: self.microphoneWriterConfiguration
+                )
+                self.writer = next.writer
+                self.videoInput = next.videoInput
+                self.audioInput = next.audioInput
+                self.currentSegmentURL = outputURL
+                self.hasStartedSession = false
+                var freshTimeline = RecorderTimelineController()
+                if self.isPaused {
+                    freshTimeline.pause()
+                }
+                self.timeline = freshTimeline
+                self.diagnostics.noteSegmentRollover()
+
+                oldVideoInput?.markAsFinished()
+                oldAudioInput?.markAsFinished()
+                self.segmentFinishGroup.enter()
+                // Safe to touch the writer from the @Sendable completion:
+                // it runs only after the writer has finished all work.
+                nonisolated(unsafe) let finishingWriter = oldWriter
+                oldWriter.finishWriting {
+                    if finishingWriter.status == .completed {
+                        AppLog.info(
+                            "Finished segment \(finishedSegmentURL.lastPathComponent)."
+                        )
+                    } else {
+                        AppLog.error(
+                            "Segment \(finishedSegmentURL.lastPathComponent) failed to finalize after rollover: \(Self.writerFailureDescription(finishingWriter))"
+                        )
+                    }
+                    self.segmentFinishGroup.leave()
+                }
+                AppLog.info(
+                    "Rolled over to segment \(outputURL.lastPathComponent)."
+                )
+            } catch {
+                // Losing rollover is better than losing the recording:
+                // keep appending to the current (now oversized) segment.
+                AppLog.error(
+                    "Segment rollover failed; continuing on \(finishedSegmentURL.lastPathComponent): \(error.localizedDescription)"
+                )
+            }
+            self.isRollingOver = false
+        }
+    }
+
+    private func makeSegmentWriter(
+        outputURL: URL,
+        width: Int,
+        height: Int,
+        microphoneConfiguration: MicrophoneConfiguration?
+    ) throws -> (
+        writer: AVAssetWriter,
+        videoInput: AVAssetWriterInput,
+        audioInput: AVAssetWriterInput?
+    ) {
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+
+        let videoInput = AVAssetWriterInput(
+            mediaType: .video,
+            outputSettings: Self.videoSettings(
+                width: width,
+                height: height,
+                frameRate: configuration.expectedFrameRate
+            )
+        )
+        videoInput.expectsMediaDataInRealTime = true
+
+        guard writer.canAdd(videoInput) else {
+            throw RecorderError.writerFailed(
+                "koom could not add a video track to the recording."
+            )
+        }
+        writer.add(videoInput)
+
+        var audioInput: AVAssetWriterInput?
+        if let microphoneConfiguration {
+            let input = AVAssetWriterInput(
+                mediaType: .audio,
+                outputSettings: microphoneConfiguration.writerSettings,
+                sourceFormatHint: microphoneConfiguration.sourceFormatHint
+            )
+            input.expectsMediaDataInRealTime = true
+
+            guard writer.canAdd(input) else {
+                throw RecorderError.writerFailed(
+                    "koom could not add an audio track to the recording."
+                )
+            }
+            writer.add(input)
+            audioInput = input
+        }
+
+        guard writer.startWriting() else {
+            throw RecorderError.writerFailed(
+                writer.error?.localizedDescription
+                    ?? "koom could not start writing the movie file."
+            )
+        }
+
+        return (writer, videoInput, audioInput)
     }
 
     private func append(sampleBuffer: CMSampleBuffer, mediaType: AVMediaType) {
@@ -314,6 +485,9 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
                 track: .video,
                 originalSourceBuffer: sampleBuffer,
                 originalSourcePTS: sourcePTS
+            )
+            requestSegmentRolloverIfNeeded(
+                retimedVideoPTS: CMSampleBufferGetPresentationTimeStamp(retimedBuffer)
             )
         case .audio:
             appendAudioSample(sampleBuffer)
@@ -640,7 +814,9 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         }
     }
 
-    private static func videoSettings(
+    // Internal (not private) so the recorder repro tests can drive a real
+    // AVAssetWriter with the exact settings production uses.
+    static func videoSettings(
         width: Int,
         height: Int,
         frameRate: Int
@@ -698,7 +874,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         return (sampleRate, min(channelCount, 2))
     }
 
-    private static func audioWriterSettings(
+    static func audioWriterSettings(
         sampleRate: Double,
         channelCount: Int
     ) -> [String: Any] {
@@ -836,12 +1012,39 @@ extension ScreenRecorder: SCStreamOutput {
     ) {
         switch outputType {
         case .screen:
+            // SCK emits idle/blank frames with no pixel data when the
+            // screen content hasn't changed. Appending one to the
+            // writer kills it with the undocumented -16122, so only
+            // complete frames are writable.
+            guard Self.isCompleteVideoFrame(sampleBuffer) else {
+                diagnostics.recordSkippedVideoFrame()
+                return
+            }
             append(sampleBuffer: sampleBuffer, mediaType: .video)
         case .microphone:
             append(sampleBuffer: sampleBuffer, mediaType: .audio)
         default:
             return
         }
+    }
+
+    private static func isCompleteVideoFrame(
+        _ sampleBuffer: CMSampleBuffer
+    ) -> Bool {
+        guard CMSampleBufferGetImageBuffer(sampleBuffer) != nil else {
+            return false
+        }
+        guard
+            let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                sampleBuffer,
+                createIfNecessary: false
+            ) as? [[SCStreamFrameInfo: Any]],
+            let statusRawValue = attachments.first?[.status] as? Int,
+            let status = SCFrameStatus(rawValue: statusRawValue)
+        else {
+            return false
+        }
+        return status == .complete
     }
 }
 
@@ -863,7 +1066,9 @@ extension ScreenRecorder: SCStreamDelegate {
     }
 }
 
-private extension CMSampleBuffer {
+// Internal (not private) so the recorder repro tests can retime synthetic
+// buffers through the exact code path production uses.
+extension CMSampleBuffer {
     func retimed(bySubtracting offset: CMTime) -> CMSampleBuffer? {
         var timingEntryCount = 0
         CMSampleBufferGetSampleTimingInfoArray(

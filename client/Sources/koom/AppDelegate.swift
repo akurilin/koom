@@ -30,12 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showRecorderRemote()
         selectInitialTab()
         model.warmBackgroundServices()
+        model.runRecordingSoakIfRequested()
     }
 
     /// Picks which tab the panel opens on: Settings when the active
     /// environment is missing credentials (a recording would have no
-    /// upload path), Recovery when interrupted sessions are waiting,
-    /// and Record otherwise.
+    /// upload path), and Record otherwise. Interrupted sessions are
+    /// still loaded for the Recovery tab, but they don't steal the
+    /// initial tab — recording is the app's job.
     private func selectInitialTab() {
         model.refreshRecoverableSessions()
 
@@ -45,11 +47,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "koom is not fully configured for \(activeEnvironment.displayName); opening the Settings tab."
             )
             model.selectedTab = .settings
-        } else if !model.recoverableSessions.isEmpty {
-            AppLog.info(
-                "Found \(model.recoverableSessions.count) interrupted session(s); opening the Recovery tab."
-            )
-            model.selectedTab = .recovery
         }
     }
 

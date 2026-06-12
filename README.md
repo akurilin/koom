@@ -22,7 +22,7 @@ Features koom is particularly proud of:
 - **Word-level transcripts.** Every recording gets a Loom-style clickable transcript alongside the video. Words highlight and auto-scroll as the video plays; clicking any word seeks the player. Transcription happens on-device via WhisperKit — the audio never leaves the machine.
 - **Private auto-titles.** The same WhisperKit pass feeds the transcript to a local Ollama model, which generates a short, descriptive title. No cloud API, no subscription.
 - **Local thumbnails.** Each recording gets a JPEG still generated on-device and uploaded alongside the video, so list views are lightweight instead of seeking into the MP4.
-- **Crash recovery.** Force-quit, crash, or lose power mid-recording and the next app launch offers to resume, finish, or discard the in-progress session. Bytes flushed before the crash stay playable without a clean stop.
+- **Crash recovery.** Force-quit, crash, or lose power mid-recording and the next app launch offers to resume, finish, or discard the in-progress session. Recordings are written as a chain of complete ~30-second segment files while capture runs, so a crash loses at most the segment being written.
 - **Inline admin rename.** Admins can click the title on the watch page to rename a recording inline — no separate admin form.
 - **Light/dark/system theme.** The watch page and admin UI respect `prefers-color-scheme` and offer a manual toggle that persists to `localStorage` with no flash of the wrong theme on first paint.
 - **Zero-egress storage.** Cloudflare R2 has no bandwidth fees, so cost stays flat no matter how much the links get shared.
@@ -51,7 +51,7 @@ Deployment targets:
 
 ### How a recording flows end to end
 
-1. The macOS client records to `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4` and keeps the local copy permanently.
+1. The macOS client records to `~/Movies/koom/prod/koom_YYYY-MM-DD_HH-mm-ss.mp4` and keeps the local copy permanently.
 2. On completion, the client asks `POST /api/admin/uploads/init` for a presigned R2 `PUT` URL and writes a `pending` row to Postgres.
 3. The client `PUT`s the file straight to R2 — bytes never flow through Vercel.
 4. In parallel, on-device post-upload processing kicks off: WhisperKit produces a word-level transcript, a local Ollama model turns that transcript into a short title, and `AVAssetImageGenerator` grabs a JPEG thumbnail. Nothing leaves the machine except the derived artifacts you choose to upload back into your own stack.
@@ -165,7 +165,7 @@ A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, `swift format`, S
 Longer-form write-ups of individual subsystems live in [`docs/`](docs/):
 
 - [`docs/recording-output.md`](docs/recording-output.md) — codec, bitrate heuristic, and approximate file sizes produced by the macOS client.
-- [`docs/crash-recovery.md`](docs/crash-recovery.md) — how the fragmented-MP4 session manager keeps a recording alive across force-quits and crashes.
+- [`docs/crash-recovery.md`](docs/crash-recovery.md) — how segment rollover and the session manifest keep a recording alive across force-quits and crashes.
 - [`docs/post-upload-processing.md`](docs/post-upload-processing.md) — the on-device pipeline for auto-titles, word-level transcripts, and thumbnails.
 - [`docs/monorepo-backend-plan.md`](docs/monorepo-backend-plan.md) — the original architectural decision record for the monorepo split.
 - [`CLAUDE.md`](CLAUDE.md) — working rules, migration workflow, and the Supabase lockdown model used by every public table in the database.

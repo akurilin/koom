@@ -197,7 +197,7 @@ enum RecordingOptimizer {
         return sizeBytes
     }
 
-    private static func findFFmpegExecutable() -> URL? {
+    static func findFFmpegExecutable() -> URL? {
         let configuredPATH = ProcessInfo.processInfo.environment["PATH"] ?? ""
         let candidateDirectories =
             [
@@ -227,7 +227,7 @@ enum RecordingOptimizer {
         "\(Int((ratio * 100).rounded()))%"
     }
 
-    private static func formatCommand(
+    static func formatCommand(
         executableURL: URL,
         arguments: [String]
     ) -> String {

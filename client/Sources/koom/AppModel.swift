@@ -895,7 +895,7 @@ final class AppModel: ObservableObject {
                 try? sessionStore.cleanupSessionDirectory(for: currentSession)
                 self.currentSession = nil
                 currentSessionWasRecovered = false
-                await optimizeFinalRecordingIfEnabled(at: finalURL)
+                await postProcessFinalRecording(at: finalURL)
                 lastRecordingURL = finalURL
                 let shouldUploadAfterStop =
                     uploadAfterStop && uploadRecordingsEnabled
@@ -948,7 +948,7 @@ final class AppModel: ObservableObject {
                     from: &currentSession
                 )
             {
-                await optimizeFinalRecordingIfEnabled(at: salvagedURL)
+                await postProcessFinalRecording(at: salvagedURL)
                 self.recorder = nil
                 self.currentSession = nil
                 currentSessionWasRecovered = false
@@ -1049,7 +1049,18 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func optimizeFinalRecordingIfEnabled(at finalURL: URL) async {
+    private func postProcessFinalRecording(at finalURL: URL) async {
+        // Normalize loudness before any size optimization so the audio is
+        // only ever re-encoded once, by the normalizer; the optimizer's
+        // video re-encode copies the audio stream through.
+        statusMessage = "Normalizing audio in \(finalURL.lastPathComponent)..."
+        let normalized = await LoudnessNormalizer.normalizeRecording(
+            at: finalURL
+        )
+        AppLog.info(
+            "Loudness normalization finished: result=\(normalized ? "replaced local file" : "kept original local file"); file=\(finalURL.path)"
+        )
+
         let optimizeRecordings =
             settingsStore.loadCompressionSettings().optimizeRecordings
         AppLog.info(
@@ -1089,7 +1100,7 @@ final class AppModel: ObservableObject {
                 store: sessionStore
             )
             try? sessionStore.cleanupSessionDirectory(for: recoverableSession)
-            await optimizeFinalRecordingIfEnabled(at: finalURL)
+            await postProcessFinalRecording(at: finalURL)
             lastRecordingURL = finalURL
             statusMessage = "Recovered \(finalURL.lastPathComponent)"
 

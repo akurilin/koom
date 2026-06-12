@@ -4,10 +4,12 @@ import Foundation
 final class RecordingSessionStore: @unchecked Sendable {
     nonisolated static let sessionManifestFilename = "session.json"
 
-    struct SessionHandle {
+    struct SessionHandle: Identifiable {
         var session: RecordingSession
         let directoryURL: URL
         let environment: KoomEnvironment
+
+        var id: String { session.sessionID }
 
         var manifestURL: URL {
             directoryURL.appendingPathComponent(

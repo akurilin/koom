@@ -44,16 +44,8 @@ struct ControlPanelView: View {
         model.recordingState == .idle && !model.isBusy
     }
 
-    private var canTriggerPrimaryAction: Bool {
-        if model.recordingState == .idle {
-            return !model.isBusy && !model.displays.isEmpty
-        }
-
-        return !model.isBusy
-    }
-
-    private var primaryButtonTitle: String {
-        model.recordingState == .idle ? "Start recording" : "Stop recording"
+    private var canStartRecording: Bool {
+        model.recordingState == .idle && !model.isBusy && !model.displays.isEmpty
     }
 
     private var footerStatus: (title: String, color: Color) {
@@ -139,142 +131,157 @@ struct ControlPanelView: View {
 
     var body: some View {
         ZStack {
-            // The window has .titled + .fullSizeContentView with a
-            // transparent title bar, so the title bar region sits on
-            // top of the content view. SwiftUI's default safe-area
-            // insets keep this gradient below the title bar, leaving
-            // a white stripe at the top where the traffic lights sit.
-            // ignoresSafeArea pushes the gradient edge-to-edge so the
-            // cream background extends behind the title bar too.
             LinearGradient(
                 colors: [panelBackgroundTop, panelBackgroundBottom],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-            .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 16) {
                 header
 
-                VStack(spacing: 12) {
-                    SourceMenuRow(
-                        icon: "display",
-                        label: "Display",
-                        selectionTitle: selectedDisplayTitle,
-                        options: displayOptions,
-                        fill: rowFill,
-                        stroke: rowStroke,
-                        isEnabled: canEditSources
-                    ) { selection in
-                        model.selectedDisplayID = selection
-                        model.displaySelectionDidChange()
-                    }
-
-                    SourceMenuRow(
-                        icon: "video.fill",
-                        label: "Camera",
-                        selectionTitle: selectedCameraTitle,
-                        options: cameraOptions,
-                        fill: rowFill,
-                        stroke: rowStroke,
-                        isEnabled: canEditSources
-                    ) { selection in
-                        model.selectedCameraID = selection
-                        model.cameraSelectionDidChange()
-                    }
-
-                    SourceMenuRow(
-                        icon: "mic.fill",
-                        label: "Microphone",
-                        selectionTitle: selectedMicrophoneTitle,
-                        options: microphoneOptions,
-                        fill: rowFill,
-                        stroke: rowStroke,
-                        isEnabled: canEditSources
-                    ) { selection in
-                        model.selectedMicrophoneID = selection
-                        model.microphoneSelectionDidChange()
-                    }
-                }
-
-                primaryRecordButton
-
-                if model.recordingState != .idle {
-                    secondaryControls
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-
-                Spacer(minLength: 0)
-
-                VStack(spacing: 12) {
-                    statusFooter
-
-                    if showsDetailCard {
-                        detailCard
-                            .transition(
-                                .move(edge: .bottom).combined(with: .opacity)
-                            )
-                    }
+                switch model.selectedTab {
+                case .record:
+                    recordTab
+                case .settings:
+                    SettingsView()
+                case .recovery:
+                    RecoveryView()
                 }
             }
             .padding(.horizontal, 22)
-            .padding(.top, 28)
-            .padding(.bottom, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 24)
         }
-        .frame(width: 430, height: 520)
+        .frame(
+            width: AppModel.panelSize.width,
+            height: AppModel.panelSize.height
+        )
+        // The window is borderless and transparent; this is the
+        // panel's actual chrome.
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .background(
             WindowAccessor { window in
                 model.configureControlWindow(window)
             }
         )
-        .animation(.snappy(duration: 0.24), value: model.recordingState)
         .animation(.snappy(duration: 0.24), value: model.uploadState)
         .animation(.snappy(duration: 0.24), value: model.catchUpState)
     }
 
-    private var header: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("koom")
-                    .font(.system(size: 36, weight: .bold, design: .rounded))
-                    .tracking(-1.2)
-                Text("Local screen recorder")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.primary.opacity(0.66))
+    // MARK: - Record tab
+
+    private var recordTab: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(spacing: 12) {
+                SourceMenuRow(
+                    icon: "display",
+                    label: "Display",
+                    selectionTitle: selectedDisplayTitle,
+                    options: displayOptions,
+                    fill: rowFill,
+                    stroke: rowStroke,
+                    isEnabled: canEditSources
+                ) { selection in
+                    model.selectedDisplayID = selection
+                    model.displaySelectionDidChange()
+                }
+
+                SourceMenuRow(
+                    icon: "video.fill",
+                    label: "Camera",
+                    selectionTitle: selectedCameraTitle,
+                    options: cameraOptions,
+                    fill: rowFill,
+                    stroke: rowStroke,
+                    isEnabled: canEditSources
+                ) { selection in
+                    model.selectedCameraID = selection
+                    model.cameraSelectionDidChange()
+                }
+
+                SourceMenuRow(
+                    icon: "mic.fill",
+                    label: "Microphone",
+                    selectionTitle: selectedMicrophoneTitle,
+                    options: microphoneOptions,
+                    fill: rowFill,
+                    stroke: rowStroke,
+                    isEnabled: canEditSources
+                ) { selection in
+                    model.selectedMicrophoneID = selection
+                    model.microphoneSelectionDidChange()
+                }
             }
 
-            Spacer(minLength: 12)
+            primaryRecordButton
 
-            HStack(spacing: 10) {
-                Button {
-                    model.toggleDrawingMode()
-                } label: {
-                    ToolbarIcon(
-                        symbol: "pencil.tip",
-                        isActive: model.isDrawingModeActive
+            Spacer(minLength: 0)
+
+            VStack(spacing: 12) {
+                statusFooter
+
+                if showsDetailCard {
+                    // Render the card at its natural height while it
+                    // fits below the record button; once it outgrows
+                    // that space, swap in a scroll view so the log is
+                    // reachable instead of running off the window.
+                    ViewThatFits(in: .vertical) {
+                        detailCard
+
+                        ScrollView {
+                            detailCard
+                        }
+                    }
+                    .transition(
+                        .move(edge: .bottom).combined(with: .opacity)
                     )
                 }
-                .buttonStyle(.plain)
-                .help(model.isDrawingModeActive ? "Exit drawing mode" : "Draw on screen")
-                .accessibilityLabel("Toggle drawing mode")
-
-                Button {
-                    model.refreshHardware()
-                } label: {
-                    ToolbarIcon(symbol: "arrow.clockwise")
-                }
-                .buttonStyle(.plain)
-                .disabled(model.isBusy)
-                .help("Refresh displays and devices")
-                .accessibilityLabel("Refresh hardware")
-
-                SettingsLink {
-                    ToolbarIcon(symbol: "gearshape")
-                }
-                .buttonStyle(.plain)
-                .help("Open Settings")
-                .accessibilityLabel("Open Settings")
             }
+        }
+    }
+
+    // Loom-style header: app icon, centered tab picker, and a custom
+    // close button (the borderless window has no traffic lights).
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 34, height: 34)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            Spacer(minLength: 8)
+
+            Picker("", selection: $model.selectedTab) {
+                ForEach(AppModel.MainPanelTab.allCases) { tab in
+                    Text(tab.title).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+
+            Spacer(minLength: 8)
+
+            Button {
+                NSApp.terminate(nil)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.primary.opacity(0.65))
+                    .frame(width: 34, height: 34)
+                    .background(
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .fill(Color.white.opacity(0.62))
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.06))
+                    }
+            }
+            .buttonStyle(.plain)
+            .help("Quit koom")
+            .accessibilityLabel("Quit koom")
         }
     }
 
@@ -283,18 +290,14 @@ struct ControlPanelView: View {
             if model.isDrawingModeActive {
                 model.toggleDrawingMode()
             }
-            if model.recordingState == .idle {
-                model.startRecording()
-            } else {
-                model.stopRecording()
-            }
+            model.startRecording()
         } label: {
             HStack(spacing: 12) {
                 Circle()
                     .fill(.white)
                     .frame(width: 12, height: 12)
 
-                Text(primaryButtonTitle)
+                Text("Start recording")
                     .font(.system(size: 20, weight: .semibold))
             }
             .frame(maxWidth: .infinity)
@@ -320,23 +323,8 @@ struct ControlPanelView: View {
         }
         .buttonStyle(.plain)
         .keyboardShortcut(.defaultAction)
-        .disabled(!canTriggerPrimaryAction)
-        .opacity(canTriggerPrimaryAction ? 1 : 0.56)
-    }
-
-    private var secondaryControls: some View {
-        HStack(spacing: 10) {
-            Button(model.recordingState == .paused ? "Resume" : "Pause") {
-                model.togglePause()
-            }
-            .disabled(model.isBusy)
-
-            Button("Restart") {
-                model.restartRecording()
-            }
-            .disabled(model.isBusy)
-        }
-        .buttonStyle(ControlPanelCapsuleButtonStyle())
+        .disabled(!canStartRecording)
+        .opacity(canStartRecording ? 1 : 0.56)
     }
 
     private var statusFooter: some View {
@@ -482,46 +470,6 @@ private struct SourceMenuRow<Value: Hashable>: View {
     }
 }
 
-private struct ToolbarIcon: View {
-    let symbol: String
-    var isActive: Bool = false
-
-    var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: 20, weight: .medium))
-            .foregroundStyle(isActive ? Color.white : Color.primary.opacity(0.72))
-            .frame(width: 48, height: 48)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isActive ? Color.accentColor : Color.white.opacity(0.62))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.black.opacity(0.06))
-            }
-            .shadow(color: .black.opacity(0.04), radius: 10, x: 0, y: 6)
-    }
-}
-
-private struct ControlPanelCapsuleButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Color.primary.opacity(0.76))
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color.white.opacity(configuration.isPressed ? 0.52 : 0.62))
-            )
-            .overlay {
-                Capsule(style: .continuous)
-                    .strokeBorder(Color.black.opacity(0.06))
-            }
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-    }
-}
-
 /// Renders the current upload state. Shows nothing at all when
 /// `state == .idle` so the control panel layout stays compact.
 private struct UploadStatusView: View {
@@ -658,7 +606,8 @@ private struct UploadStatusView: View {
 
 /// Renders the batch catch-up state. Shows nothing when
 /// `state == .idle` so the panel only grows when a sync runs.
-private struct CatchUpStatusView: View {
+/// Shared with the Recovery tab, which hosts the manual sync button.
+struct CatchUpStatusView: View {
     let state: CatchUpState
 
     var body: some View {

@@ -21,6 +21,22 @@ final class AppModel: ObservableObject {
         case paused
     }
 
+    enum MainPanelTab: String, CaseIterable, Identifiable {
+        case record
+        case settings
+        case recovery
+
+        var id: Self { self }
+
+        var title: String {
+            switch self {
+            case .record: "Record"
+            case .settings: "Settings"
+            case .recovery: "Recovery"
+            }
+        }
+    }
+
     @Published var displays: [DisplayOption] = []
     @Published var cameras: [DeviceOption] = []
     @Published var microphones: [DeviceOption] = []
@@ -45,6 +61,18 @@ final class AppModel: ObservableObject {
             if let controlWindow {
                 applyControlWindowCapturePolicy(controlWindow)
             }
+            updateElapsedTimer(oldState: oldValue)
+
+            // The main panel is only relevant between recordings: hide
+            // it while a recording is live and bring it back on stop.
+            // The recording remote (its own window) carries the
+            // in-recording controls.
+            if oldValue == .idle, recordingState != .idle {
+                controlWindow?.orderOut(nil)
+            } else if recordingState == .idle, oldValue != .idle {
+                controlWindow?.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
     }
     @Published var isBusy = false
@@ -58,16 +86,12 @@ final class AppModel: ObservableObject {
     @Published var catchUpState: CatchUpState = .idle
     @Published var isCatchingUp: Bool = false
     @Published var isDrawingModeActive = false
+    @Published var selectedTab: MainPanelTab = .record
+    @Published var recoverableSessions: [RecordingSessionStore.SessionHandle] = []
+    @Published private(set) var recordingElapsedSeconds = 0
 
     var isRecordingInProgress: Bool {
         recorder != nil
-    }
-
-    private enum RecoveryDecision {
-        case resume
-        case finishPartial
-        case notNow
-        case discard
     }
 
     private let cameraPreviewManager = CameraPreviewManager()
@@ -86,6 +110,7 @@ final class AppModel: ObservableObject {
     private var currentSession: RecordingSessionStore.SessionHandle?
     private var currentSessionWasRecovered = false
     private var isHandlingRecorderRuntimeIssue = false
+    private var elapsedTimerTask: Task<Void, Never>?
 
     init(settingsStore: AppSettingsStore = AppSettingsStore()) {
         self.settingsStore = settingsStore
@@ -119,6 +144,41 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             Task { @MainActor in
                 self.toggleDrawingMode()
+            }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .koomShowSettingsTab,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                self.showSettingsTab()
+            }
+        }
+
+        // Keep the source pickers current without a manual refresh
+        // button: AVFoundation announces camera/microphone hot-plugs
+        // and AppKit announces display changes. refreshHardware()
+        // preserves the current selection whenever the device still
+        // exists, so the pickers update in place instead of resetting.
+        let hardwareChangeNotifications: [Notification.Name] = [
+            AVCaptureDevice.wasConnectedNotification,
+            AVCaptureDevice.wasDisconnectedNotification,
+            NSApplication.didChangeScreenParametersNotification,
+        ]
+        for notificationName in hardwareChangeNotifications {
+            NotificationCenter.default.addObserver(
+                forName: notificationName,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                Task { @MainActor in
+                    AppLog.info("Hardware change notification: \(notificationName.rawValue)")
+                    self.refreshHardware()
+                }
             }
         }
 
@@ -176,41 +236,40 @@ final class AppModel: ObservableObject {
 
     // MARK: - Recovery
 
-    func recoverInterruptedSessionsIfNeeded(attachedTo window: NSWindow) async {
-        guard recorder == nil, !isBusy else { return }
+    func refreshRecoverableSessions() {
+        // The live session's manifest is still in a non-terminal state
+        // on disk, so exclude it — only truly orphaned sessions belong
+        // in the Recovery tab.
+        let activeSessionID = currentSession?.session.sessionID
+        recoverableSessions = sessionStore.loadRecoverableSessions()
+            .filter { $0.session.sessionID != activeSessionID }
+    }
 
-        let recoverableSessions = sessionStore.loadRecoverableSessions()
-        guard !recoverableSessions.isEmpty else { return }
+    func resumeRecoverableSession(_ recoverableSession: RecordingSessionStore.SessionHandle) {
+        guard recordingState == .idle, !isBusy else { return }
+        guard applySelections(from: recoverableSession) else { return }
 
-        for recoverableSession in recoverableSessions {
-            let decision = await presentRecoveryPrompt(
-                for: recoverableSession,
-                attachedTo: window
-            )
-
-            switch decision {
-            case .resume:
-                guard applySelections(from: recoverableSession) else {
-                    return
-                }
-                await startRecordingTask(
-                    resuming: recoverableSession,
-                    recovered: true
-                )
-                return
-
-            case .finishPartial:
-                await finalizeRecoveredSession(recoverableSession)
-
-            case .discard:
-                try? sessionStore.discardSession(recoverableSession)
-                statusMessage = "Discarded interrupted recording \(recoverableSession.session.finalFilename)."
-
-            case .notNow:
-                statusMessage = "Interrupted recording kept for later recovery."
-                return
-            }
+        AppLog.info("Resuming interrupted recording \(recoverableSession.session.finalFilename).")
+        Task {
+            await startRecordingTask(resuming: recoverableSession, recovered: true)
+            refreshRecoverableSessions()
         }
+    }
+
+    func finishRecoverableSession(_ recoverableSession: RecordingSessionStore.SessionHandle) {
+        guard recordingState == .idle, !isBusy else { return }
+
+        AppLog.info("Finishing interrupted recording \(recoverableSession.session.finalFilename).")
+        Task {
+            await finalizeRecoveredSession(recoverableSession)
+            refreshRecoverableSessions()
+        }
+    }
+
+    func discardRecoverableSession(_ recoverableSession: RecordingSessionStore.SessionHandle) {
+        try? sessionStore.discardSession(recoverableSession)
+        statusMessage = "Discarded interrupted recording \(recoverableSession.session.finalFilename)."
+        refreshRecoverableSessions()
     }
 
     func refreshHardware() {
@@ -225,11 +284,12 @@ final class AppModel: ObservableObject {
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isMovableByWindowBackground = true
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
+        // The borderless window is fully transparent; the SwiftUI
+        // content draws its own rounded panel chrome.
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
         applyControlWindowCapturePolicy(window)
-        window.standardWindowButton(.zoomButton)?.isHidden = true
-        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
 
         if !hasPlacedWindow, let screen = NSScreen.main ?? NSScreen.screens.first {
             let origin = NSPoint(
@@ -274,6 +334,44 @@ final class AppModel: ObservableObject {
         }
     }
 
+    static let panelSize = CGSize(width: 430, height: 580)
+
+    func showSettingsTab() {
+        // The main panel is hidden (and irrelevant) while recording.
+        guard recordingState == .idle else { return }
+        selectedTab = .settings
+        controlWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Pause-aware elapsed clock for the recording remote. A simple
+    /// once-a-second increment is plenty — the value is a UI readout,
+    /// not recording metadata.
+    private func updateElapsedTimer(oldState: RecordingState) {
+        elapsedTimerTask?.cancel()
+        elapsedTimerTask = nil
+
+        switch recordingState {
+        case .recording:
+            if oldState == .idle {
+                recordingElapsedSeconds = 0
+            }
+            elapsedTimerTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    guard !Task.isCancelled else { return }
+                    self?.recordingElapsedSeconds += 1
+                }
+            }
+
+        case .paused:
+            break
+
+        case .idle:
+            recordingElapsedSeconds = 0
+        }
+    }
+
     func startRecording() {
         guard recordingState == .idle, !isBusy else { return }
         AppLog.info("Start recording requested.")
@@ -309,6 +407,22 @@ final class AppModel: ObservableObject {
                 discardOutput: true,
                 restartAfterStop: true,
                 uploadAfterStop: true,
+                awaitUploadAfterStop: false
+            )
+        }
+    }
+
+    /// Trash button on the recording remote: stop and throw away the
+    /// current recording without uploading or re-recording.
+    func discardRecording() {
+        guard recordingState != .idle, !isBusy else { return }
+
+        AppLog.info("Discard recording requested.")
+        Task {
+            _ = await stopRecordingTask(
+                discardOutput: true,
+                restartAfterStop: false,
+                uploadAfterStop: false,
                 awaitUploadAfterStop: false
             )
         }
@@ -563,7 +677,10 @@ final class AppModel: ObservableObject {
         guard var currentSession else { return false }
 
         isBusy = true
-        statusMessage = discardOutput ? "Restarting..." : "Stopping recording..."
+        statusMessage =
+            restartAfterStop
+            ? "Restarting..."
+            : (discardOutput ? "Discarding..." : "Stopping recording...")
         defer { isBusy = false }
 
         do {
@@ -769,40 +886,6 @@ final class AppModel: ObservableObject {
             }
         } catch {
             statusMessage = error.localizedDescription
-        }
-    }
-
-    private func presentRecoveryPrompt(
-        for recoverableSession: RecordingSessionStore.SessionHandle,
-        attachedTo window: NSWindow
-    ) async -> RecoveryDecision {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Interrupted recording found"
-        alert.informativeText =
-            """
-            koom found an unfinished \(recoverableSession.environment.displayName) recording (\(recoverableSession.session.finalFilename)).
-
-            You can resume it, finish the partial recording now, keep it for later, or discard it.
-            """
-        alert.addButton(withTitle: "Resume Recording")
-        alert.addButton(withTitle: "Finish Partial")
-        alert.addButton(withTitle: "Not Now")
-        alert.addButton(withTitle: "Discard")
-
-        return await withCheckedContinuation { continuation in
-            alert.beginSheetModal(for: window) { response in
-                switch response {
-                case .alertFirstButtonReturn:
-                    continuation.resume(returning: .resume)
-                case .alertSecondButtonReturn:
-                    continuation.resume(returning: .finishPartial)
-                case .alertThirdButtonReturn:
-                    continuation.resume(returning: .notNow)
-                default:
-                    continuation.resume(returning: .discard)
-                }
-            }
         }
     }
 

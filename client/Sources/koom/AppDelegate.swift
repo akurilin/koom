@@ -1,8 +1,15 @@
 import AppKit
 import SwiftUI
 
+/// Borderless windows refuse key status by default, which would make
+/// the Settings tab's text fields untypeable.
+private final class BorderlessPanelWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum TerminationDecision {
         case stopAndSave
         case discard
@@ -11,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private let model = AppModel()
     private var controlPanelWindow: NSWindow?
+    private var recorderRemoteController: RecorderRemoteWindowController?
     private var isResolvingTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -18,38 +26,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         AppLog.info("Persistent logs: \(AppLog.currentLogURL.path)")
         NSApp.setActivationPolicy(.regular)
         showControlPanel()
-        maybePromptForSettings()
+        showRecorderRemote()
+        selectInitialTab()
         model.warmBackgroundServices()
-        maybeRecoverInterruptedRecording()
     }
 
-    /// If either the backend URL or the admin secret is missing on
-    /// launch, automatically open the Settings window so the user
-    /// isn't stuck staring at a broken upload path the first time
-    /// they try to record. Runs after a small delay so the control
-    /// panel is already on screen when the settings window slides
-    /// in — otherwise the settings window opens first and the
-    /// control panel ends up behind it.
-    private func maybePromptForSettings() {
-        let activeEnvironment = KoomConfig.activeEnvironment
-        guard KoomConfig.isFullyConfigured(for: activeEnvironment) else {
-            AppLog.info(
-                "koom is not fully configured for \(activeEnvironment.displayName); opening Settings window."
-            )
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(250))
-                NSApp.sendAction(
-                    Selector(("showSettingsWindow:")),
-                    to: nil,
-                    from: nil
-                )
-            }
-            return
-        }
+    /// Picks which tab the panel opens on: Settings when the active
+    /// environment is missing credentials (a recording would have no
+    /// upload path), Recovery when interrupted sessions are waiting,
+    /// and Record otherwise.
+    private func selectInitialTab() {
+        model.refreshRecoverableSessions()
 
-        AppLog.info(
-            "koom configuration present for \(activeEnvironment.displayName); skipping first-run prompt."
-        )
+        let activeEnvironment = KoomConfig.activeEnvironment
+        if !KoomConfig.isFullyConfigured(for: activeEnvironment) {
+            AppLog.info(
+                "koom is not fully configured for \(activeEnvironment.displayName); opening the Settings tab."
+            )
+            model.selectedTab = .settings
+        } else if !model.recoverableSessions.isEmpty {
+            AppLog.info(
+                "Found \(model.recoverableSessions.count) interrupted session(s); opening the Recovery tab."
+            )
+            model.selectedTab = .recovery
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -94,10 +94,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return true
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
-    }
-
     private func showControlPanel() {
         let window = controlPanelWindow ?? makeControlPanelWindow()
         controlPanelWindow = window
@@ -124,43 +120,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let contentView = ControlPanelView()
             .environmentObject(model)
 
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 430, height: 520),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+        // Borderless, Loom-style: the panel draws its own rounded
+        // chrome and close button, so there is no titlebar and no
+        // traffic lights. The in-panel X quits the app (going through
+        // the usual recording-in-progress termination guard).
+        let window = BorderlessPanelWindow(
+            contentRect: NSRect(origin: .zero, size: AppModel.panelSize),
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
 
         window.contentViewController = NSHostingController(rootView: contentView)
         window.isReleasedWhenClosed = false
-        window.delegate = self
         return window
     }
 
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard model.isRecordingInProgress else {
-            return true
-        }
-
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Recording in progress"
-        alert.informativeText =
-            "Stop or discard the current recording before closing the control panel."
-        alert.addButton(withTitle: "OK")
-        alert.beginSheetModal(for: sender)
-        return false
-    }
-
-    private func maybeRecoverInterruptedRecording() {
-        guard let controlPanelWindow else { return }
-
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(400))
-            await model.recoverInterruptedSessionsIfNeeded(
-                attachedTo: controlPanelWindow
-            )
-        }
+    private func showRecorderRemote() {
+        let controller = recorderRemoteController ?? RecorderRemoteWindowController(model: model)
+        recorderRemoteController = controller
+        controller.show()
     }
 
     private func resolveTermination(discardOutput: Bool) -> NSApplication.TerminateReply {

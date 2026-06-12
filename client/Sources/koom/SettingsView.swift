@@ -1,13 +1,12 @@
 import AppKit
 import SwiftUI
 
-/// Settings window for backend credentials, active environment, and
-/// recording compression preferences.
+/// Settings tab of the main panel: backend credentials, active
+/// environment, and recording compression preferences.
 ///
-/// Opened automatically on first run (from AppDelegate) when either
-/// value is missing, and otherwise reachable via `Cmd+,` or the
-/// "koom → Settings…" menu item. Both are wired for free by
-/// SwiftUI's `Settings` scene — this view is what that scene hosts.
+/// Selected automatically on first run (from AppDelegate) when either
+/// value is missing, and otherwise reachable via the panel's tab
+/// picker or `Cmd+,` (rewired in KoomApp to switch to this tab).
 ///
 /// Persistence:
 ///
@@ -49,96 +48,139 @@ struct SettingsView: View {
     @State private var optimizeUploads: Bool =
         CompressionSettings.default.optimizeUploads
     @State private var errorMessage: String?
-    @State private var settingsWindow: NSWindow?
+    @State private var confirmationMessage: String?
 
     var body: some View {
-        Form {
-            Section {
-                Picker("Active environment", selection: $activeEnvironment) {
-                    ForEach(KoomEnvironment.allCases) { environment in
-                        Text(environment.displayName).tag(environment)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                settingsCard(header: "Active environment") {
+                    Picker("Active environment", selection: $activeEnvironment) {
+                        ForEach(KoomEnvironment.allCases) { environment in
+                            Text(environment.displayName).tag(environment)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+
+                    footnote(
+                        "New recordings and catch-up uploads use the active environment. Recordings live under \(recordingsDirectoryPath(for: activeEnvironment))."
+                    )
                 }
-                .pickerStyle(.segmented)
-            } footer: {
-                Text(
-                    "New recordings and catch-up uploads use the active environment. Recordings live under \(recordingsDirectoryPath(for: activeEnvironment))."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
 
-            Section {
-                TextField(
-                    "Backend URL",
-                    text: backendURLBinding,
-                    prompt: Text(activeEnvironment.backendURLPrompt)
-                )
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled(true)
+                settingsCard(header: "\(activeEnvironment.displayName) backend") {
+                    fieldLabel("Backend URL")
+                    TextField(
+                        "Backend URL",
+                        text: backendURLBinding,
+                        prompt: Text(activeEnvironment.backendURLPrompt)
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled(true)
+                    .labelsHidden()
 
-                SecureField(
-                    "Admin secret",
-                    text: adminSecretBinding,
-                    prompt: Text("KOOM_ADMIN_SECRET")
-                )
-                .textFieldStyle(.roundedBorder)
-            } header: {
-                Text("\(activeEnvironment.displayName) Backend")
-                    .font(.headline)
-            } footer: {
-                Text(backendSectionFooter)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+                    fieldLabel("Admin secret")
+                    SecureField(
+                        "Admin secret",
+                        text: adminSecretBinding,
+                        prompt: Text("KOOM_ADMIN_SECRET")
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
 
-            Section {
-                Picker("Capture cadence", selection: $captureFrameRate) {
-                    ForEach(CaptureFrameRateOption.allCases) { option in
-                        Text(option.label).tag(option)
+                    footnote(backendSectionFooter)
+                }
+
+                settingsCard(header: "Compression") {
+                    HStack {
+                        Text("Capture cadence")
+                            .font(.system(size: 13))
+
+                        Spacer()
+
+                        Picker("Capture cadence", selection: $captureFrameRate) {
+                            ForEach(CaptureFrameRateOption.allCases) { option in
+                                Text(option.label).tag(option)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
                     }
+
+                    Toggle(
+                        "Optimize uploads with ffmpeg when available",
+                        isOn: $optimizeUploads
+                    )
+                    .font(.system(size: 13))
+
+                    footnote(
+                        "15 fps usually shrinks static screen recordings with little quality cost. Upload optimization keeps the local recording untouched and only uploads a smaller MP4 when ffmpeg is installed and the re-encode is meaningfully smaller."
+                    )
                 }
 
-                Toggle(
-                    "Optimize uploads with ffmpeg when available",
-                    isOn: $optimizeUploads
-                )
-            } header: {
-                Text("Compression")
-                    .font(.headline)
-            } footer: {
-                Text(
-                    "15 fps usually shrinks static screen recordings with little quality cost. Upload optimization keeps the local recording untouched and only uploads a smaller MP4 when ffmpeg is installed and the re-encode is meaningfully smaller."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.callout)
-                    .foregroundStyle(.red)
-            }
-
-            HStack {
-                Spacer()
-                Button("Save & Close") {
-                    saveAndClose()
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
+
+                HStack {
+                    if let confirmationMessage {
+                        Text(confirmationMessage)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Save") {
+                        save()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(20)
-        .frame(width: 520)
-        .background(
-            WindowAccessor { window in
-                captureSettingsWindow(window)
-            }
-        )
         .onAppear {
             loadFromStore()
         }
+    }
+
+    // MARK: - Card styling (matches the Recovery tab)
+
+    private func settingsCard(
+        header: String,
+        @ViewBuilder content: () -> some View
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(header)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.primary.opacity(0.72))
+
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.74))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.06))
+        }
+    }
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+    }
+
+    private func footnote(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: - Bindings
@@ -221,8 +263,9 @@ struct SettingsView: View {
         }
     }
 
-    private func saveAndClose() {
+    private func save() {
         errorMessage = nil
+        confirmationMessage = nil
 
         let devURL: URL?
         let prodURL: URL?
@@ -273,7 +316,7 @@ struct SettingsView: View {
         AppLog.info(
             "Settings saved. Active environment: \(activeEnvironment.displayName). Dev backend: \(KoomConfig.backendURL(for: .dev)?.absoluteString ?? "unset"), Prod backend: \(KoomConfig.backendURL(for: .prod)?.absoluteString ?? "unset"), active backend: \(effectiveActiveBackendURL.absoluteString), compression: \(CompressionSettings(captureFrameRate: captureFrameRate, optimizeUploads: optimizeUploads).logDescription)."
         )
-        closeSettingsWindow()
+        confirmationMessage = "Saved."
     }
 
     private func normalizedBackendURL(
@@ -327,20 +370,4 @@ struct SettingsView: View {
         ).abbreviatingWithTildeInPath
     }
 
-    private func captureSettingsWindow(_ window: NSWindow) {
-        guard settingsWindow !== window else {
-            return
-        }
-
-        settingsWindow = window
-    }
-
-    private func closeSettingsWindow() {
-        if let settingsWindow {
-            settingsWindow.performClose(nil)
-            return
-        }
-
-        NSApp.keyWindow?.performClose(nil)
-    }
 }

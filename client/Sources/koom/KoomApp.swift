@@ -12,6 +12,13 @@ extension Notification.Name {
     static let koomCatchUpRequested = Notification.Name(
         "com.koom.local.catchUpRequested"
     )
+
+    /// Posted by the rewired Cmd+, / "koom → Settings…" menu item.
+    /// `AppModel` observes this and switches the main panel to the
+    /// Settings tab (settings live in a tab now, not a window).
+    static let koomShowSettingsTab = Notification.Name(
+        "com.koom.local.showSettingsTab"
+    )
 }
 
 @main
@@ -19,16 +26,25 @@ struct KoomApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        // SwiftUI's Settings scene wires the settings window up for
-        // free: the view below is reachable via Cmd+, and the
-        // "koom → Settings…" menu item without any extra glue. On
-        // first launch with missing credentials, AppDelegate pops
-        // the window programmatically via NSApplication's
-        // showSettingsWindow(_:) action.
+        // SwiftUI requires at least one Scene, but all real windows
+        // are created in AppDelegate. The Settings scene is inert:
+        // the standard "Settings…" command that would open it is
+        // replaced below with one that switches the main panel to
+        // its Settings tab instead.
         Settings {
-            SettingsView()
+            EmptyView()
         }
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    NotificationCenter.default.post(
+                        name: .koomShowSettingsTab,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+
             // "Recordings" menu lives next to the default menus and
             // is where recording-related commands live. For now
             // there is just one, but this is where future items

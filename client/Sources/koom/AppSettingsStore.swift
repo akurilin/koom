@@ -8,7 +8,10 @@ final class AppSettingsStore {
         static let selectedCameraID = "selectedCameraID"
         static let selectedMicrophoneID = "selectedMicrophoneID"
         static let captureFrameRate = "captureFrameRate"
-        static let optimizeUploads = "optimizeUploads"
+        static let uploadRecordings = "uploadRecordings"
+        // Preserve the existing preference while broadening it from
+        // upload-only optimization to local recording optimization.
+        static let optimizeRecordings = "optimizeUploads"
     }
 
     private let defaults: UserDefaults
@@ -34,16 +37,24 @@ final class AppSettingsStore {
             .flatMap { CaptureFrameRateOption(rawValue: $0.intValue) }
             ?? CompressionSettings.default.captureFrameRate
 
-        let optimizeUploads =
-            if defaults.object(forKey: Key.optimizeUploads) == nil {
-                CompressionSettings.default.optimizeUploads
+        let optimizeRecordings =
+            if defaults.object(forKey: Key.optimizeRecordings) == nil {
+                CompressionSettings.default.optimizeRecordings
             } else {
-                defaults.bool(forKey: Key.optimizeUploads)
+                defaults.bool(forKey: Key.optimizeRecordings)
+            }
+
+        let uploadRecordings =
+            if defaults.object(forKey: Key.uploadRecordings) == nil {
+                CompressionSettings.default.uploadRecordings
+            } else {
+                defaults.bool(forKey: Key.uploadRecordings)
             }
 
         return CompressionSettings(
             captureFrameRate: captureFrameRate,
-            optimizeUploads: optimizeUploads
+            uploadRecordings: uploadRecordings,
+            optimizeRecordings: optimizeRecordings
         )
     }
 
@@ -63,8 +74,12 @@ final class AppSettingsStore {
         defaults.set(captureFrameRate.rawValue, forKey: Key.captureFrameRate)
     }
 
-    func saveOptimizeUploads(_ optimizeUploads: Bool) {
-        defaults.set(optimizeUploads, forKey: Key.optimizeUploads)
+    func saveOptimizeRecordings(_ optimizeRecordings: Bool) {
+        defaults.set(optimizeRecordings, forKey: Key.optimizeRecordings)
+    }
+
+    func saveUploadRecordings(_ uploadRecordings: Bool) {
+        defaults.set(uploadRecordings, forKey: Key.uploadRecordings)
     }
 
     struct Snapshot {

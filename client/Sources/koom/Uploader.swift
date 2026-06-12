@@ -12,7 +12,6 @@ import Foundation
 enum UploadState: Equatable, Sendable {
     case idle
     case preparing
-    case optimizing
     case initializing
     case uploading(progress: Double)
     case finalizing
@@ -61,16 +60,6 @@ private struct UploadFailure: Error {
 struct UploadCompletionSummary: Equatable, Sendable {
     let localSizeBytes: Int64
     let uploadedSizeBytes: Int64
-    let usedOptimizedCopy: Bool
-
-    var savingsBytes: Int64 {
-        max(localSizeBytes - uploadedSizeBytes, 0)
-    }
-
-    var savingsRatio: Double {
-        guard localSizeBytes > 0 else { return 0 }
-        return Double(savingsBytes) / Double(localSizeBytes)
-    }
 }
 
 /// Success payload for `performUpload`. The recording id is
@@ -126,8 +115,8 @@ private actor PostProcessingStatusRelay {
 ///     tabs per file (that would spam N tabs for a batch of N).
 ///
 /// Both entry points share a private `performUpload(at:)` method
-/// that optionally prepares a smaller upload copy, then handles the
-/// init → streaming PUT → complete sequence and emits `UploadState`
+/// that handles the init → streaming PUT → complete sequence and emits
+/// `UploadState`
 /// progress updates along the way. The shared method returns a
 /// typed `Result` so each entry point can decide how to handle
 /// success/failure at the batch level.
@@ -149,8 +138,6 @@ final class Uploader {
     /// loaded WhisperKit model warm across recordings. `nil` only
     /// when auto-title is disabled in the app's compiled defaults.
     private let autotitler: Autotitler? = Autotitler.shippedDefault()
-    private let settingsStore = AppSettingsStore()
-
     func prepareForLaunch() async -> String? {
         guard let autotitler else { return nil }
         return await autotitler.preflightForLaunch()
@@ -508,21 +495,7 @@ final class Uploader {
         // send null rather than failing the upload — the backend
         // contract allows nullable duration.
         let durationSeconds = await Self.readDurationSeconds(of: fileURL)
-        let compressionSettings = settingsStore.loadCompressionSettings()
         let onStateChange = self.onStateChange
-        let preparedUpload = await UploadOptimizer.prepareUploadSource(
-            from: fileURL,
-            originalSizeBytes: sizeBytes,
-            optimizeUploads: compressionSettings.optimizeUploads,
-            onOptimizationStarted: {
-                onStateChange?(.optimizing)
-            }
-        )
-        defer {
-            UploadOptimizer.cleanupTemporaryDirectory(
-                preparedUpload.cleanupDirectoryURL
-            )
-        }
 
         // Step 1: init
         emit(.initializing)
@@ -531,7 +504,7 @@ final class Uploader {
             initResponse = try await api.initUpload(
                 originalFilename: fileURL.lastPathComponent,
                 contentType: "video/mp4",
-                sizeBytes: preparedUpload.sizeBytes,
+                sizeBytes: sizeBytes,
                 durationSeconds: durationSeconds,
                 title: nil
             )
@@ -553,7 +526,7 @@ final class Uploader {
         emit(.uploading(progress: 0.0))
         do {
             try await api.uploadFile(
-                fileURL: preparedUpload.fileURL,
+                fileURL: fileURL,
                 to: initResponse.upload.url,
                 method: initResponse.upload.method,
                 headers: initResponse.upload.headers ?? [:],
@@ -591,8 +564,7 @@ final class Uploader {
                 shareURL: shareURL,
                 summary: UploadCompletionSummary(
                     localSizeBytes: sizeBytes,
-                    uploadedSizeBytes: preparedUpload.sizeBytes,
-                    usedOptimizedCopy: preparedUpload.usedOptimization
+                    uploadedSizeBytes: sizeBytes
                 )
             )
         )

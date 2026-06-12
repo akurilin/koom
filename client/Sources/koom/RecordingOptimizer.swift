@@ -1,34 +1,19 @@
 import Foundation
 
-struct PreparedUploadSource: Sendable {
-    let fileURL: URL
-    let sizeBytes: Int64
-    let cleanupDirectoryURL: URL?
-    let usedOptimization: Bool
-}
-
-enum UploadOptimizer {
+/// Best-effort local post-processing for finalized recordings.
+enum RecordingOptimizer {
     private static let minimumSavingsRatio = 0.10
 
-    static func prepareUploadSource(
-        from originalFileURL: URL,
-        originalSizeBytes: Int64,
-        optimizeUploads: Bool,
-        onOptimizationStarted: @Sendable () -> Void
-    ) async -> PreparedUploadSource {
-        guard optimizeUploads else {
-            logDecision(
-                for: originalFileURL,
-                originalSizeBytes: originalSizeBytes,
-                optimizedSizeBytes: nil,
-                decision: "upload original file because upload optimization is disabled."
+    @discardableResult
+    static func optimizeRecording(at originalFileURL: URL) async -> Bool {
+        let originalSizeBytes: Int64
+        do {
+            originalSizeBytes = try fileSize(of: originalFileURL)
+        } catch {
+            AppLog.error(
+                "Could not inspect \(originalFileURL.lastPathComponent) before recording optimization: \(error.localizedDescription)"
             )
-            return PreparedUploadSource(
-                fileURL: originalFileURL,
-                sizeBytes: originalSizeBytes,
-                cleanupDirectoryURL: nil,
-                usedOptimization: false
-            )
+            return false
         }
 
         guard let ffmpegURL = findFFmpegExecutable() else {
@@ -36,29 +21,24 @@ enum UploadOptimizer {
                 for: originalFileURL,
                 originalSizeBytes: originalSizeBytes,
                 optimizedSizeBytes: nil,
-                decision: "upload original file because ffmpeg was not found."
+                decision: "kept original local file because ffmpeg was not found."
             )
-            return PreparedUploadSource(
-                fileURL: originalFileURL,
-                sizeBytes: originalSizeBytes,
-                cleanupDirectoryURL: nil,
-                usedOptimization: false
-            )
+            return false
         }
 
-        AppLog.infoToStandardOutput(
-            "Upload optimization start for \(originalFileURL.lastPathComponent): original size \(formatBytes(originalSizeBytes))."
-        )
-        onOptimizationStarted()
-
-        let tempDirectory = FileManager.default.temporaryDirectory
+        let tempDirectory = originalFileURL.deletingLastPathComponent()
             .appendingPathComponent(
-                "koom-upload-\(UUID().uuidString)",
+                ".koom-optimize-\(UUID().uuidString)",
                 isDirectory: true
             )
         let outputURL = tempDirectory.appendingPathComponent(
             originalFileURL.deletingPathExtension().lastPathComponent
-                + "-upload.mp4"
+                + "-optimized.mp4"
+        )
+        defer { cleanupTemporaryDirectory(tempDirectory) }
+
+        AppLog.info(
+            "Recording optimization start: input=\(originalFileURL.path); originalBytes=\(originalSizeBytes); originalSize=\(formatBytes(originalSizeBytes)); output=\(outputURL.path); minimumSavings=10%"
         )
 
         do {
@@ -73,15 +53,9 @@ enum UploadOptimizer {
             )
         } catch {
             AppLog.error(
-                "Upload optimization failed for \(originalFileURL.lastPathComponent): \(error.localizedDescription)"
+                "Recording optimization failed for \(originalFileURL.lastPathComponent): \(error.localizedDescription)"
             )
-            cleanupTemporaryDirectory(tempDirectory)
-            return PreparedUploadSource(
-                fileURL: originalFileURL,
-                sizeBytes: originalSizeBytes,
-                cleanupDirectoryURL: nil,
-                usedOptimization: false
-            )
+            return false
         }
 
         let optimizedSizeBytes: Int64
@@ -89,18 +63,12 @@ enum UploadOptimizer {
             optimizedSizeBytes = try fileSize(of: outputURL)
         } catch {
             AppLog.error(
-                "Upload optimization produced an unreadable output for \(originalFileURL.lastPathComponent): \(error.localizedDescription)"
+                "Recording optimization produced an unreadable output for \(originalFileURL.lastPathComponent): \(error.localizedDescription)"
             )
-            cleanupTemporaryDirectory(tempDirectory)
-            return PreparedUploadSource(
-                fileURL: originalFileURL,
-                sizeBytes: originalSizeBytes,
-                cleanupDirectoryURL: nil,
-                usedOptimization: false
-            )
+            return false
         }
-        AppLog.infoToStandardOutput(
-            "Upload optimization output for \(originalFileURL.lastPathComponent): optimized size \(formatBytes(optimizedSizeBytes))."
+        AppLog.info(
+            "Recording optimization output for \(originalFileURL.lastPathComponent): optimized size \(formatBytes(optimizedSizeBytes))."
         )
 
         let savingsRatio =
@@ -112,15 +80,21 @@ enum UploadOptimizer {
                 originalSizeBytes: originalSizeBytes,
                 optimizedSizeBytes: optimizedSizeBytes,
                 decision:
-                    "upload original file because the optimized copy saved only \(formatPercent(savingsRatio)), below the 10% threshold."
+                    "kept original local file because the optimized copy saved only \(formatPercent(savingsRatio)), below the 10% threshold."
             )
-            cleanupTemporaryDirectory(tempDirectory)
-            return PreparedUploadSource(
-                fileURL: originalFileURL,
-                sizeBytes: originalSizeBytes,
-                cleanupDirectoryURL: nil,
-                usedOptimization: false
+            return false
+        }
+
+        do {
+            _ = try FileManager.default.replaceItemAt(
+                originalFileURL,
+                withItemAt: outputURL
             )
+        } catch {
+            AppLog.error(
+                "Could not replace \(originalFileURL.lastPathComponent) with its optimized recording: \(error.localizedDescription)"
+            )
+            return false
         }
 
         logDecision(
@@ -128,18 +102,12 @@ enum UploadOptimizer {
             originalSizeBytes: originalSizeBytes,
             optimizedSizeBytes: optimizedSizeBytes,
             decision:
-                "upload optimized copy because it saved \(formatPercent(savingsRatio)), meeting the 10% threshold."
+                "replaced local file with optimized recording because it saved \(formatPercent(savingsRatio)), meeting the 10% threshold."
         )
-        return PreparedUploadSource(
-            fileURL: outputURL,
-            sizeBytes: optimizedSizeBytes,
-            cleanupDirectoryURL: tempDirectory,
-            usedOptimization: true
-        )
+        return true
     }
 
-    static func cleanupTemporaryDirectory(_ directoryURL: URL?) {
-        guard let directoryURL else { return }
+    private static func cleanupTemporaryDirectory(_ directoryURL: URL) {
         try? FileManager.default.removeItem(at: directoryURL)
     }
 
@@ -152,7 +120,7 @@ enum UploadOptimizer {
         let errorPipe = Pipe()
 
         process.executableURL = executableURL
-        process.arguments = [
+        let arguments = [
             "-y",
             "-nostdin",
             "-hide_banner",
@@ -178,8 +146,13 @@ enum UploadOptimizer {
             "copy",
             outputURL.path,
         ]
+        process.arguments = arguments
         process.standardOutput = Pipe()
         process.standardError = errorPipe
+
+        AppLog.info(
+            "Recording optimization ffmpeg execution: executable=\(executableURL.path); input=\(inputURL.path); output=\(outputURL.path); videoCodec=libx264; preset=slow; crf=18; pixelFormat=yuv420p; audioCodec=copy; command=\(formatCommand(executableURL: executableURL, arguments: arguments))"
+        )
 
         try await withCheckedThrowingContinuation { continuation in
             process.terminationHandler = { process in
@@ -188,16 +161,19 @@ enum UploadOptimizer {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
 
                 if process.terminationStatus == 0 {
+                    AppLog.info(
+                        "Recording optimization ffmpeg finished: status=0; output=\(outputURL.path)"
+                    )
                     continuation.resume()
                 } else if stderr.isEmpty {
                     continuation.resume(
-                        throwing: UploadOptimizerError.ffmpegFailed(
+                        throwing: RecordingOptimizerError.ffmpegFailed(
                             "ffmpeg exited with status \(process.terminationStatus)."
                         )
                     )
                 } else {
                     continuation.resume(
-                        throwing: UploadOptimizerError.ffmpegFailed(stderr)
+                        throwing: RecordingOptimizerError.ffmpegFailed(stderr)
                     )
                 }
             }
@@ -216,7 +192,7 @@ enum UploadOptimizer {
         )
         let sizeBytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         guard sizeBytes > 0 else {
-            throw UploadOptimizerError.emptyOutput(fileURL.lastPathComponent)
+            throw RecordingOptimizerError.emptyOutput(fileURL.lastPathComponent)
         }
         return sizeBytes
     }
@@ -251,6 +227,26 @@ enum UploadOptimizer {
         "\(Int((ratio * 100).rounded()))%"
     }
 
+    private static func formatCommand(
+        executableURL: URL,
+        arguments: [String]
+    ) -> String {
+        ([executableURL.path] + arguments)
+            .map(shellQuoted)
+            .joined(separator: " ")
+    }
+
+    private static func shellQuoted(_ argument: String) -> String {
+        guard !argument.isEmpty else { return "''" }
+        let safeCharacters = CharacterSet.alphanumerics.union(
+            CharacterSet(charactersIn: "/._-+:?=")
+        )
+        guard argument.unicodeScalars.allSatisfy(safeCharacters.contains) else {
+            return "'\(argument.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
+        }
+        return argument
+    }
+
     private static func logDecision(
         for fileURL: URL,
         originalSizeBytes: Int64,
@@ -260,20 +256,20 @@ enum UploadOptimizer {
         let optimizedSizeDescription =
             optimizedSizeBytes.map(formatBytes)
             ?? "not produced"
-        AppLog.infoToStandardOutput(
-            "Upload optimization decision for \(fileURL.lastPathComponent): original size \(formatBytes(originalSizeBytes)); optimized size \(optimizedSizeDescription); decision: \(decision)"
+        AppLog.info(
+            "Recording optimization decision: file=\(fileURL.path); originalBytes=\(originalSizeBytes); originalSize=\(formatBytes(originalSizeBytes)); optimizedBytes=\(optimizedSizeBytes.map(String.init) ?? "not produced"); optimizedSize=\(optimizedSizeDescription); decision=\(decision)"
         )
     }
 }
 
-private enum UploadOptimizerError: LocalizedError {
+private enum RecordingOptimizerError: LocalizedError {
     case emptyOutput(String)
     case ffmpegFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .emptyOutput(let filename):
-            return "ffmpeg produced an empty upload copy: \(filename)"
+            return "ffmpeg produced an empty optimized recording: \(filename)"
         case .ffmpegFailed(let message):
             return message
         }

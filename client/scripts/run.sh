@@ -39,25 +39,34 @@ else
     APP_PATH="$("$ROOT_DIR/scripts/build-app.sh")"
 fi
 APP_EXECUTABLE="$APP_PATH/Contents/MacOS/koom"
+LOG_FILE="$HOME/Library/Logs/koom/koom.log"
 
 if [[ ! -x "$APP_EXECUTABLE" ]]; then
     echo "koom executable not found at $APP_EXECUTABLE" >&2
     exit 1
 fi
 
-child_pid=""
+app_pid=""
+tail_pid=""
 
 # shellcheck disable=SC2329  # invoked indirectly via the `trap` below
 cleanup() {
-    local exit_code=$?
-
-    if [[ -n "${child_pid:-}" ]] && kill -0 "$child_pid" 2>/dev/null; then
-        echo "Stopping koom (pid $child_pid)..." >&2
-        kill "$child_pid" 2>/dev/null || true
-        wait "$child_pid" 2>/dev/null || true
-    fi
+    local received_exit_code=$?
+    local exit_code="${1:-$received_exit_code}"
 
     trap - INT TERM HUP EXIT
+
+    if [[ -n "${tail_pid:-}" ]] && kill -0 "$tail_pid" 2>/dev/null; then
+        kill "$tail_pid" 2>/dev/null || true
+        wait "$tail_pid" 2>/dev/null || true
+    fi
+
+    if [[ -n "${app_pid:-}" ]] && kill -0 "$app_pid" 2>/dev/null; then
+        echo "Stopping koom (pid $app_pid)..." >&2
+        kill "$app_pid" 2>/dev/null || true
+        wait "$app_pid" 2>/dev/null || true
+    fi
+
     exit "$exit_code"
 }
 
@@ -65,17 +74,28 @@ trap cleanup INT TERM HUP EXIT
 
 echo "Launching koom in the foreground. Ctrl-C will stop it." >&2
 echo "App bundle: $APP_PATH" >&2
-echo "Persistent logs: $HOME/Library/Logs/koom/koom.log" >&2
+echo "Tailing persistent logs: $LOG_FILE" >&2
+
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+tail -n 0 -F "$LOG_FILE" &
+tail_pid=$!
 
 (
     cd "$ROOT_DIR"
     export NSUnbufferedIO=YES
+    # The tailed persistent log is the foreground AppLog stream. Avoid
+    # duplicating those lines on stderr while preserving unrelated app
+    # stdout/stderr output.
+    export KOOM_LOG_TO_STDERR=0
     "$APP_EXECUTABLE"
 ) &
 
-child_pid=$!
-wait "$child_pid"
-exit_code=$?
+app_pid=$!
+if wait "$app_pid"; then
+    exit_code=0
+else
+    exit_code=$?
+fi
 
-trap - INT TERM HUP EXIT
-exit "$exit_code"
+cleanup "$exit_code"

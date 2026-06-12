@@ -473,9 +473,6 @@ private struct UploadStatusView: View {
         case .preparing:
             statusRow("Preparing upload…")
 
-        case .optimizing:
-            statusRow("Optimizing upload copy…")
-
         case .initializing:
             statusRow("Starting upload…")
 
@@ -501,13 +498,9 @@ private struct UploadStatusView: View {
 
         case .completed(let shareURL, let summary):
             VStack(alignment: .leading, spacing: 4) {
-                Text(
-                    summary.usedOptimizedCopy
-                        ? "Uploaded optimized copy. Share URL copied and opened."
-                        : "Uploaded. Share URL copied and opened."
-                )
-                .font(.caption)
-                .foregroundStyle(.green)
+                Text("Uploaded. Share URL copied and opened.")
+                    .font(.caption)
+                    .foregroundStyle(.green)
 
                 Text(summaryDescription(summary))
                     .font(.caption2)
@@ -555,13 +548,7 @@ private struct UploadStatusView: View {
             countStyle: .file
         )
 
-        guard summary.usedOptimizedCopy else {
-            return "Uploaded size: \(uploadedSize). Local file remains \(localSize)."
-        }
-
-        let savingsPercent = Int((summary.savingsRatio * 100).rounded())
-        return
-            "Uploaded size: \(uploadedSize) from \(localSize) (\(savingsPercent)% smaller)."
+        return "Uploaded size: \(uploadedSize). Local file remains \(localSize)."
     }
 
     private func postProcessingDescription(_ stage: PostUploadStage) -> String {

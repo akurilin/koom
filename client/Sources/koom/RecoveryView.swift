@@ -64,10 +64,18 @@ struct RecoveryView: View {
                 }
                 .help("Continue recording where this session left off")
 
-                Button("Finish & upload") {
+                Button(
+                    model.uploadRecordingsEnabled
+                        ? "Finish & upload"
+                        : "Finish locally"
+                ) {
                     model.finishRecoverableSession(session)
                 }
-                .help("Assemble the partial recording and upload it")
+                .help(
+                    model.uploadRecordingsEnabled
+                        ? "Assemble the partial recording and upload it"
+                        : "Assemble the partial recording and keep it locally"
+                )
 
                 Spacer()
 
@@ -105,15 +113,24 @@ struct RecoveryView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Unsent recordings")
 
-            Text("Compares local recordings for the active environment against the server and uploads anything missing.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                model.uploadRecordingsEnabled
+                    ? "Compares local recordings for the active environment against the server and uploads anything missing."
+                    : "Backend uploads are disabled in Settings. Local recordings will not be synced."
+            )
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
 
             Button("Sync unsent recordings") {
                 model.catchUpRecordings()
             }
-            .disabled(model.isCatchingUp || model.isBusy || model.recordingState != .idle)
+            .disabled(
+                !model.uploadRecordingsEnabled
+                    || model.isCatchingUp
+                    || model.isBusy
+                    || model.recordingState != .idle
+            )
 
             if model.catchUpState != .idle {
                 CatchUpStatusView(state: model.catchUpState)

@@ -27,14 +27,16 @@ enum CaptureFrameRateOption: Int, CaseIterable, Identifiable, Sendable {
 
 struct CompressionSettings: Equatable, Sendable {
     let captureFrameRate: CaptureFrameRateOption
-    let optimizeUploads: Bool
+    let uploadRecordings: Bool
+    let optimizeRecordings: Bool
 
     static let `default` = CompressionSettings(
         captureFrameRate: .reduced15,
-        optimizeUploads: true
+        uploadRecordings: true,
+        optimizeRecordings: true
     )
 
     var logDescription: String {
-        "\(captureFrameRate.framesPerSecond) fps capture, upload optimization \(optimizeUploads ? "enabled" : "disabled")"
+        "\(captureFrameRate.framesPerSecond) fps capture, recording optimization \(optimizeRecordings ? "enabled" : "disabled"), backend upload \(uploadRecordings ? "enabled" : "disabled")"
     }
 }

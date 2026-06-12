@@ -45,8 +45,10 @@ struct SettingsView: View {
     )
     @State private var captureFrameRate: CaptureFrameRateOption =
         CompressionSettings.default.captureFrameRate
-    @State private var optimizeUploads: Bool =
-        CompressionSettings.default.optimizeUploads
+    @State private var uploadRecordings: Bool =
+        CompressionSettings.default.uploadRecordings
+    @State private var optimizeRecordings: Bool =
+        CompressionSettings.default.optimizeRecordings
     @State private var errorMessage: String?
     @State private var confirmationMessage: String?
 
@@ -107,13 +109,25 @@ struct SettingsView: View {
                     }
 
                     Toggle(
-                        "Optimize uploads with ffmpeg when available",
-                        isOn: $optimizeUploads
+                        "Optimize recordings with ffmpeg when available",
+                        isOn: $optimizeRecordings
                     )
                     .font(.system(size: 13))
 
                     footnote(
-                        "15 fps usually shrinks static screen recordings with little quality cost. Upload optimization keeps the local recording untouched and only uploads a smaller MP4 when ffmpeg is installed and the re-encode is meaningfully smaller."
+                        "15 fps usually shrinks static screen recordings with little quality cost. ffmpeg optimization runs after finalization and replaces the local MP4 only when the re-encode is at least 10% smaller. Upload is a separate final step."
+                    )
+                }
+
+                settingsCard(header: "Upload") {
+                    Toggle(
+                        "Upload recordings to the backend",
+                        isOn: $uploadRecordings
+                    )
+                    .font(.system(size: 13))
+
+                    footnote(
+                        "When upload is off, finalized recordings remain in the local recordings folder and no upload, transcription, thumbnail, or auto-title processing runs."
                     )
                 }
 
@@ -251,7 +265,8 @@ struct SettingsView: View {
 
         let compressionSettings = settingsStore.loadCompressionSettings()
         captureFrameRate = compressionSettings.captureFrameRate
-        optimizeUploads = compressionSettings.optimizeUploads
+        uploadRecordings = compressionSettings.uploadRecordings
+        optimizeRecordings = compressionSettings.optimizeRecordings
 
         do {
             let adminSecrets = try KoomConfig.loadAdminSecrets()
@@ -285,7 +300,7 @@ struct SettingsView: View {
                 prodURL
             }
 
-        guard let effectiveActiveBackendURL else {
+        guard !uploadRecordings || effectiveActiveBackendURL != nil else {
             errorMessage =
                 "\(activeEnvironment.displayName) backend URL must be a valid http:// or https:// URL."
             return
@@ -311,10 +326,11 @@ struct SettingsView: View {
         }
 
         settingsStore.saveCaptureFrameRate(captureFrameRate)
-        settingsStore.saveOptimizeUploads(optimizeUploads)
+        settingsStore.saveUploadRecordings(uploadRecordings)
+        settingsStore.saveOptimizeRecordings(optimizeRecordings)
 
         AppLog.info(
-            "Settings saved. Active environment: \(activeEnvironment.displayName). Dev backend: \(KoomConfig.backendURL(for: .dev)?.absoluteString ?? "unset"), Prod backend: \(KoomConfig.backendURL(for: .prod)?.absoluteString ?? "unset"), active backend: \(effectiveActiveBackendURL.absoluteString), compression: \(CompressionSettings(captureFrameRate: captureFrameRate, optimizeUploads: optimizeUploads).logDescription)."
+            "Settings saved. Active environment: \(activeEnvironment.displayName). Dev backend: \(KoomConfig.backendURL(for: .dev)?.absoluteString ?? "unset"), Prod backend: \(KoomConfig.backendURL(for: .prod)?.absoluteString ?? "unset"), active backend: \(effectiveActiveBackendURL?.absoluteString ?? "unset"), compression: \(CompressionSettings(captureFrameRate: captureFrameRate, uploadRecordings: uploadRecordings, optimizeRecordings: optimizeRecordings).logDescription)."
         )
         confirmationMessage = "Saved."
     }

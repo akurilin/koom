@@ -94,6 +94,10 @@ final class AppModel: ObservableObject {
         recorder != nil
     }
 
+    var uploadRecordingsEnabled: Bool {
+        settingsStore.loadCompressionSettings().uploadRecordings
+    }
+
     private let cameraPreviewManager = CameraPreviewManager()
     private let overlayWindowController = CameraOverlayWindowController()
     private let drawingOverlayWindowController = DrawingOverlayWindowController()
@@ -207,6 +211,11 @@ final class AppModel: ObservableObject {
     }
 
     func warmBackgroundServices() {
+        guard uploadRecordingsEnabled else {
+            AppLog.info("Backend uploads are disabled; skipping background service preflight.")
+            return
+        }
+
         Task { [uploader] in
             let issue = await uploader.prepareForLaunch()
             guard let issue else { return }
@@ -224,6 +233,11 @@ final class AppModel: ObservableObject {
     // MARK: - Catch-up
 
     func catchUpRecordings() {
+        guard uploadRecordingsEnabled else {
+            statusMessage = "Backend uploads are disabled in Settings."
+            return
+        }
+
         guard !isCatchingUp else {
             AppLog.info("Catch-up already in progress; ignoring duplicate request.")
             return
@@ -581,8 +595,6 @@ final class AppModel: ObservableObject {
             return nil
         case .preparing:
             return "Preparing upload…"
-        case .optimizing:
-            return "Optimizing upload copy with ffmpeg…"
         case .initializing:
             return "Starting upload…"
         case .uploading(let progress):
@@ -883,13 +895,22 @@ final class AppModel: ObservableObject {
                 try? sessionStore.cleanupSessionDirectory(for: currentSession)
                 self.currentSession = nil
                 currentSessionWasRecovered = false
+                await optimizeFinalRecordingIfEnabled(at: finalURL)
                 lastRecordingURL = finalURL
+                let shouldUploadAfterStop =
+                    uploadAfterStop && uploadRecordingsEnabled
                 statusMessage =
-                    uploadAfterStop
+                    shouldUploadAfterStop
                     ? "Saved \(finalURL.lastPathComponent). Uploading..."
                     : "Saved \(finalURL.lastPathComponent)"
 
-                if uploadAfterStop, awaitUploadAfterStop {
+                if uploadAfterStop, !shouldUploadAfterStop {
+                    AppLog.info(
+                        "Backend uploads are disabled; kept \(finalURL.lastPathComponent) locally."
+                    )
+                }
+
+                if shouldUploadAfterStop, awaitUploadAfterStop {
                     let uploadSucceeded = await uploader.uploadRecording(
                         at: finalURL,
                         environment: uploadEnvironment
@@ -899,7 +920,7 @@ final class AppModel: ObservableObject {
                             "Saved \(finalURL.lastPathComponent), but upload failed."
                         return false
                     }
-                } else if uploadAfterStop {
+                } else if shouldUploadAfterStop {
                     Task { [uploader, uploadEnvironment] in
                         await uploader.uploadRecording(
                             at: finalURL,
@@ -927,6 +948,7 @@ final class AppModel: ObservableObject {
                     from: &currentSession
                 )
             {
+                await optimizeFinalRecordingIfEnabled(at: salvagedURL)
                 self.recorder = nil
                 self.currentSession = nil
                 currentSessionWasRecovered = false
@@ -1027,6 +1049,29 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func optimizeFinalRecordingIfEnabled(at finalURL: URL) async {
+        let optimizeRecordings =
+            settingsStore.loadCompressionSettings().optimizeRecordings
+        AppLog.info(
+            "Recording optimization requested: enabled=\(optimizeRecordings); input=\(finalURL.path)"
+        )
+
+        guard optimizeRecordings else {
+            AppLog.info(
+                "Recording optimization skipped: disabled in Settings; input=\(finalURL.path)"
+            )
+            return
+        }
+
+        statusMessage = "Optimizing \(finalURL.lastPathComponent) with ffmpeg..."
+        let replacedOriginal = await RecordingOptimizer.optimizeRecording(
+            at: finalURL
+        )
+        AppLog.info(
+            "Recording optimization finished: result=\(replacedOriginal ? "replaced local file" : "kept original local file"); file=\(finalURL.path)"
+        )
+    }
+
     private func finalizeRecoveredSession(
         _ recoverableSession: RecordingSessionStore.SessionHandle
     ) async {
@@ -1044,14 +1089,21 @@ final class AppModel: ObservableObject {
                 store: sessionStore
             )
             try? sessionStore.cleanupSessionDirectory(for: recoverableSession)
+            await optimizeFinalRecordingIfEnabled(at: finalURL)
             lastRecordingURL = finalURL
             statusMessage = "Recovered \(finalURL.lastPathComponent)"
 
-            let uploadEnvironment = recoverableSession.environment
-            Task { [uploader, uploadEnvironment] in
-                await uploader.uploadRecording(
-                    at: finalURL,
-                    environment: uploadEnvironment
+            if uploadRecordingsEnabled {
+                let uploadEnvironment = recoverableSession.environment
+                Task { [uploader, uploadEnvironment] in
+                    await uploader.uploadRecording(
+                        at: finalURL,
+                        environment: uploadEnvironment
+                    )
+                }
+            } else {
+                AppLog.info(
+                    "Backend uploads are disabled; kept recovered recording \(finalURL.lastPathComponent) locally."
                 )
             }
         } catch {

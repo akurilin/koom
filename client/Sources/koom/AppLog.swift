@@ -12,17 +12,11 @@ enum AppLog {
         logsDirectoryURL: logsDirectoryURL,
         currentLogURL: currentLogURL
     )
+    private static let mirrorsToStandardError =
+        ProcessInfo.processInfo.environment["KOOM_LOG_TO_STDERR"] != "0"
 
     static func info(_ message: String) {
         write(level: .info, message: message)
-    }
-
-    static func infoToStandardOutput(_ message: String) {
-        write(
-            level: .info,
-            message: message,
-            handle: FileHandle.standardOutput
-        )
     }
 
     static func error(_ message: String) {
@@ -40,8 +34,7 @@ enum AppLog {
 
     private static func write(
         level: LogLevel,
-        message: String,
-        handle: FileHandle = FileHandle.standardError
+        message: String
     ) {
         let timestamp = Date.now.ISO8601Format(
             .iso8601(
@@ -62,8 +55,12 @@ enum AppLog {
             logger.error("\(message, privacy: .public)")
         }
 
-        guard let data = line.data(using: .utf8) else { return }
-        handle.write(data)
+        guard mirrorsToStandardError,
+            let data = line.data(using: .utf8)
+        else {
+            return
+        }
+        FileHandle.standardError.write(data)
     }
 
     private static func makeLogsDirectoryURL() -> URL {

@@ -42,7 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.refreshRecoverableSessions()
 
         let activeEnvironment = KoomConfig.activeEnvironment
-        if !KoomConfig.isFullyConfigured(for: activeEnvironment) {
+        if model.uploadRecordingsEnabled,
+            !KoomConfig.isFullyConfigured(for: activeEnvironment)
+        {
             AppLog.info(
                 "koom is not fully configured for \(activeEnvironment.displayName); opening the Settings tab."
             )

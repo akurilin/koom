@@ -68,7 +68,7 @@ final class CameraPreviewManager: @unchecked Sendable {
 }
 
 final class CameraOverlayWindowController: NSWindowController {
-    private static let previewDiameter: CGFloat = 176
+    private static let previewDiameter: CGFloat = 352
     private static let shadowInset: CGFloat = 18
     private static let overlaySize = CGSize(
         width: previewDiameter + (shadowInset * 2),

@@ -8,7 +8,6 @@ enum RecorderError: LocalizedError {
     case writerFailed(String)
     case recorderNotRunning
     case microphoneNotFound
-    case couldNotCreateRetimedBuffer
 
     var errorDescription: String? {
         switch self {
@@ -20,8 +19,6 @@ enum RecorderError: LocalizedError {
             return "The recorder is not currently running."
         case .microphoneNotFound:
             return "The selected microphone could not be found."
-        case .couldNotCreateRetimedBuffer:
-            return "koom could not retime a sample buffer while recording."
         }
     }
 }
@@ -311,9 +308,6 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         }
 
         isRollingOver = true
-        AppLog.info(
-            "Segment \(currentSegmentURL.lastPathComponent) reached \(String(format: "%.2f", retimedVideoPTS.seconds))s of media; requesting rollover."
-        )
         onSegmentRolloverNeeded?(self)
     }
 
@@ -814,9 +808,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         }
     }
 
-    // Internal (not private) so the recorder repro tests can drive a real
-    // AVAssetWriter with the exact settings production uses.
-    static func videoSettings(
+    private static func videoSettings(
         width: Int,
         height: Int,
         frameRate: Int
@@ -874,7 +866,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         return (sampleRate, min(channelCount, 2))
     }
 
-    static func audioWriterSettings(
+    private static func audioWriterSettings(
         sampleRate: Double,
         channelCount: Int
     ) -> [String: Any] {
@@ -1066,7 +1058,7 @@ extension ScreenRecorder: SCStreamDelegate {
     }
 }
 
-// Internal (not private) so the recorder repro tests can retime synthetic
+// Internal (not private) so the retiming tests can drive synthetic
 // buffers through the exact code path production uses.
 extension CMSampleBuffer {
     func retimed(bySubtracting offset: CMTime) -> CMSampleBuffer? {

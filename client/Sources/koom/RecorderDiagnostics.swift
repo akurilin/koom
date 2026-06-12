@@ -7,37 +7,30 @@ import Foundation
 
 /// Diagnostic data captured around a ScreenRecorder failure.
 ///
-/// The AAC encoder path in `AVAssetWriterInput` occasionally
-/// rejects a microphone sample buffer with an undocumented
-/// `NSOSStatusErrorDomain` code (we've seen -16122 and -16341 in
-/// production), and once that happens the whole writer goes to
-/// `.failed` and the recording is dead. The failures are
-/// intermittent and not reproducible on demand, so instead of
-/// guessing at the root cause we instrument the audio path heavily
-/// and dump a structured forensic report on failure. With enough
-/// failures captured we can look for the pattern.
+/// When `AVAssetWriter` fails mid-recording it usually surfaces an
+/// undocumented `NSOSStatusErrorDomain` code and no context (the
+/// -16122 idle-frame and -16341 fragment-flush bugs were both
+/// diagnosed from these dumps). The collector instruments the audio
+/// path cheaply during every recording and, on failure, writes one
+/// structured forensic report to `AppLog.error` so the entire
+/// context is visible in `~/Library/Logs/koom/koom.log`.
 ///
-/// The collector keeps a ring buffer of the most recent audio
-/// buffers it saw (size-capped, fixed-cost per insert), a ring
-/// buffer of Core Audio device-change events, summary counters,
-/// and a reference copy of the first audio sample's format. On
-/// failure the caller invokes `emitFailureReport(...)` and the
-/// collector writes a single big structured dump to `AppLog.error`
-/// so the entire context is visible in `~/Library/Logs/koom/koom.log`.
+/// It keeps a ring buffer of the most recent audio buffers it saw
+/// (size-capped, fixed-cost per insert), summary counters, PTS
+/// continuity tracking, and a reference copy of the first audio
+/// sample's format.
 ///
 /// Everything is value-typed and the collector is used from the
 /// recorder's serial sample queue, so there is no concurrent access
 /// to worry about.
 struct RecorderDiagnosticsCollector {
     private static let maxRecentAudioBuffers = 60
-    private static let maxAudioDeviceEvents = 20
 
     // MARK: - Lifecycle
 
     private var recordingStartedAt: Date?
     private var initialAudioFormat: AudioStreamBasicDescription?
     private var initialAudioChannelLayoutSize: Int?
-    private var initialFormatLoggedAt: Date?
     private var microphoneUniqueID: String?
     private var initialDefaultInputDeviceID: AudioDeviceID?
     private var initialDefaultInputDeviceName: String?
@@ -55,15 +48,13 @@ struct RecorderDiagnosticsCollector {
 
     // MARK: - PTS continuity tracking
     //
-    // The -16341 fragment-flush failure could not be reproduced from
-    // the anchor values alone (see RecorderAudioRetimingReproTests),
-    // so the leading suspect is a timing irregularity invisible at
-    // the ring buffer's 4-decimal seconds rendering. These counters
-    // compare exact CMTime values across the WHOLE recording: each
-    // buffer's PTS must equal the previous buffer's PTS plus its
-    // sample count. Source continuity is checked on every buffer SCK
-    // delivers; retimed continuity on appended buffers only (drops
-    // legitimately interrupt the appended timeline).
+    // Exact-CMTime invariants over the whole recording: each buffer's
+    // PTS must equal the previous buffer's PTS plus its sample count.
+    // Source continuity is checked on every buffer SCK delivers;
+    // retimed continuity on appended buffers only (drops and segment
+    // rollovers legitimately interrupt the appended timeline). Any
+    // nonzero count in a failure dump means the timeline itself is
+    // suspect.
 
     private var lastAudioSourcePTS: CMTime?
     private var lastAudioSourceSampleCount: CMItemCount = 0
@@ -81,7 +72,6 @@ struct RecorderDiagnosticsCollector {
     // MARK: - Ring buffers
 
     private var recentAudioBuffers: [AudioBufferSnapshot] = []
-    private var audioDeviceEvents: [AudioDeviceChangeEvent] = []
 
     // MARK: - Core Audio listener
 
@@ -97,7 +87,6 @@ struct RecorderDiagnosticsCollector {
         self.microphoneUniqueID = microphoneUniqueID
         self.initialAudioFormat = nil
         self.initialAudioChannelLayoutSize = nil
-        self.initialFormatLoggedAt = nil
         self.successfulAudioAppends = 0
         self.failedAudioAppends = 0
         self.audioBackpressureSamples = 0
@@ -117,7 +106,6 @@ struct RecorderDiagnosticsCollector {
         self.retimedDiscontinuityExample = nil
         self.segmentRollovers = 0
         self.recentAudioBuffers.removeAll(keepingCapacity: true)
-        self.audioDeviceEvents.removeAll(keepingCapacity: true)
 
         let (initialID, initialName) = RecorderDiagnosticsCollector.queryDefaultInputDevice()
         self.initialDefaultInputDeviceID = initialID
@@ -159,7 +147,6 @@ struct RecorderDiagnosticsCollector {
         if initialAudioFormat == nil, let format = snapshot.format {
             initialAudioFormat = format
             initialAudioChannelLayoutSize = snapshot.channelLayoutSize
-            initialFormatLoggedAt = now
         } else if let expected = initialAudioFormat,
             let actual = snapshot.format,
             !RecorderDiagnosticsCollector.asbdEquals(expected, actual)
@@ -182,8 +169,7 @@ struct RecorderDiagnosticsCollector {
 
         // Source-PTS continuity: each buffer should start exactly where
         // the previous one ended (previous PTS + previous sample count).
-        // A mismatch means the capture device's timeline jumped — the
-        // prime suspect for the fragment-flush failure.
+        // A mismatch means the capture device's timeline jumped.
         if let sampleRate = snapshot.format?.mSampleRate, sampleRate > 0,
             CMTIME_IS_VALID(sourcePTS)
         {
@@ -206,10 +192,10 @@ struct RecorderDiagnosticsCollector {
             lastAudioSourcePTS = sourcePTS
             lastAudioSourceSampleCount = snapshot.sampleCount
 
-            // Retimed continuity over the appended timeline — this is
-            // what the fragment writer actually sees. We already know
-            // cross-timescale retiming leaks ~1ns gaps, so only count,
-            // track the worst gap, and keep one example.
+            // Retimed continuity over the appended timeline — what the
+            // writer actually sees. Expected to be exactly contiguous
+            // since the timescale-converted retiming fix; count, track
+            // the worst gap, and keep one example.
             if outcome == .appended, CMTIME_IS_VALID(retimedPTS) {
                 if let last = lastAppendedRetimedPTS {
                     let expected = CMTimeAdd(
@@ -476,16 +462,6 @@ struct RecorderDiagnosticsCollector {
             lines.append("  now: (query failed)")
         }
 
-        lines.append("")
-        lines.append("Audio device change events (max \(Self.maxAudioDeviceEvents)):")
-        if audioDeviceEvents.isEmpty {
-            lines.append("  (none)")
-        } else {
-            for (i, event) in audioDeviceEvents.enumerated() {
-                lines.append("  [\(i)] \(describe(event))")
-            }
-        }
-
         // ── Process / system ───────────────────────────────────
         lines.append("")
         lines.append("Process state:")
@@ -549,15 +525,11 @@ struct RecorderDiagnosticsCollector {
         defaultInputListenerInstalled = false
     }
 
-    /// Static block shared by install/remove. Writing to a global
-    /// event log is overkill — instead we just log each device
-    /// change through AppLog and rely on `emitFailureReport` using
-    /// the collector's own ring buffer (see `noteDeviceEvent`
-    /// below). The Core Audio block, however, runs on a CA queue,
-    /// not our sample queue, so we can't mutate the collector from
-    /// here. We log directly to AppLog so the event is persisted
-    /// in the koom log, timestamped, and will show up near the
-    /// failure diagnostics in chronological order.
+    /// Static block shared by install/remove. The Core Audio block
+    /// runs on a CA queue, not our sample queue, so it can't mutate
+    /// the collector; it logs directly to AppLog so the event is
+    /// persisted, timestamped, and shows up near any failure
+    /// diagnostics in chronological order.
     nonisolated(unsafe) private static let defaultInputDeviceChangedHandler: AudioObjectPropertyListenerBlock = { _, _ in
         let (id, name) = queryDefaultInputDevice()
         let nameString = name ?? "(unknown)"
@@ -740,20 +712,15 @@ struct RecorderDiagnosticsCollector {
     }
 
     /// Renders a CMTime as seconds plus the exact value/timescale —
-    /// "4.2179(4217915417/1000000000+R)". The replay harness showed
-    /// the failure-relevant detail (1ns retiming gaps) is invisible
-    /// at any fixed decimal rendering, so the raw rational is the
-    /// part that matters. "+R" marks kCMTimeFlags_HasBeenRounded.
+    /// "4.2179(4217915417/1000000000+R)". Sub-microsecond timing
+    /// detail (e.g. 1ns retiming gaps) is invisible at any fixed
+    /// decimal rendering, so the raw rational is the part that
+    /// matters. "+R" marks kCMTimeFlags_HasBeenRounded.
     private func describeRawCMTime(_ time: CMTime) -> String {
         guard CMTIME_IS_VALID(time) else { return "invalid" }
         let rounded = time.flags.contains(.hasBeenRounded) ? "+R" : ""
         return
             "\(String(format: "%.4f", time.seconds))(\(time.value)/\(time.timescale)\(rounded))"
-    }
-
-    private func describe(_ event: AudioDeviceChangeEvent) -> String {
-        let age = event.capturedAt.timeIntervalSinceNow
-        return String(format: "%.3fs ago: %@", -age, event.description)
     }
 
     private func describe(_ status: AVAssetWriter.Status) -> String {
@@ -888,13 +855,4 @@ struct AudioBufferSnapshot {
     let format: AudioStreamBasicDescription?
     let channelLayoutSize: Int?
     let outcome: AudioAppendOutcome
-}
-
-/// Device-change events captured by the Core Audio listener.
-/// Currently only the listener logs directly to AppLog; this
-/// struct is kept so we can easily switch to in-memory ring
-/// buffering if cross-queue access becomes practical.
-struct AudioDeviceChangeEvent {
-    let capturedAt: Date
-    let description: String
 }

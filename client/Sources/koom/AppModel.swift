@@ -321,7 +321,11 @@ final class AppModel: ObservableObject {
 
     func cameraSelectionDidChange() {
         AppLog.info("Selected camera: \(selectedCameraID.isEmpty ? "none" : selectedCameraID)")
-        cameraPreviewManager.setCamera(uniqueID: selectedCameraID.isEmpty ? nil : selectedCameraID)
+        cameraPreviewManager.setCamera(
+            uniqueID: selectedCameraID.isEmpty ? nil : selectedCameraID
+        ) { [weak self] in
+            self?.updateOverlay()
+        }
         updateOverlay()
     }
 
@@ -453,13 +457,12 @@ final class AppModel: ObservableObject {
         )
     }
 
-    /// Unattended repro driver for the intermittent -16341 recorder
-    /// failure: records short clips back-to-back with the restored
-    /// device settings and exits with status 1 if any run was
-    /// interrupted. The failure needs real SCK capture (the synthetic
-    /// replay harness in koomTests could not trigger it), and only the
-    /// app bundle holds the screen/mic permissions, so this lives here
-    /// rather than in the test suite.
+    /// Unattended soak harness for the recording pipeline: records
+    /// clips back-to-back with the restored device settings and exits
+    /// with status 1 if any run was interrupted. Recorder bugs have
+    /// only ever reproduced with real SCK capture (never synthetically
+    /// in koomTests), and only the app bundle holds the screen/mic
+    /// permissions, so this lives here rather than in the test suite.
     ///
     /// Enable by launching with KOOM_SOAK_RECORDINGS=<runs>, e.g.:
     ///   KOOM_SOAK_RECORDINGS=10 ./scripts/run.sh
@@ -664,7 +667,11 @@ final class AppModel: ObservableObject {
             selectedMicrophoneID = ""
         }
 
-        cameraPreviewManager.setCamera(uniqueID: selectedCameraID.isEmpty ? nil : selectedCameraID)
+        cameraPreviewManager.setCamera(
+            uniqueID: selectedCameraID.isEmpty ? nil : selectedCameraID
+        ) { [weak self] in
+            self?.updateOverlay()
+        }
         AppLog.info(
             "Active camera: \(selectedCameraID.isEmpty ? "none" : selectedCameraID), microphone: \(selectedMicrophoneID.isEmpty ? "none" : selectedMicrophoneID)"
         )

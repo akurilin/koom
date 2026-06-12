@@ -99,6 +99,19 @@ enum KoomConfig {
     @MainActor private static var cachedAdminSecrets = StoredAdminSecrets()
     @MainActor private static var hasCachedAdminSecrets = false
 
+    /// Dev-mode escape hatch: when `KOOM_ADMIN_SECRETS_FILE` is set,
+    /// the admin secrets live in that JSON file
+    /// (`{"dev": "...", "prod": "..."}` — the same payload stored in
+    /// the Keychain item) and the Keychain is never touched, for reads
+    /// or writes. Rebuilding re-signs the binary, which invalidates
+    /// the Keychain item's ACL and triggers a password prompt on every
+    /// run — unusable for agentic / unattended testing. The file is
+    /// plaintext, so this is strictly for development machines.
+    private static var adminSecretsFileOverride: URL? {
+        ProcessInfo.processInfo.environment["KOOM_ADMIN_SECRETS_FILE"]
+            .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+    }
+
     static var activeEnvironment: KoomEnvironment {
         get {
             if let raw = defaults.string(forKey: activeEnvironmentKey),
@@ -251,10 +264,46 @@ enum KoomConfig {
             return cachedAdminSecrets
         }
 
-        let secrets = try loadStoredAdminSecretsFromKeychain()
+        let secrets: StoredAdminSecrets
+        if let fileURL = adminSecretsFileOverride {
+            AppLog.info(
+                "Admin secrets file override active: \(fileURL.path) (Keychain bypassed)."
+            )
+            secrets = try loadStoredAdminSecrets(fromFile: fileURL)
+        } else {
+            secrets = try loadStoredAdminSecretsFromKeychain()
+        }
         cachedAdminSecrets = secrets
         hasCachedAdminSecrets = true
         return secrets
+    }
+
+    private static func loadStoredAdminSecrets(
+        fromFile fileURL: URL
+    ) throws -> StoredAdminSecrets {
+        // A missing file is the normal first-run state, same as a
+        // missing Keychain item.
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return StoredAdminSecrets()
+        }
+        let encodedSecrets = try String(contentsOf: fileURL, encoding: .utf8)
+        return try decodeStoredAdminSecrets(encodedSecrets)
+    }
+
+    private static func writeStoredAdminSecrets(
+        _ secrets: StoredAdminSecrets,
+        to fileURL: URL
+    ) throws {
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try JSONEncoder().encode(secrets).write(to: fileURL, options: [.atomic])
+        // Plaintext credentials: keep them readable by the owner only.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: fileURL.path
+        )
     }
 
     @MainActor
@@ -321,6 +370,13 @@ enum KoomConfig {
         removeLegacyItems: Bool = true
     ) throws {
         let normalizedSecrets = secrets.normalized
+
+        if let fileURL = adminSecretsFileOverride {
+            try writeStoredAdminSecrets(normalizedSecrets, to: fileURL)
+            cachedAdminSecrets = normalizedSecrets
+            hasCachedAdminSecrets = true
+            return
+        }
 
         if normalizedSecrets.isEmpty {
             try Keychain.delete(

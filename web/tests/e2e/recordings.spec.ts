@@ -183,7 +183,7 @@ test("admin recordings happy path", async ({ page }) => {
 
     // ─────────────────────────────────────────────────────────────
     // 7. Delete the remaining seeded recordings with the
-    //    non-production bulk-delete control.
+    //    danger-zone bulk-delete control at the bottom of the page.
     // ─────────────────────────────────────────────────────────────
     page.once("dialog", (dialog) => {
       void dialog.accept();

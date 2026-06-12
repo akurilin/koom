@@ -11,7 +11,7 @@
  *
  *   1. Verify the row exists (so we can return 404 cleanly).
  *   2. Delete the R2 video object and best-effort delete the
- *      thumbnail sidecar object.
+ *      thumbnail and transcript sidecar objects.
  *   3. Delete the row.
  *
  * Step 2 before step 3 means a partial failure (video delete succeeds
@@ -38,6 +38,7 @@ import {
 import {
   deleteRecordingObject,
   deleteRecordingThumbnailObject,
+  deleteRecordingTranscriptObject,
 } from "@/lib/r2/client";
 
 interface RouteContext {
@@ -97,6 +98,14 @@ export async function DELETE(
   } catch (err) {
     console.warn(
       "[admin/recordings/delete] thumbnail cleanup failed; continuing:",
+      err,
+    );
+  }
+  try {
+    await deleteRecordingTranscriptObject(id);
+  } catch (err) {
+    console.warn(
+      "[admin/recordings/delete] transcript cleanup failed; continuing:",
       err,
     );
   }

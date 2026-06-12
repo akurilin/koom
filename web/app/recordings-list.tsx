@@ -3,7 +3,8 @@
  *
  * Renders a grid of recording cards with sidecar JPEG thumbnails
  * when available, falling back to first-frame video previews, plus
- * a sort dropdown, a delete button per card, and a logout button.
+ * a sort dropdown, a delete button per card, a logout button, and
+ * a delete-everything danger zone at the very bottom of the page.
  *
  * Preferred preview path: load the sidecar JPEG that the desktop
  * client can upload next to the video in R2. If it 404s or fails to
@@ -56,10 +57,9 @@ const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
 
 interface Props {
   initialRecordings: RecordingListItem[];
-  showBulkDelete: boolean;
 }
 
-export function RecordingsList({ initialRecordings, showBulkDelete }: Props) {
+export function RecordingsList({ initialRecordings }: Props) {
   const router = useRouter();
   const [recordings, setRecordings] = useState(initialRecordings);
   const [sortKey, setSortKey] = useState<SortKey>("date-desc");
@@ -193,17 +193,6 @@ export function RecordingsList({ initialRecordings, showBulkDelete }: Props) {
               </option>
             ))}
           </select>
-          {showBulkDelete && (
-            <button
-              type="button"
-              data-testid="delete-all-button"
-              onClick={handleDeleteAll}
-              disabled={isMutating || recordings.length === 0}
-              className="rounded-md border border-red-800/70 bg-red-950/40 px-3 py-1.5 text-sm text-red-200 hover:border-red-700 hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isDeletingAll ? "Deleting all…" : "Delete all recordings"}
-            </button>
-          )}
           <button
             type="button"
             data-testid="logout-button"
@@ -252,6 +241,30 @@ export function RecordingsList({ initialRecordings, showBulkDelete }: Props) {
             />
           ))}
         </div>
+      )}
+
+      {/* Danger zone. Lives at the very bottom, well away from the
+          everyday controls, so it can't be clicked by accident. */}
+      {recordings.length > 0 && (
+        <footer
+          className="mt-16 rounded-md border border-red-900/40 px-4 py-4 sm:flex sm:items-center sm:justify-between"
+          data-testid="danger-zone"
+        >
+          <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400 sm:mb-0 sm:mr-6">
+            Permanently delete all {recordings.length}{" "}
+            {recordings.length === 1 ? "recording" : "recordings"}, including
+            their files in storage. This cannot be undone.
+          </p>
+          <button
+            type="button"
+            data-testid="delete-all-button"
+            onClick={handleDeleteAll}
+            disabled={isMutating}
+            className="shrink-0 rounded-md border border-red-800/70 bg-red-950/40 px-3 py-1.5 text-sm text-red-200 hover:border-red-700 hover:bg-red-950/60 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isDeletingAll ? "Deleting all…" : "Delete all recordings"}
+          </button>
+        </footer>
       )}
     </div>
   );

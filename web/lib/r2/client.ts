@@ -208,6 +208,12 @@ export async function deleteRecordingThumbnailObject(
   await deleteObject(recordingThumbnailObjectKey(recordingId));
 }
 
+export async function deleteRecordingTranscriptObject(
+  recordingId: string,
+): Promise<void> {
+  await deleteObject(recordingTranscriptObjectKey(recordingId));
+}
+
 function isNotFoundError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const e = err as {

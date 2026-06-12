@@ -25,20 +25,12 @@ export default async function HomePage(): Promise<ReactElement> {
     redirect("/login");
   }
 
-  // Non-production escape hatch for local development and test
-  // environments. Keep the bulk-delete control out of deployed
-  // production surfaces.
-  const showBulkDelete = process.env.NODE_ENV !== "production";
-
   const recordings = await listAllCompletedRecordings();
   const items = recordings.map(toRecordingListItem);
 
   return (
     <main className="min-h-screen">
-      <RecordingsList
-        initialRecordings={items}
-        showBulkDelete={showBulkDelete}
-      />
+      <RecordingsList initialRecordings={items} />
     </main>
   );
 }

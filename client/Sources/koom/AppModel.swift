@@ -99,7 +99,9 @@ final class AppModel: ObservableObject {
     }
 
     private let cameraPreviewManager = CameraPreviewManager()
-    private let overlayWindowController = CameraOverlayWindowController()
+    private lazy var overlayWindowController = CameraOverlayWindowController(
+        session: cameraPreviewManager.session
+    )
     private let drawingOverlayWindowController = DrawingOverlayWindowController()
     private let settingsStore: AppSettingsStore
     private let uploader = Uploader()
@@ -335,11 +337,7 @@ final class AppModel: ObservableObject {
 
     func cameraSelectionDidChange() {
         AppLog.info("Selected camera: \(selectedCameraID.isEmpty ? "none" : selectedCameraID)")
-        cameraPreviewManager.setCamera(
-            uniqueID: selectedCameraID.isEmpty ? nil : selectedCameraID
-        ) { [weak self] in
-            self?.updateOverlay()
-        }
+        cameraPreviewManager.setCamera(uniqueID: selectedCameraID.isEmpty ? nil : selectedCameraID)
         updateOverlay()
     }
 
@@ -679,11 +677,7 @@ final class AppModel: ObservableObject {
             selectedMicrophoneID = ""
         }
 
-        cameraPreviewManager.setCamera(
-            uniqueID: selectedCameraID.isEmpty ? nil : selectedCameraID
-        ) { [weak self] in
-            self?.updateOverlay()
-        }
+        cameraPreviewManager.setCamera(uniqueID: selectedCameraID.isEmpty ? nil : selectedCameraID)
         AppLog.info(
             "Active camera: \(selectedCameraID.isEmpty ? "none" : selectedCameraID), microphone: \(selectedMicrophoneID.isEmpty ? "none" : selectedMicrophoneID)"
         )
@@ -691,7 +685,6 @@ final class AppModel: ObservableObject {
 
     private func updateOverlay() {
         overlayWindowController.update(
-            session: cameraPreviewManager.session,
             displayID: selectedDisplayID,
             isVisible: !selectedCameraID.isEmpty
         )

@@ -12,16 +12,12 @@ final class CameraPreviewManager: @unchecked Sendable {
         session.sessionPreset = .high
     }
 
-    func setCamera(
-        uniqueID: String?,
-        onConfigured: (@MainActor @Sendable () -> Void)? = nil
-    ) {
+    func setCamera(uniqueID: String?) {
         sessionQueue.async {
             if let uniqueID, self.activeInput?.device.uniqueID == uniqueID {
                 if !self.session.isRunning {
                     self.session.startRunning()
                 }
-                self.notifyConfigurationCompleted(onConfigured)
                 return
             }
 
@@ -42,7 +38,6 @@ final class CameraPreviewManager: @unchecked Sendable {
                 if self.session.isRunning {
                     self.session.stopRunning()
                 }
-                self.notifyConfigurationCompleted(onConfigured)
                 return
             }
 
@@ -53,16 +48,6 @@ final class CameraPreviewManager: @unchecked Sendable {
             if !self.session.isRunning {
                 self.session.startRunning()
             }
-            self.notifyConfigurationCompleted(onConfigured)
-        }
-    }
-
-    private func notifyConfigurationCompleted(
-        _ completion: (@MainActor @Sendable () -> Void)?
-    ) {
-        guard let completion else { return }
-        Task { @MainActor in
-            completion()
         }
     }
 }
@@ -74,20 +59,21 @@ final class CameraOverlayWindowController: NSWindowController {
         width: previewDiameter + (shadowInset * 2),
         height: previewDiameter + (shadowInset * 2)
     )
-    private lazy var hostingView = NSHostingView(
-        rootView: CameraOverlayContent(
-            session: AVCaptureSession(),
-            previewDiameter: Self.previewDiameter,
-            shadowInset: Self.shadowInset
-        )
-    )
+    private let hostingView: NSHostingView<CameraOverlayContent>
 
-    init() {
+    init(session: AVCaptureSession) {
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.overlaySize),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
+        )
+        hostingView = NSHostingView(
+            rootView: CameraOverlayContent(
+                session: session,
+                previewDiameter: Self.previewDiameter,
+                shadowInset: Self.shadowInset
+            )
         )
 
         window.isOpaque = false
@@ -108,13 +94,7 @@ final class CameraOverlayWindowController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func update(session: AVCaptureSession, displayID: CGDirectDisplayID, isVisible: Bool) {
-        hostingView.rootView = CameraOverlayContent(
-            session: session,
-            previewDiameter: Self.previewDiameter,
-            shadowInset: Self.shadowInset
-        )
-
+    func update(displayID: CGDirectDisplayID, isVisible: Bool) {
         guard isVisible, let window = window else {
             window?.orderOut(nil)
             return
@@ -143,6 +123,9 @@ private struct CameraOverlayContent: View {
     var body: some View {
         CameraPreviewView(session: session)
             .frame(width: previewDiameter, height: previewDiameter)
+            // Mirroring is a presentation invariant, independent of
+            // when AVFoundation creates or replaces its connection.
+            .scaleEffect(x: -1, y: 1)
             .clipShape(Circle())
             .overlay {
                 Circle()
@@ -160,25 +143,16 @@ private struct CameraPreviewView: NSViewRepresentable {
     func makeNSView(context: Context) -> CameraPreviewHostView {
         let view = CameraPreviewHostView()
         view.previewLayer.session = session
-        view.applyMirroring()
         return view
     }
 
     func updateNSView(_ nsView: CameraPreviewHostView, context: Context) {
+        guard nsView.previewLayer.session !== session else { return }
         nsView.previewLayer.session = session
-        nsView.applyMirroring()
     }
 }
 
 private final class CameraPreviewHostView: NSView {
-    private var pendingMirroringWorkItem: DispatchWorkItem?
-
-    private enum MirroringResult {
-        case applied
-        case awaitingConnection
-        case unsupported
-    }
-
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -195,60 +169,11 @@ private final class CameraPreviewHostView: NSView {
         layer as! AVCaptureVideoPreviewLayer
     }
 
-    deinit {
-        pendingMirroringWorkItem?.cancel()
-    }
-
-    func applyMirroring() {
-        switch applyMirroringIfPossible() {
-        case .applied, .unsupported:
-            pendingMirroringWorkItem?.cancel()
-            pendingMirroringWorkItem = nil
-        case .awaitingConnection:
-            scheduleMirroringRetry()
-        }
-    }
-
-    private func applyMirroringIfPossible() -> MirroringResult {
-        guard let connection = previewLayer.connection else {
-            return .awaitingConnection
-        }
-        guard connection.isVideoMirroringSupported else {
-            return .unsupported
-        }
-
-        connection.automaticallyAdjustsVideoMirroring = false
-        connection.isVideoMirrored = true
-        return .applied
-    }
-
-    private func scheduleMirroringRetry() {
-        guard pendingMirroringWorkItem == nil, previewLayer.session?.isRunning == true else {
-            return
-        }
-
-        queueMirroringRetry()
-    }
-
-    private func queueMirroringRetry() {
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.pendingMirroringWorkItem = nil
-            guard self.previewLayer.session?.isRunning == true else { return }
-            if self.applyMirroringIfPossible() == .awaitingConnection {
-                self.queueMirroringRetry()
-            }
-        }
-        pendingMirroringWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: workItem)
-    }
-
     override func layout() {
         super.layout()
         previewLayer.frame = bounds
         previewLayer.cornerRadius = bounds.width / 2
         previewLayer.masksToBounds = true
-        applyMirroring()
     }
 }
 

@@ -31,7 +31,7 @@ struct CompressionSettings: Equatable, Sendable {
     let optimizeRecordings: Bool
 
     static let `default` = CompressionSettings(
-        captureFrameRate: .reduced15,
+        captureFrameRate: .standard30,
         uploadRecordings: true,
         optimizeRecordings: true
     )

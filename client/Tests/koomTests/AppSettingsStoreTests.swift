@@ -5,15 +5,6 @@ import XCTest
 
 @MainActor
 final class AppSettingsStoreTests: XCTestCase {
-    func testUploadRecordingsDefaultsToEnabled() {
-        let (defaults, suiteName) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let settings = AppSettingsStore(defaults: defaults)
-
-        XCTAssertTrue(settings.loadCompressionSettings().uploadRecordings)
-    }
-
     func testUploadRecordingsCanBeDisabled() {
         let (defaults, suiteName) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -22,15 +13,6 @@ final class AppSettingsStoreTests: XCTestCase {
         settings.saveUploadRecordings(false)
 
         XCTAssertFalse(settings.loadCompressionSettings().uploadRecordings)
-    }
-
-    func testRecordingOptimizationDefaultsToEnabled() {
-        let (defaults, suiteName) = makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
-        let settings = AppSettingsStore(defaults: defaults)
-
-        XCTAssertTrue(settings.loadCompressionSettings().optimizeRecordings)
     }
 
     func testRecordingOptimizationCanBeDisabled() {

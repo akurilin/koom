@@ -15,6 +15,11 @@
 - Examples include concurrency/sendability warnings, API misuse, deprecated APIs with clear replacements, lifetime issues, and warnings that suggest future breakage.
 - If a warning is benign or cannot be resolved cleanly in the current task, call that out explicitly in the handoff instead of silently leaving it behind.
 
+## Testing
+
+- Only write tests with real leverage: nontrivial logic, parsing, persistence round-trips, state machines, API contracts.
+- Do not write tests that restate constants — asserting a default value, an enum's raw value, a label string, and the like. A test that mirrors a one-line setting can't catch a bug; it just adds a second place to edit when the value changes. The same goes for any test that is effectively a layer of indirection over something shallow.
+
 ## Database Migrations
 
 - **All schema changes — local and remote — go through the Supabase CLI. Never run `CREATE TABLE`, `ALTER TABLE`, `DROP ...`, or any other DDL against a koom database via raw `psql`, Supabase Studio's SQL editor, or any other out-of-band path.** Raw-SQL changes skip `supabase_migrations.schema_migrations`, which puts the local and remote migration state out of sync and breaks the next `supabase db push`. The only exception is genuine break-glass recovery, and that should be called out explicitly in the handoff.

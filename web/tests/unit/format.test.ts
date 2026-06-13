@@ -7,6 +7,12 @@ import {
   formatTimestamp,
 } from "@/lib/format";
 
+// formatDate renders in the machine's local timezone (the right
+// behavior for the UI), which makes date assertions depend on where
+// the tests run — midnight UTC is "Dec 31" on this side of the
+// Atlantic. Pin the process to UTC so expectations are deterministic.
+process.env.TZ = "UTC";
+
 describe("formatDate", () => {
   it("formats an ISO date string", () => {
     expect(formatDate("2026-03-15T12:00:00Z")).toBe("Mar 15, 2026");

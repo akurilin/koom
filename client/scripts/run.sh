@@ -4,13 +4,18 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_ARGS=()
+APP_PATH=""
 
 usage() {
     cat >&2 <<'EOF'
-Usage: ./scripts/run.sh [--clean]
+Usage: ./scripts/run.sh [--clean] [--release | --debug] [--app-path PATH]
 
 Options:
   --clean    Remove .build before invoking swift build.
+  --release  Build and run a release bundle instead of the default debug bundle.
+  --debug    Build and run a debug bundle explicitly.
+  --app-path PATH
+             Run an already-built app bundle instead of building first.
   --help     Show this help text.
 EOF
 }
@@ -20,6 +25,19 @@ while [[ $# -gt 0 ]]; do
         --clean)
             BUILD_ARGS+=("$1")
             shift
+            ;;
+        --release | --debug)
+            BUILD_ARGS+=("$1")
+            shift
+            ;;
+        --app-path)
+            if [[ $# -lt 2 ]]; then
+                echo "Missing value for --app-path" >&2
+                usage
+                exit 1
+            fi
+            APP_PATH="$2"
+            shift 2
             ;;
         --help)
             usage
@@ -33,10 +51,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ ${#BUILD_ARGS[@]} -gt 0 ]]; then
-    APP_PATH="$("$ROOT_DIR/scripts/build-app.sh" "${BUILD_ARGS[@]}")"
-else
-    APP_PATH="$("$ROOT_DIR/scripts/build-app.sh")"
+if [[ -n "$APP_PATH" && ${#BUILD_ARGS[@]} -gt 0 ]]; then
+    echo "--app-path cannot be combined with build options." >&2
+    usage
+    exit 1
+fi
+
+if [[ -z "$APP_PATH" ]]; then
+    if [[ ${#BUILD_ARGS[@]} -gt 0 ]]; then
+        APP_PATH="$("$ROOT_DIR/scripts/build-app.sh" "${BUILD_ARGS[@]}")"
+    else
+        APP_PATH="$("$ROOT_DIR/scripts/build-app.sh")"
+    fi
 fi
 APP_EXECUTABLE="$APP_PATH/Contents/MacOS/koom"
 LOG_FILE="$HOME/Library/Logs/koom/koom.log"

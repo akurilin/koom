@@ -7,10 +7,11 @@ DEFAULT_INSTALL_DIR="/Applications"
 INSTALL_DIR="$DEFAULT_INSTALL_DIR"
 CLEAN_BUILD=false
 LAUNCH_AFTER_INSTALL=false
+RUN_AFTER_INSTALL=false
 
 usage() {
     cat >&2 <<'EOF'
-Usage: ./scripts/install-app.sh [--clean] [--destination DIR] [--launch]
+Usage: ./scripts/install-app.sh [--clean] [--destination DIR] [--launch | --run]
 
 Builds a release koom.app bundle, signs it with the local development
 codesigning identity, and installs it into /Applications by default.
@@ -19,6 +20,7 @@ Options:
   --clean             Remove the existing release build products first.
   --destination DIR   Install into DIR instead of /Applications.
   --launch            Launch the installed app after copying it.
+  --run               Run the installed app in the foreground after copying it.
   --help              Show this help text.
 EOF
 }
@@ -42,6 +44,10 @@ while [[ $# -gt 0 ]]; do
             LAUNCH_AFTER_INSTALL=true
             shift
             ;;
+        --run)
+            RUN_AFTER_INSTALL=true
+            shift
+            ;;
         --help)
             usage
             exit 0
@@ -53,6 +59,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$LAUNCH_AFTER_INSTALL" == true && "$RUN_AFTER_INSTALL" == true ]]; then
+    echo "--launch and --run cannot be combined." >&2
+    usage
+    exit 1
+fi
 
 canonicalize_existing_or_parent() {
     local target="$1"
@@ -116,6 +128,10 @@ codesign --verify --deep --strict --verbose=2 "$INSTALL_PATH" >/dev/null
 
 if [[ "$LAUNCH_AFTER_INSTALL" == true ]]; then
     open "$INSTALL_PATH"
+fi
+
+if [[ "$RUN_AFTER_INSTALL" == true ]]; then
+    exec "$ROOT_DIR/scripts/run.sh" --app-path "$INSTALL_PATH"
 fi
 
 printf '%s\n' "$INSTALL_PATH"

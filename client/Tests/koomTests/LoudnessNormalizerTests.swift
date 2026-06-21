@@ -69,4 +69,59 @@ final class LoudnessNormalizerTests: XCTestCase {
             )
         )
     }
+
+    func testNormalizationGainUsesTargetBoostWhenPeakHeadroomAllows() {
+        let gain = LoudnessNormalizer.normalizationGain(
+            for: LoudnessNormalizer.LoudnessMeasurement(
+                integratedLoudness: -22.0,
+                truePeak: -12.0,
+                loudnessRange: 4.0
+            )
+        )
+
+        XCTAssertEqual(gain, 6.0)
+    }
+
+    func testNormalizationGainCapsBoostToPeakHeadroom() {
+        let gain = LoudnessNormalizer.normalizationGain(
+            for: LoudnessNormalizer.LoudnessMeasurement(
+                integratedLoudness: -31.27,
+                truePeak: -12.35,
+                loudnessRange: 6.5
+            )
+        )
+
+        XCTAssertEqual(gain, 10.85, accuracy: 0.001)
+    }
+
+    func testNormalizationGainDoesNotAttenuateQuietClipToSatisfyPeakCeiling() {
+        let gain = LoudnessNormalizer.normalizationGain(
+            for: LoudnessNormalizer.LoudnessMeasurement(
+                integratedLoudness: -30.0,
+                truePeak: -1.0,
+                loudnessRange: 8.0
+            )
+        )
+
+        XCTAssertEqual(gain, 0.0)
+    }
+
+    func testNormalizationGainAllowsStaticReductionForLoudClip() {
+        let gain = LoudnessNormalizer.normalizationGain(
+            for: LoudnessNormalizer.LoudnessMeasurement(
+                integratedLoudness: -12.0,
+                truePeak: -1.0,
+                loudnessRange: 3.0
+            )
+        )
+
+        XCTAssertEqual(gain, -4.0)
+    }
+
+    func testApplyFilterUsesOnlyStaticVolume() {
+        XCTAssertEqual(
+            LoudnessNormalizer.applyFilter(gain: 6.25),
+            "volume=6.25dB"
+        )
+    }
 }

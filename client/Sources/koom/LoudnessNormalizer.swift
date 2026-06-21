@@ -5,13 +5,10 @@ import Foundation
 /// before upload. Video passes through untouched; only audio is re-encoded.
 ///
 /// Pass 1 measures the file's integrated loudness with ffmpeg's `loudnorm`
-/// filter; pass 2 applies one constant gain for the whole file plus a peak
-/// limiter for the few transients the boost would clip. loudnorm itself is
-/// deliberately not used for pass 2: its `linear=true` mode silently falls
-/// back to a windowed dynamic algorithm whenever the boost would push the
-/// loudest peak past the true-peak ceiling — which is the common case for
-/// quiet narration — and that algorithm audibly ducks the voice for seconds
-/// after every louder transient.
+/// filter; pass 2 applies one constant gain for the whole file. No compressor,
+/// limiter, or loudnorm processing is used in pass 2: if the full target boost
+/// would clip, the fixed gain is reduced for the entire clip instead of
+/// dynamically ducking later words.
 enum LoudnessNormalizer {
     /// Spoken-word web target. YouTube normalizes to about -14 LUFS;
     /// -16 keeps a little headroom for voice.
@@ -20,6 +17,7 @@ enum LoudnessNormalizer {
     /// Recordings already within this distance of the target are left
     /// untouched to avoid a pointless audio re-encode.
     private static let skipThresholdLU = 1.0
+    private static let minimumAppliedGainDB = 0.1
 
     struct LoudnessMeasurement: Equatable {
         let integratedLoudness: Double
@@ -74,6 +72,14 @@ enum LoudnessNormalizer {
             return false
         }
 
+        let gain = normalizationGain(for: measurement)
+        guard abs(gain) >= minimumAppliedGainDB else {
+            AppLog.info(
+                "Loudness normalization skipped for \(originalFileURL.lastPathComponent): fixed-gain boost has no true-peak headroom (desired \(format(targetIntegratedLoudness - measurement.integratedLoudness)) dB; truePeak \(measurement.truePeak) dBTP; ceiling \(targetTruePeak) dBTP)."
+            )
+            return false
+        }
+
         let tempDirectory = originalFileURL.deletingLastPathComponent()
             .appendingPathComponent(
                 ".koom-normalize-\(UUID().uuidString)",
@@ -93,7 +99,7 @@ enum LoudnessNormalizer {
             try await applyNormalization(
                 to: originalFileURL,
                 outputURL: outputURL,
-                measurement: measurement,
+                gain: gain,
                 ffmpegURL: ffmpegURL
             )
             _ = try FileManager.default.replaceItemAt(
@@ -108,7 +114,7 @@ enum LoudnessNormalizer {
         }
 
         AppLog.info(
-            "Loudness normalization replaced \(originalFileURL.lastPathComponent): integrated \(measurement.integratedLoudness) LUFS -> target \(targetIntegratedLoudness) LUFS (constant gain \(format(targetIntegratedLoudness - measurement.integratedLoudness)) dB)."
+            "Loudness normalization replaced \(originalFileURL.lastPathComponent): integrated \(measurement.integratedLoudness) LUFS; target \(targetIntegratedLoudness) LUFS; fixed gain \(format(gain)) dB."
         )
         return true
     }
@@ -148,7 +154,7 @@ enum LoudnessNormalizer {
     private static func applyNormalization(
         to inputURL: URL,
         outputURL: URL,
-        measurement: LoudnessMeasurement,
+        gain: Double,
         ffmpegURL: URL
     ) async throws {
         let arguments = [
@@ -166,13 +172,12 @@ enum LoudnessNormalizer {
             "-c:v",
             "copy",
             "-af",
-            applyFilter(for: measurement),
+            applyFilter(gain: gain),
             "-c:a",
             "aac",
             "-b:a",
             "192k",
-            // loudnorm internally upsamples to 192 kHz; pin the output back
-            // to the capture rate.
+            // Pin normalized audio to the capture rate for stable output.
             "-ar",
             "48000",
             "-movflags",
@@ -192,18 +197,22 @@ enum LoudnessNormalizer {
         "loudnorm=print_format=json"
     }
 
-    /// One constant gain for the whole file (so the level can never duck
-    /// mid-recording), then a lookahead limiter that catches only the
-    /// transients the boost would push past the true-peak ceiling.
-    /// `level=false` disables alimiter's auto-gain; `latency=1` compensates
-    /// the lookahead delay so audio stays in sync with the copied video.
-    private static func applyFilter(
-        for measurement: LoudnessMeasurement
-    ) -> String {
-        let gain = targetIntegratedLoudness - measurement.integratedLoudness
-        let linearCeiling = pow(10.0, targetTruePeak / 20.0)
-        return
-            "volume=\(format(gain))dB,alimiter=limit=\(String(format: "%.4f", linearCeiling)):level=false:latency=1"
+    /// Returns one fixed gain for the whole recording. Positive boosts are
+    /// capped by true-peak headroom so clipping risk is handled globally, not
+    /// with a dynamic limiter.
+    static func normalizationGain(for measurement: LoudnessMeasurement) -> Double {
+        let desiredGain =
+            targetIntegratedLoudness
+            - measurement.integratedLoudness
+        guard desiredGain > 0, measurement.truePeak.isFinite else {
+            return desiredGain
+        }
+        let peakHeadroom = targetTruePeak - measurement.truePeak
+        return min(desiredGain, max(0.0, peakHeadroom))
+    }
+
+    static func applyFilter(gain: Double) -> String {
+        "volume=\(format(gain))dB"
     }
 
     private static func format(_ value: Double) -> String {

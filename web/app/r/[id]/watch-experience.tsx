@@ -21,6 +21,8 @@ import { VideoPlayer } from "./video-player";
 
 type RailTab = "comments" | "transcript";
 
+const PLAYBACK_SPEEDS = [1, 1.5, 2, 3];
+
 interface WatchExperienceProps {
   recordingId: string;
   videoUrl: string;
@@ -59,6 +61,25 @@ export function WatchExperience({
   const [currentTime, setCurrentTime] = useState(0);
   const [activeTab, setActiveTab] = useState<RailTab>("transcript");
   const [railOpen, setRailOpen] = useState(true);
+  const [playbackRate, setPlaybackRate] = useState(1);
+
+  // Track the video's actual rate rather than mirroring our own
+  // clicks, so a speed picked through the browser's built-in
+  // controls menu also updates the button highlight.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const handler = () => setPlaybackRate(video.playbackRate);
+    video.addEventListener("ratechange", handler);
+    return () => video.removeEventListener("ratechange", handler);
+  }, []);
+
+  const setSpeed = useCallback((rate: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    // State updates via the ratechange listener above.
+    video.playbackRate = rate;
+  }, []);
 
   // Inline title editing (admin only)
   const [title, setTitle] = useState(displayTitle);
@@ -206,6 +227,26 @@ export function WatchExperience({
           durationSeconds={durationSeconds}
           onMarkerClick={seekAndHighlight}
         />
+        <div className="mt-2 flex justify-end items-center gap-1">
+          <span className="text-xs text-zinc-400 dark:text-zinc-500 mr-1">
+            Speed
+          </span>
+          {PLAYBACK_SPEEDS.map((rate) => (
+            <button
+              key={rate}
+              type="button"
+              onClick={() => setSpeed(rate)}
+              aria-pressed={playbackRate === rate}
+              className={`px-2 py-0.5 rounded-md text-xs font-medium transition-colors ${
+                playbackRate === rate
+                  ? "bg-sky-500/10 text-sky-600 dark:text-sky-400"
+                  : "text-zinc-400 dark:text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              }`}
+            >
+              {rate}x
+            </button>
+          ))}
+        </div>
         <div className="mt-4 sm:mt-6">
           {isEditingTitle ? (
             <div className="flex items-center gap-2">

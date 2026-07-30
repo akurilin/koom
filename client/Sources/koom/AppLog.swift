@@ -64,6 +64,10 @@ enum AppLog {
     }
 
     private static func makeLogsDirectoryURL() -> URL {
+        if let profileLogsURL = KoomRuntimeProfile.logsDirectoryURL {
+            return profileLogsURL
+        }
+
         let libraryURL =
             FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)
             .first

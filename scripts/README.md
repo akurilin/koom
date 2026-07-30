@@ -15,6 +15,9 @@ do not belong in `package.json`:
 - `build-app.sh`, `run.sh`, `install-app.sh`, and `setup-dev-codesign.sh` are
   stable compatibility entry points from before the Swift app moved into
   `client/`. They delegate to the native implementations in `client/scripts/`.
+- `run-onboarding.sh` creates a unique disposable client profile beneath the
+  macOS temporary directory, then launches the native run script without
+  deleting that profile when the app exits.
 
 Direct script execution remains useful for low-level macOS client operations
 and backwards compatibility. It should not become a second general-purpose

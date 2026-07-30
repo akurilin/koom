@@ -16,20 +16,25 @@ final class AppSettingsStore {
         static let optimizeRecordings = "optimizeUploads"
     }
 
-    private let defaults: UserDefaults
+    private let preferences: any KoomPreferences
 
-    init(defaults: UserDefaults = .standard) {
-        self.defaults = defaults
+    init(preferences: any KoomPreferences = KoomRuntimeProfile.preferences) {
+        self.preferences = preferences
+    }
+
+    convenience init(defaults: UserDefaults) {
+        self.init(preferences: UserDefaultsPreferences(defaults))
     }
 
     func load() -> Snapshot {
-        let displayValue = defaults.object(forKey: Key.selectedDisplayID) as? NSNumber
+        let displayValue =
+            preferences.object(forKey: Key.selectedDisplayID) as? NSNumber
 
         return Snapshot(
             selectedDisplayID: displayValue.map { CGDirectDisplayID($0.uint32Value) },
-            selectedCameraID: defaults.string(forKey: Key.selectedCameraID),
-            selectedMicrophoneID: defaults.string(forKey: Key.selectedMicrophoneID),
-            cameraBubbleSize: defaults.string(forKey: Key.cameraBubbleSize)
+            selectedCameraID: preferences.string(forKey: Key.selectedCameraID),
+            selectedMicrophoneID: preferences.string(forKey: Key.selectedMicrophoneID),
+            cameraBubbleSize: preferences.string(forKey: Key.cameraBubbleSize)
                 .flatMap(CameraBubbleSize.init(rawValue:))
                 ?? CameraBubbleSize.defaultValue,
             compressionSettings: loadCompressionSettings()
@@ -38,27 +43,27 @@ final class AppSettingsStore {
 
     func loadCompressionSettings() -> CompressionSettings {
         let captureResolution =
-            defaults.string(forKey: Key.captureResolution)
+            preferences.string(forKey: Key.captureResolution)
             .flatMap(CaptureResolutionOption.init(rawValue:))
             ?? CompressionSettings.default.captureResolution
 
         let captureFrameRate =
-            (defaults.object(forKey: Key.captureFrameRate) as? NSNumber)
+            (preferences.object(forKey: Key.captureFrameRate) as? NSNumber)
             .flatMap { CaptureFrameRateOption(rawValue: $0.intValue) }
             ?? CompressionSettings.default.captureFrameRate
 
         let optimizeRecordings =
-            if defaults.object(forKey: Key.optimizeRecordings) == nil {
+            if preferences.object(forKey: Key.optimizeRecordings) == nil {
                 CompressionSettings.default.optimizeRecordings
             } else {
-                defaults.bool(forKey: Key.optimizeRecordings)
+                preferences.bool(forKey: Key.optimizeRecordings)
             }
 
         let uploadRecordings =
-            if defaults.object(forKey: Key.uploadRecordings) == nil {
+            if preferences.object(forKey: Key.uploadRecordings) == nil {
                 CompressionSettings.default.uploadRecordings
             } else {
-                defaults.bool(forKey: Key.uploadRecordings)
+                preferences.bool(forKey: Key.uploadRecordings)
             }
 
         return CompressionSettings(
@@ -70,35 +75,47 @@ final class AppSettingsStore {
     }
 
     func saveSelectedDisplayID(_ displayID: CGDirectDisplayID) {
-        defaults.set(NSNumber(value: displayID), forKey: Key.selectedDisplayID)
+        preferences.set(
+            NSNumber(value: displayID),
+            forKey: Key.selectedDisplayID
+        )
     }
 
     func saveSelectedCameraID(_ cameraID: String) {
-        defaults.set(cameraID, forKey: Key.selectedCameraID)
+        preferences.set(cameraID, forKey: Key.selectedCameraID)
     }
 
     func saveSelectedMicrophoneID(_ microphoneID: String) {
-        defaults.set(microphoneID, forKey: Key.selectedMicrophoneID)
+        preferences.set(microphoneID, forKey: Key.selectedMicrophoneID)
     }
 
     func saveCameraBubbleSize(_ cameraBubbleSize: CameraBubbleSize) {
-        defaults.set(cameraBubbleSize.rawValue, forKey: Key.cameraBubbleSize)
+        preferences.set(
+            cameraBubbleSize.rawValue,
+            forKey: Key.cameraBubbleSize
+        )
     }
 
     func saveCaptureResolution(_ captureResolution: CaptureResolutionOption) {
-        defaults.set(captureResolution.rawValue, forKey: Key.captureResolution)
+        preferences.set(
+            captureResolution.rawValue,
+            forKey: Key.captureResolution
+        )
     }
 
     func saveCaptureFrameRate(_ captureFrameRate: CaptureFrameRateOption) {
-        defaults.set(captureFrameRate.rawValue, forKey: Key.captureFrameRate)
+        preferences.set(
+            captureFrameRate.rawValue,
+            forKey: Key.captureFrameRate
+        )
     }
 
     func saveOptimizeRecordings(_ optimizeRecordings: Bool) {
-        defaults.set(optimizeRecordings, forKey: Key.optimizeRecordings)
+        preferences.set(optimizeRecordings, forKey: Key.optimizeRecordings)
     }
 
     func saveUploadRecordings(_ uploadRecordings: Bool) {
-        defaults.set(uploadRecordings, forKey: Key.uploadRecordings)
+        preferences.set(uploadRecordings, forKey: Key.uploadRecordings)
     }
 
     struct Snapshot {

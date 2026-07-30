@@ -326,8 +326,7 @@ final class RecordingSessionStore: @unchecked Sendable {
         for environment: KoomEnvironment,
         fileManager: FileManager = .default
     ) -> URL {
-        baseDirectory(fileManager: fileManager)
-            .appendingPathComponent("koom", isDirectory: true)
+        recordingsRootDirectoryURL(fileManager: fileManager)
             .appendingPathComponent(
                 environment.recordingsSubdirectoryName,
                 isDirectory: true
@@ -337,8 +336,7 @@ final class RecordingSessionStore: @unchecked Sendable {
     static func legacyRecordingsDirectoryURL(
         fileManager: FileManager = .default
     ) -> URL {
-        baseDirectory(fileManager: fileManager)
-            .appendingPathComponent("koom", isDirectory: true)
+        recordingsRootDirectoryURL(fileManager: fileManager)
     }
 
     private func ensureBaseDirectoriesExist(
@@ -383,6 +381,17 @@ final class RecordingSessionStore: @unchecked Sendable {
             for: .moviesDirectory,
             in: .userDomainMask
         ).first ?? fileManager.homeDirectoryForCurrentUser
+    }
+
+    private static func recordingsRootDirectoryURL(
+        fileManager: FileManager
+    ) -> URL {
+        if let profileRecordingsURL = KoomRuntimeProfile.recordingsDirectoryURL {
+            return profileRecordingsURL
+        }
+
+        return baseDirectory(fileManager: fileManager)
+            .appendingPathComponent("koom", isDirectory: true)
     }
 
     private func segmentURL(

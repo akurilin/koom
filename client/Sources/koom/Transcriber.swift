@@ -6,11 +6,12 @@ import Foundation
 ///
 /// WhisperKit's init loads the CoreML model into memory (and, on the
 /// very first run for a given model, downloads it from
-/// `argmaxinc/whisperkit-coreml` on HuggingFace into the default
-/// Hub cache at `~/.cache/huggingface/hub/`). Both operations are
-/// expensive enough that we absolutely do not want to redo them
-/// once per recording — hence the lazy `ensureKit()` that memoizes
-/// the instance for the lifetime of the process.
+/// `argmaxinc/whisperkit-coreml` on HuggingFace into the Hub cache,
+/// or the disposable runtime profile during an onboarding run).
+/// Both operations are expensive enough that we absolutely do not
+/// want to redo them once per recording — hence the lazy
+/// `ensureKit()` that memoizes the instance for the lifetime of the
+/// process.
 ///
 /// The actor serializes access to that single instance because
 /// `WhisperKit` is a reference-typed class whose docs explicitly
@@ -69,7 +70,10 @@ actor Transcriber {
             return kit
         }
         AppLog.info("Transcriber: loading WhisperKit model '\(modelName)' (first call will download if the cache is cold).")
-        let config = WhisperKitConfig(model: modelName)
+        let config = WhisperKitConfig(
+            model: modelName,
+            downloadBase: KoomRuntimeProfile.transcriptionModelsDirectoryURL
+        )
         let created = try await WhisperKit(config)
         self.kit = created
         AppLog.info("Transcriber: WhisperKit ready.")

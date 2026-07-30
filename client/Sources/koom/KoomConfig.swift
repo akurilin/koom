@@ -95,7 +95,9 @@ enum KoomConfig {
     private static let legacyKeychainService = "com.koom.local.adminSecret"
     private static let keychainAccount = "default"
 
-    private static var defaults: UserDefaults { .standard }
+    private static var preferences: any KoomPreferences {
+        KoomRuntimeProfile.preferences
+    }
     @MainActor private static var cachedAdminSecrets = StoredAdminSecrets()
     @MainActor private static var hasCachedAdminSecrets = false
 
@@ -114,7 +116,7 @@ enum KoomConfig {
 
     static var activeEnvironment: KoomEnvironment {
         get {
-            if let raw = defaults.string(forKey: activeEnvironmentKey),
+            if let raw = preferences.string(forKey: activeEnvironmentKey),
                 let environment = KoomEnvironment(rawValue: raw)
             {
                 return environment
@@ -122,12 +124,12 @@ enum KoomConfig {
             return legacyEnvironment
         }
         set {
-            defaults.set(newValue.rawValue, forKey: activeEnvironmentKey)
+            preferences.set(newValue.rawValue, forKey: activeEnvironmentKey)
         }
     }
 
     static var legacyEnvironment: KoomEnvironment {
-        if let raw = defaults.string(forKey: legacyEnvironmentKey),
+        if let raw = preferences.string(forKey: legacyEnvironmentKey),
             let environment = KoomEnvironment(rawValue: raw)
         {
             return environment
@@ -138,7 +140,7 @@ enum KoomConfig {
                 from: loadURLString(from: legacyBackendURLKey).flatMap(URL.init)
             )
             ?? .prod
-        defaults.set(inferred.rawValue, forKey: legacyEnvironmentKey)
+        preferences.set(inferred.rawValue, forKey: legacyEnvironmentKey)
         return inferred
     }
 
@@ -168,23 +170,26 @@ enum KoomConfig {
         for environment: KoomEnvironment
     ) {
         if let newValue {
-            defaults.set(
+            preferences.set(
                 newValue.absoluteString,
                 forKey: backendURLKey(for: environment)
             )
             if environment == legacyEnvironment {
-                defaults.set(newValue.absoluteString, forKey: legacyBackendURLKey)
+                preferences.set(
+                    newValue.absoluteString,
+                    forKey: legacyBackendURLKey
+                )
             }
         } else {
-            defaults.removeObject(forKey: backendURLKey(for: environment))
+            preferences.removeObject(forKey: backendURLKey(for: environment))
             if environment == legacyEnvironment {
-                defaults.removeObject(forKey: legacyBackendURLKey)
+                preferences.removeObject(forKey: legacyBackendURLKey)
             }
         }
     }
 
     private static func loadURLString(from key: String) -> String? {
-        guard let raw = defaults.string(forKey: key),
+        guard let raw = preferences.string(forKey: key),
             !raw.isEmpty
         else {
             return nil

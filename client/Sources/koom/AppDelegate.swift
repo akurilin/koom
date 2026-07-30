@@ -78,23 +78,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.runRecordingSoakIfRequested()
     }
 
-    /// Picks which tab the panel opens on: Settings when the active
-    /// environment is missing credentials (a recording would have no
-    /// upload path), and Record otherwise. Interrupted sessions are
-    /// still loaded for the Recovery tab, but they don't steal the
-    /// initial tab — recording is the app's job.
+    /// Recording is the app's primary job, so every launch begins on
+    /// Record. Missing upload configuration remains visible in
+    /// Settings but does not block making a local recording.
     private func selectInitialTab() {
         model.refreshRecoverableSessions()
-
-        let activeEnvironment = KoomConfig.activeEnvironment
-        if model.uploadRecordingsEnabled,
-            !KoomConfig.isFullyConfigured(for: activeEnvironment)
-        {
-            AppLog.info(
-                "koom is not fully configured for \(activeEnvironment.displayName); opening the Settings tab."
-            )
-            model.selectedTab = .settings
-        }
+        model.selectedTab = .record
+        AppLog.info("Opening the Record tab.")
     }
 
     func applicationWillTerminate(_ notification: Notification) {

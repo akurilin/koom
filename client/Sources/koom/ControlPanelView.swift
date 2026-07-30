@@ -318,14 +318,20 @@ struct ControlPanelView: View {
     }
 
     private var statusFooter: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(footerStatus.color)
-                .frame(width: 8, height: 8)
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(footerStatus.color)
+                    .frame(width: 8, height: 8)
 
-            Text(footerStatus.title)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(Color.primary.opacity(0.7))
+                Text(footerStatus.title)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Color.primary.opacity(0.7))
+            }
+
+            LocalTitleSetupNotice(
+                manager: model.localTitleModelManager
+            )
         }
         .frame(maxWidth: .infinity)
     }
@@ -384,6 +390,88 @@ struct ControlPanelView: View {
                 .strokeBorder(surfaceStroke)
         }
         .shadow(color: .black.opacity(0.05), radius: 14, x: 0, y: 8)
+    }
+}
+
+private struct LocalTitleSetupNotice: View {
+    @ObservedObject var manager: LocalTitleModelManager
+
+    private var presentation: (title: String, detail: String, showsProgress: Bool)? {
+        guard
+            manager.isEnabled,
+            let selectedModel = manager.selectedModel
+        else {
+            return nil
+        }
+
+        switch manager.state(for: selectedModel) {
+        case .notDownloaded, .downloading:
+            return (
+                "Downloading auto-title model…",
+                "You can record now. Auto-titling isn’t available until the download finishes.",
+                true
+            )
+        case .verifying:
+            return (
+                "Verifying auto-title model…",
+                "You can record now. Auto-titling isn’t available until setup finishes.",
+                true
+            )
+        case .downloaded, .starting:
+            return (
+                "Starting auto-title model…",
+                "You can record now. Auto-titling isn’t available until setup finishes.",
+                true
+            )
+        case .failed:
+            return (
+                "Auto-titling is unavailable",
+                "The local model could not be prepared. Manage it in Settings.",
+                false
+            )
+        case .ready:
+            return nil
+        }
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if let presentation {
+            HStack(alignment: .top, spacing: 10) {
+                if presentation.showsProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 16, height: 16)
+                } else {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .frame(width: 16, height: 16)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(presentation.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.primary.opacity(0.82))
+
+                    Text(presentation.detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white.opacity(0.55))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.black.opacity(0.05))
+            }
+        }
     }
 }
 

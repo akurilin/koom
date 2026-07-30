@@ -4,9 +4,8 @@ import SwiftUI
 /// Settings tab of the main panel: backend credentials, active
 /// environment, and recording compression preferences.
 ///
-/// Selected automatically on first run (from AppDelegate) when either
-/// value is missing, and otherwise reachable via the panel's tab
-/// picker or `Cmd+,` (rewired in KoomApp to switch to this tab).
+/// Reachable via the panel's tab picker or `Cmd+,` (rewired in
+/// KoomApp to switch to this tab).
 ///
 /// Persistence:
 ///

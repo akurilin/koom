@@ -53,7 +53,7 @@ final class LocalTitleModelManager: ObservableObject {
     private static let enabledDefaultsKey = "koom.localTitle.isEnabled"
 
     private let fileManager: FileManager
-    private let userDefaults: UserDefaults
+    private let preferences: any KoomPreferences
     private var operationTask: Task<Void, Never>?
     private var operationID: UUID?
     private var operationModelID: String?
@@ -64,18 +64,18 @@ final class LocalTitleModelManager: ObservableObject {
 
     init(
         fileManager: FileManager = .default,
-        userDefaults: UserDefaults = .standard
+        preferences: any KoomPreferences = KoomRuntimeProfile.preferences
     ) {
         self.fileManager = fileManager
-        self.userDefaults = userDefaults
+        self.preferences = preferences
         isEnabled =
-            userDefaults.object(forKey: Self.enabledDefaultsKey) as? Bool
+            preferences.object(forKey: Self.enabledDefaultsKey) as? Bool
             ?? true
 
         do {
             let catalog = try LocalTitleModelCatalog.load()
             models = catalog.models
-            let savedModelID = userDefaults.string(
+            let savedModelID = preferences.string(
                 forKey: Self.selectedModelDefaultsKey
             )
             if let savedModelID,
@@ -122,7 +122,7 @@ final class LocalTitleModelManager: ObservableObject {
 
     func setEnabled(_ isEnabled: Bool) {
         self.isEnabled = isEnabled
-        userDefaults.set(isEnabled, forKey: Self.enabledDefaultsKey)
+        preferences.set(isEnabled, forKey: Self.enabledDefaultsKey)
         if isEnabled {
             prepareSelectedModel()
         } else {
@@ -133,10 +133,10 @@ final class LocalTitleModelManager: ObservableObject {
     func use(_ model: LocalTitleModel) {
         if !isEnabled {
             isEnabled = true
-            userDefaults.set(true, forKey: Self.enabledDefaultsKey)
+            preferences.set(true, forKey: Self.enabledDefaultsKey)
         }
         selectedModelID = model.id
-        userDefaults.set(
+        preferences.set(
             model.id,
             forKey: Self.selectedModelDefaultsKey
         )
@@ -156,7 +156,7 @@ final class LocalTitleModelManager: ObservableObject {
         }
         if selectedModelID == model.id {
             isEnabled = false
-            userDefaults.set(false, forKey: Self.enabledDefaultsKey)
+            preferences.set(false, forKey: Self.enabledDefaultsKey)
         }
 
         do {
@@ -281,7 +281,7 @@ final class LocalTitleModelManager: ObservableObject {
     ) async throws {
         states[model.id] = .downloading
         AppLog.info(
-            "Local titles: downloading \(model.displayName) (\(model.formattedDownloadSize)) from \(model.downloadURL.absoluteString)."
+            "Local titles: downloading \(model.displayName) (\(model.formattedDownloadSize)) from \(model.downloadURL.absoluteString) to \(destinationURL.path)."
         )
 
         let modelsDirectory = Self.modelsDirectoryURL
@@ -461,7 +461,11 @@ final class LocalTitleModelManager: ObservableObject {
     }
 
     private static var modelsDirectoryURL: URL {
-        FileManager.default.urls(
+        if let profileModelsURL = KoomRuntimeProfile.modelsDirectoryURL {
+            return profileModelsURL
+        }
+
+        return FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0]

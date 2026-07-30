@@ -65,7 +65,11 @@ if [[ -z "$APP_PATH" ]]; then
     fi
 fi
 APP_EXECUTABLE="$APP_PATH/Contents/MacOS/koom"
-LOG_FILE="$HOME/Library/Logs/koom/koom.log"
+if [[ -n "${KOOM_CLIENT_PROFILE_DIR:-}" ]]; then
+    LOG_FILE="$KOOM_CLIENT_PROFILE_DIR/logs/koom.log"
+else
+    LOG_FILE="$HOME/Library/Logs/koom/koom.log"
+fi
 
 if [[ ! -x "$APP_EXECUTABLE" ]]; then
     echo "koom executable not found at $APP_EXECUTABLE" >&2

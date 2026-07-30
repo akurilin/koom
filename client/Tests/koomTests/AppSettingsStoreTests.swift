@@ -50,6 +50,28 @@ final class AppSettingsStoreTests: XCTestCase {
         )
     }
 
+    func testInMemoryPreferencesDoNotReadOrWritePersistentDefaults() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let persistentSettings = AppSettingsStore(defaults: defaults)
+        persistentSettings.saveCaptureResolution(.ultraHD4K)
+
+        let isolatedSettings = AppSettingsStore(
+            preferences: InMemoryKoomPreferences()
+        )
+        XCTAssertEqual(
+            isolatedSettings.loadCompressionSettings().captureResolution,
+            CompressionSettings.default.captureResolution
+        )
+
+        isolatedSettings.saveCaptureResolution(.fullHD1080)
+        XCTAssertEqual(
+            persistentSettings.loadCompressionSettings().captureResolution,
+            .ultraHD4K
+        )
+    }
+
     private func makeDefaults() -> (UserDefaults, String) {
         let suiteName = "AppSettingsStoreTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

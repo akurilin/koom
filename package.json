@@ -21,6 +21,7 @@
     "app:codesign": "./scripts/setup-dev-codesign.sh",
     "app:install": "./scripts/install-app.sh",
     "app:run": "./scripts/run.sh",
+    "app:run:onboarding": "./scripts/run-onboarding.sh",
     "app:run:prod": "KOOM_ADMIN_SECRETS_FILE=${KOOM_ADMIN_SECRETS_FILE:-$HOME/.config/koom/admin-secrets.json} ./scripts/install-app.sh --run",
     "shellcheck": "git ls-files -z '*.sh' '*.bash' | xargs -0 shellcheck",
     "sql:lint": "git ls-files -z 'supabase/migrations/*.sql' | xargs -0 squawk",

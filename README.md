@@ -149,6 +149,21 @@ npm run dev -w web
 npm run app:run
 ```
 
+To exercise model onboarding without changing the normal client profile, launch
+the app with a fresh disposable profile:
+
+```bash
+npm run app:run:onboarding
+```
+
+Every invocation creates a unique directory under macOS's per-user temporary
+directory. Client preferences remain in memory for that run, while downloaded
+models, logs, recordings, recovery data, and development admin secrets are
+written beneath the temporary profile. The directory is intentionally left for
+macOS to clean up later. This replays Koom's onboarding state but retains the
+app's existing macOS privacy permissions because the bundle identity is
+unchanged.
+
 The root `package.json` is the primary interface for repository tasks. The
 implementations and retained compatibility entry points are described in
 [`scripts/README.md`](scripts/README.md).

@@ -55,6 +55,7 @@ final class AppModel: ObservableObject {
             settingsStore.saveSelectedMicrophoneID(selectedMicrophoneID)
         }
     }
+    @Published private(set) var cameraBubbleSize = CameraBubbleSize.defaultValue
     @Published var recordingState: RecordingState = .idle {
         didSet {
             AppLog.info("Recording state: \(String(describing: recordingState))")
@@ -100,8 +101,11 @@ final class AppModel: ObservableObject {
 
     private let cameraPreviewManager = CameraPreviewManager()
     private lazy var overlayWindowController = CameraOverlayWindowController(
-        session: cameraPreviewManager.session
-    )
+        session: cameraPreviewManager.session,
+        initialSize: cameraBubbleSize
+    ) { [weak self] size in
+        self?.setCameraBubbleSize(size)
+    }
     private let drawingOverlayWindowController = DrawingOverlayWindowController()
     private let settingsStore: AppSettingsStore
     private let uploader = Uploader()
@@ -206,9 +210,10 @@ final class AppModel: ObservableObject {
         }
         selectedCameraID = restoredSettings.selectedCameraID ?? ""
         selectedMicrophoneID = restoredSettings.selectedMicrophoneID ?? ""
+        cameraBubbleSize = restoredSettings.cameraBubbleSize
 
         AppLog.info(
-            "Restored settings. Display: \(restoredSettings.selectedDisplayID.map(String.init) ?? "none"), camera: \(restoredSettings.selectedCameraID ?? "none"), microphone: \(restoredSettings.selectedMicrophoneID ?? "none"), compression: \(restoredSettings.compressionSettings.logDescription)"
+            "Restored settings. Display: \(restoredSettings.selectedDisplayID.map(String.init) ?? "none"), camera: \(restoredSettings.selectedCameraID ?? "none"), microphone: \(restoredSettings.selectedMicrophoneID ?? "none"), camera bubble: \(restoredSettings.cameraBubbleSize.rawValue), compression: \(restoredSettings.compressionSettings.logDescription)"
         )
     }
 
@@ -343,6 +348,14 @@ final class AppModel: ObservableObject {
 
     func microphoneSelectionDidChange() {
         AppLog.info("Selected microphone: \(selectedMicrophoneID.isEmpty ? "none" : selectedMicrophoneID)")
+    }
+
+    private func setCameraBubbleSize(_ size: CameraBubbleSize) {
+        guard size != cameraBubbleSize else { return }
+        cameraBubbleSize = size
+        settingsStore.saveCameraBubbleSize(size)
+        overlayWindowController.setSize(size)
+        AppLog.info("Camera bubble size: \(size.rawValue)")
     }
 
     func revealLastRecording() {
@@ -686,7 +699,8 @@ final class AppModel: ObservableObject {
     private func updateOverlay() {
         overlayWindowController.update(
             displayID: selectedDisplayID,
-            isVisible: !selectedCameraID.isEmpty
+            isVisible: !selectedCameraID.isEmpty,
+            size: cameraBubbleSize
         )
     }
 

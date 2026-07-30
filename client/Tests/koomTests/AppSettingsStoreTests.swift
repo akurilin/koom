@@ -25,6 +25,18 @@ final class AppSettingsStoreTests: XCTestCase {
         XCTAssertFalse(settings.loadCompressionSettings().optimizeRecordings)
     }
 
+    func testCameraBubbleSizeRoundTrips() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        AppSettingsStore(defaults: defaults).saveCameraBubbleSize(.large)
+
+        XCTAssertEqual(
+            AppSettingsStore(defaults: defaults).load().cameraBubbleSize,
+            .large
+        )
+    }
+
     private func makeDefaults() -> (UserDefaults, String) {
         let suiteName = "AppSettingsStoreTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

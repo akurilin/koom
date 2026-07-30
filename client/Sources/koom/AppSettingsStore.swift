@@ -7,6 +7,7 @@ final class AppSettingsStore {
         static let selectedDisplayID = "selectedDisplayID"
         static let selectedCameraID = "selectedCameraID"
         static let selectedMicrophoneID = "selectedMicrophoneID"
+        static let cameraBubbleSize = "cameraBubbleSize"
         static let captureFrameRate = "captureFrameRate"
         static let uploadRecordings = "uploadRecordings"
         // Preserve the existing preference while broadening it from
@@ -27,6 +28,9 @@ final class AppSettingsStore {
             selectedDisplayID: displayValue.map { CGDirectDisplayID($0.uint32Value) },
             selectedCameraID: defaults.string(forKey: Key.selectedCameraID),
             selectedMicrophoneID: defaults.string(forKey: Key.selectedMicrophoneID),
+            cameraBubbleSize: defaults.string(forKey: Key.cameraBubbleSize)
+                .flatMap(CameraBubbleSize.init(rawValue:))
+                ?? CameraBubbleSize.defaultValue,
             compressionSettings: loadCompressionSettings()
         )
     }
@@ -70,6 +74,10 @@ final class AppSettingsStore {
         defaults.set(microphoneID, forKey: Key.selectedMicrophoneID)
     }
 
+    func saveCameraBubbleSize(_ cameraBubbleSize: CameraBubbleSize) {
+        defaults.set(cameraBubbleSize.rawValue, forKey: Key.cameraBubbleSize)
+    }
+
     func saveCaptureFrameRate(_ captureFrameRate: CaptureFrameRateOption) {
         defaults.set(captureFrameRate.rawValue, forKey: Key.captureFrameRate)
     }
@@ -86,6 +94,7 @@ final class AppSettingsStore {
         let selectedDisplayID: CGDirectDisplayID?
         let selectedCameraID: String?
         let selectedMicrophoneID: String?
+        let cameraBubbleSize: CameraBubbleSize
         let compressionSettings: CompressionSettings
     }
 }

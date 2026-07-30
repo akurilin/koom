@@ -2,6 +2,40 @@
 @preconcurrency import AppKit
 import SwiftUI
 
+enum CameraBubbleSize: String, CaseIterable, Identifiable {
+    case small
+    case medium
+    case large
+
+    static let defaultValue: Self = .medium
+
+    var id: Self { self }
+
+    var diameter: CGFloat {
+        switch self {
+        case .small: 176
+        case .medium: 352
+        case .large: 528
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .small: "Small"
+        case .medium: "Medium"
+        case .large: "Large"
+        }
+    }
+
+    var indicatorDiameter: CGFloat {
+        switch self {
+        case .small: 8
+        case .medium: 13
+        case .large: 18
+        }
+    }
+}
+
 final class CameraPreviewManager: @unchecked Sendable {
     let session = AVCaptureSession()
 
@@ -52,41 +86,85 @@ final class CameraPreviewManager: @unchecked Sendable {
     }
 }
 
+private final class CameraOverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
+@MainActor
+private final class CameraOverlayState: ObservableObject {
+    @Published private(set) var selectedSize: CameraBubbleSize
+
+    private let onSizeChange: (CameraBubbleSize) -> Void
+
+    init(
+        selectedSize: CameraBubbleSize,
+        onSizeChange: @escaping (CameraBubbleSize) -> Void
+    ) {
+        self.selectedSize = selectedSize
+        self.onSizeChange = onSizeChange
+    }
+
+    func select(_ size: CameraBubbleSize) {
+        guard size != selectedSize else { return }
+        selectedSize = size
+        onSizeChange(size)
+    }
+
+    func synchronize(_ size: CameraBubbleSize) {
+        guard size != selectedSize else { return }
+        selectedSize = size
+    }
+}
+
+@MainActor
 final class CameraOverlayWindowController: NSWindowController {
-    private static let previewDiameter: CGFloat = 352
     private static let shadowInset: CGFloat = 18
-    private static let overlaySize = CGSize(
-        width: previewDiameter + (shadowInset * 2),
-        height: previewDiameter + (shadowInset * 2)
-    )
+    private let state: CameraOverlayState
     private let hostingView: NSHostingView<CameraOverlayContent>
 
-    init(session: AVCaptureSession) {
-        let window = NSWindow(
-            contentRect: NSRect(origin: .zero, size: Self.overlaySize),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
+    init(
+        session: AVCaptureSession,
+        initialSize: CameraBubbleSize,
+        onSizeChange: @escaping (CameraBubbleSize) -> Void
+    ) {
+        let state = CameraOverlayState(
+            selectedSize: initialSize,
+            onSizeChange: onSizeChange
         )
+        self.state = state
         hostingView = NSHostingView(
             rootView: CameraOverlayContent(
                 session: session,
-                previewDiameter: Self.previewDiameter,
+                state: state,
                 shadowInset: Self.shadowInset
             )
         )
 
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = false
-        window.level = .floating
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = true
+        let panel = CameraOverlayPanel(
+            contentRect: NSRect(
+                origin: .zero,
+                size: Self.overlaySize(for: initialSize)
+            ),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
 
-        super.init(window: window)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.titleVisibility = .hidden
+        panel.isMovableByWindowBackground = true
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
 
-        window.contentView = hostingView
+        super.init(window: panel)
+
+        panel.contentView = hostingView
     }
 
     @available(*, unavailable)
@@ -94,7 +172,13 @@ final class CameraOverlayWindowController: NSWindowController {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func update(displayID: CGDirectDisplayID, isVisible: Bool) {
+    func update(
+        displayID: CGDirectDisplayID,
+        isVisible: Bool,
+        size: CameraBubbleSize
+    ) {
+        state.synchronize(size)
+
         guard isVisible, let window = window else {
             window?.orderOut(nil)
             return
@@ -110,30 +194,116 @@ final class CameraOverlayWindowController: NSWindowController {
             x: frame.minX + 24 - Self.shadowInset,
             y: frame.minY + 24 - Self.shadowInset
         )
-        window.setFrame(NSRect(origin: origin, size: Self.overlaySize), display: true)
+        window.setFrame(
+            NSRect(origin: origin, size: Self.overlaySize(for: size)),
+            display: true
+        )
         window.orderFrontRegardless()
+    }
+
+    func setSize(_ size: CameraBubbleSize) {
+        state.synchronize(size)
+
+        guard let window else { return }
+        let targetFrame = NSRect(
+            origin: window.frame.origin,
+            size: Self.overlaySize(for: size)
+        )
+        guard targetFrame != window.frame else { return }
+        window.setFrame(targetFrame, display: true)
+    }
+
+    private static func overlaySize(for size: CameraBubbleSize) -> CGSize {
+        CGSize(
+            width: size.diameter + (shadowInset * 2),
+            height: size.diameter + (shadowInset * 2)
+        )
     }
 }
 
 private struct CameraOverlayContent: View {
     let session: AVCaptureSession
-    let previewDiameter: CGFloat
+    @ObservedObject var state: CameraOverlayState
     let shadowInset: CGFloat
 
+    @State private var isHovering = false
+
+    private var previewDiameter: CGFloat {
+        state.selectedSize.diameter
+    }
+
     var body: some View {
-        CameraPreviewView(session: session)
-            .frame(width: previewDiameter, height: previewDiameter)
-            // Mirroring is a presentation invariant, independent of
-            // when AVFoundation creates or replaces its connection.
-            .scaleEffect(x: -1, y: 1)
-            .clipShape(Circle())
-            .overlay {
-                Circle()
-                    .stroke(.white.opacity(0.9), lineWidth: 3)
+        ZStack(alignment: .bottom) {
+            CameraPreviewView(session: session)
+                .frame(width: previewDiameter, height: previewDiameter)
+                // Mirroring is a presentation invariant, independent of
+                // when AVFoundation creates or replaces its connection.
+                .scaleEffect(x: -1, y: 1)
+                .clipShape(Circle())
+                .overlay {
+                    Circle()
+                        .stroke(.white.opacity(0.9), lineWidth: 3)
+                }
+                .shadow(color: .black.opacity(0.2), radius: 7, x: 0, y: 4)
+                .padding(shadowInset)
+
+            if isHovering {
+                sizeControls
+                    .padding(.bottom, shadowInset + 22)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            .shadow(color: .black.opacity(0.2), radius: 7, x: 0, y: 4)
-            .padding(shadowInset)
-            .background(.clear)
+        }
+        .frame(
+            width: previewDiameter + (shadowInset * 2),
+            height: previewDiameter + (shadowInset * 2)
+        )
+        .contentShape(Rectangle())
+        .onHover { isHovering in
+            withAnimation(.easeOut(duration: 0.16)) {
+                self.isHovering = isHovering
+            }
+        }
+        .background(.clear)
+    }
+
+    private var sizeControls: some View {
+        HStack(spacing: 4) {
+            ForEach(CameraBubbleSize.allCases) { size in
+                sizeButton(for: size)
+            }
+        }
+        .padding(6)
+        .background {
+            Capsule()
+                .fill(Color.black.opacity(0.82))
+        }
+        .overlay {
+            Capsule()
+                .strokeBorder(Color.white.opacity(0.12))
+        }
+        .shadow(color: .black.opacity(0.28), radius: 8, x: 0, y: 3)
+    }
+
+    private func sizeButton(for size: CameraBubbleSize) -> some View {
+        let isSelected = state.selectedSize == size
+
+        return Button {
+            state.select(size)
+        } label: {
+            Circle()
+                .fill(Color.white.opacity(isSelected ? 1 : 0.72))
+                .frame(width: size.indicatorDiameter, height: size.indicatorDiameter)
+                .frame(width: 34, height: 34)
+                .background {
+                    Circle()
+                        .fill(isSelected ? Color.white.opacity(0.16) : Color.clear)
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Use a \(size.title.lowercased()) camera bubble")
+        .accessibilityLabel("\(size.title) camera bubble")
+        .accessibilityValue(isSelected ? "Selected" : "")
     }
 }
 
@@ -171,9 +341,13 @@ private final class CameraPreviewHostView: NSView {
 
     override func layout() {
         super.layout()
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         previewLayer.frame = bounds
         previewLayer.cornerRadius = bounds.width / 2
         previewLayer.masksToBounds = true
+        CATransaction.commit()
     }
 }
 

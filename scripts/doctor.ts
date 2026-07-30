@@ -2,20 +2,29 @@
 /*
  * scripts/doctor.ts
  *
- * Read-only verification of the koom configuration. Run this any time
- * something seems off — at initial setup, after editing env vars, or
- * after a failed deploy. Exit code is non-zero if any check failed,
- * so it's CI-friendly.
+ * Mode-aware verification of the koom configuration. Run this during
+ * initial setup, after editing env vars or infrastructure, or while
+ * diagnosing a failed deploy. Exit code is non-zero if any check in
+ * the selected mode failed, so it is CI-friendly.
  *
- * The doctor produces a readiness report that tells you separately
- * whether local development is ready and whether production
- * deployment is ready. Each check is tagged with a "track" so the
- * final report can categorize it.
+ * Modes:
+ *
+ *   - `npm run doctor` checks self-host/operator readiness. It does
+ *     not require the local Docker/Postgres development stack.
+ *
+ *   - `npm run doctor:dev` checks local development readiness. It
+ *     does not require a hosted Supabase project or Vercel access.
+ *
+ *   - `npm run doctor:all` runs both readiness tracks.
+ *
+ * Shared checks such as R2, Ollama, and desktop code signing run in
+ * every mode.
  *
  * Configuration model:
  *
- *   - `web/.env.local` holds LOCAL DEVELOPMENT values only. DATABASE_URL
- *     here is always the local Supabase stack.
+ *   - `web/.env.local` holds local-development values plus the R2,
+ *     admin, and hosted-Postgres credentials shared with operator
+ *     tooling. DATABASE_URL here is always the local Supabase stack.
  *
  *   - `web/.env.prod.local` holds values needed to validate and deploy
  *     to PRODUCTION from a dev machine (currently VERCEL_TOKEN and
@@ -24,9 +33,9 @@
  *     KOOM_ADMIN_SECRET), stored in Vercel itself, or derived live
  *     from the Supabase CLI link (production Postgres URL).
  *
- *   - Both files are auto-forked from their `.example` templates the
- *     first time the doctor runs, so the user doesn't have to copy
- *     them by hand.
+ *   - `web/.env.local` is needed in every mode because it also holds
+ *     shared R2 credentials and the admin secret. The production-only
+ *     file is bootstrapped only for operator/all runs.
  */
 
 import {
@@ -132,15 +141,13 @@ const COMMENTERS_EXPECTED_COLUMNS = ["id", "created_at"] as const;
 // Result tracking
 // ────────────────────────────────────────────────────────────────────
 //
-// Every check is tagged with a "readiness track" so the final summary
-// can tell you separately whether local development is usable and
-// whether production deployment is usable. A user who only cares
-// about production should still be able to look at the report and see
-// exactly what's missing for prod, even if their local environment is
-// deliberately unset.
+// Every check is tagged with a readiness track. The selected mode
+// controls which sections execute; `--all` uses the tags to print
+// separate local-development and operator summaries.
 
 type Track = "local" | "prod" | "both" | "neither";
 type Status = "pass" | "fail" | "warn" | "skip";
+type DoctorMode = "operator" | "dev" | "all";
 
 interface CheckResult {
   name: string;
@@ -150,6 +157,46 @@ interface CheckResult {
 }
 
 const results: CheckResult[] = [];
+
+const DOCTOR_USAGE = `Usage:
+  npm run doctor       # self-host/operator readiness (default)
+  npm run doctor:dev   # local development readiness
+  npm run doctor:all   # both readiness tracks
+
+Direct invocation:
+  tsx scripts/doctor.ts [--operator | --dev | --all]
+
+Options:
+  --operator  Check hosted Supabase, R2, Vercel, and the desktop runtime.
+  --dev       Check local Postgres, R2, local configuration, and the desktop runtime.
+  --all       Run every operator and development check.
+  --help      Show this help text.`;
+
+class DoctorUsageError extends Error {}
+
+function parseDoctorMode(args: string[]): DoctorMode | null {
+  if (args.includes("--help") || args.includes("-h")) return null;
+
+  const knownFlags = new Map<string, DoctorMode>([
+    ["--operator", "operator"],
+    ["--dev", "dev"],
+    ["--all", "all"],
+  ]);
+  const unknown = args.filter((arg) => !knownFlags.has(arg));
+  if (unknown.length > 0) {
+    throw new DoctorUsageError(
+      `Unknown doctor option${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}\n\n${DOCTOR_USAGE}`,
+    );
+  }
+
+  const selected = args.map((arg) => knownFlags.get(arg)!);
+  if (selected.length > 1) {
+    throw new DoctorUsageError(
+      `Choose only one doctor mode.\n\n${DOCTOR_USAGE}`,
+    );
+  }
+  return selected[0] ?? "operator";
+}
 
 function log(message = ""): void {
   process.stdout.write(message + "\n");
@@ -225,12 +272,12 @@ function parseEnvFile(content: string): Record<string, string> {
 }
 
 /**
- * Load both env files, bootstrapping either from its `.example`
- * template if it doesn't exist yet. A freshly-bootstrapped file will
- * have empty placeholder values, which makes the downstream checks
- * fail loudly with actionable messages — exactly what we want.
+ * Load the env files needed by the selected mode, bootstrapping each
+ * from its `.example` template when missing. Every mode needs
+ * `.env.local` because it contains shared R2/admin values. Dev mode
+ * deliberately ignores `.env.prod.local`.
  */
-async function loadEnvFiles(): Promise<{
+async function loadEnvFiles(mode: DoctorMode): Promise<{
   local: Record<string, string>;
   prod: Record<string, string>;
   bootstrapped: { local: boolean; prod: boolean };
@@ -241,13 +288,16 @@ async function loadEnvFiles(): Promise<{
     await copyFile(ENV_LOCAL_EXAMPLE_PATH, ENV_LOCAL_PATH);
     bootstrapped.local = true;
   }
-  if (!existsSync(ENV_PROD_PATH)) {
+  if (mode !== "dev" && !existsSync(ENV_PROD_PATH)) {
     await copyFile(ENV_PROD_EXAMPLE_PATH, ENV_PROD_PATH);
     bootstrapped.prod = true;
   }
 
   const local = parseEnvFile(await readFile(ENV_LOCAL_PATH, "utf-8"));
-  const prod = parseEnvFile(await readFile(ENV_PROD_PATH, "utf-8"));
+  const prod =
+    mode !== "dev" && existsSync(ENV_PROD_PATH)
+      ? parseEnvFile(await readFile(ENV_PROD_PATH, "utf-8"))
+      : {};
   return { local, prod, bootstrapped };
 }
 
@@ -289,10 +339,25 @@ function isLocalHost(url: string | undefined): boolean {
 }
 
 async function main(): Promise<void> {
-  log("koom Doctor");
-  log("───────────");
+  const mode = parseDoctorMode(process.argv.slice(2));
+  if (mode === null) {
+    log(DOCTOR_USAGE);
+    return;
+  }
 
-  const { local: env, prod: prodEnv, bootstrapped } = await loadEnvFiles();
+  const runDevChecks = mode === "dev" || mode === "all";
+  const runOperatorChecks = mode === "operator" || mode === "all";
+  const modeLabel =
+    mode === "operator"
+      ? "self-host/operator"
+      : mode === "dev"
+        ? "local development"
+        : "complete";
+
+  log(`koom Doctor — ${modeLabel}`);
+  log("────────────────────────────");
+
+  const { local: env, prod: prodEnv, bootstrapped } = await loadEnvFiles(mode);
 
   if (bootstrapped.local || bootstrapped.prod) {
     log("");
@@ -303,12 +368,11 @@ async function main(): Promise<void> {
     log("readiness report below.");
   }
 
-  // ── Section: Configuration (web/.env.local) ──────────────────────
-  logSection("Configuration — web/.env.local (local development)");
+  // ── Section: Shared configuration ────────────────────────────────
+  logSection("Configuration — shared (web/.env.local)");
 
-  // R2 credentials are shared between local and prod — the same
-  // bucket is hit by both the dev server and the production Vercel
-  // deploy at koom's scale.
+  // R2 credentials are shared by the local web app and production
+  // deployment, so every mode validates them.
   for (const key of R2_REQUIRED_ENV_VARS) {
     if (env[key]) {
       pass(`${key} present`, "both");
@@ -317,46 +381,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // DATABASE_URL is strictly local-only in the new model. Production
-  // Postgres is derived from the Supabase CLI link, not from this
-  // file. Flag any attempt to point this value at a remote host.
-  if (!env.DATABASE_URL) {
-    fail(
-      "DATABASE_URL present",
-      "local",
-      `Not set in web/.env.local. Expected the local Supabase stack URL:\n    postgresql://postgres:postgres@127.0.0.1:54322/postgres`,
-    );
-  } else if (!isLocalHost(env.DATABASE_URL)) {
-    fail(
-      "DATABASE_URL points at the local stack",
-      "local",
-      `DATABASE_URL in web/.env.local is pointed at a remote host. In koom's current configuration model, this file is LOCAL ONLY — production Postgres is derived from the Supabase CLI link (supabase/.temp/), not from DATABASE_URL. Set DATABASE_URL back to the local Supabase stack URL:\n    postgresql://postgres:postgres@127.0.0.1:54322/postgres`,
-    );
-  } else {
-    pass("DATABASE_URL points at the local stack", "local");
-  }
-
-  // KOOM_PUBLIC_BASE_URL: local-only in this file. The production
-  // value lives in Vercel's project environment variable settings.
-  if (!env.KOOM_PUBLIC_BASE_URL) {
-    warn(
-      "KOOM_PUBLIC_BASE_URL present",
-      "local",
-      `Not set. The dev server uses this to construct share URLs returned to the desktop client. The default 'http://localhost:3000' is fine.`,
-    );
-  } else if (!isLocalHost(env.KOOM_PUBLIC_BASE_URL)) {
-    warn(
-      "KOOM_PUBLIC_BASE_URL points at the local dev server",
-      "local",
-      `KOOM_PUBLIC_BASE_URL in web/.env.local is ${env.KOOM_PUBLIC_BASE_URL}, which isn't localhost. This file is local-dev-only — set the production base URL in your Vercel project's environment variable settings instead. Fix by setting KOOM_PUBLIC_BASE_URL=http://localhost:3000 here.`,
-    );
-  } else {
-    pass("KOOM_PUBLIC_BASE_URL points at the local dev server", "local");
-  }
-
-  // KOOM_ADMIN_SECRET is the same value in local and production, so
-  // it's required on both tracks. Production deploys paste the same
-  // value into Vercel env vars.
+  // The admin secret is shared by the local web app, production
+  // deployment, and desktop client.
   if (env.KOOM_ADMIN_SECRET) {
     pass("KOOM_ADMIN_SECRET present", "both");
   } else {
@@ -367,40 +393,78 @@ async function main(): Promise<void> {
     );
   }
 
-  // SUPABASE_DB_PASSWORD is only needed when pushing migrations to
-  // the hosted Supabase project via the Supabase CLI. Purely a
-  // production-track concern.
-  if (env.SUPABASE_DB_PASSWORD) {
-    pass("SUPABASE_DB_PASSWORD present", "prod");
-  } else {
-    warn(
-      "SUPABASE_DB_PASSWORD present",
-      "prod",
-      `Not set. Needed by 'npm run db:push' and by the doctor's remote Postgres connectivity check. Find it at Supabase dashboard → Project Settings → Database → Database password.`,
-    );
+  if (runDevChecks) {
+    logSection("Configuration — local development (web/.env.local)");
+
+    // DATABASE_URL is strictly local-only. Production Postgres is
+    // derived from the Supabase CLI link.
+    if (!env.DATABASE_URL) {
+      fail(
+        "DATABASE_URL present",
+        "local",
+        `Not set in web/.env.local. Expected the local Supabase stack URL:\n    postgresql://postgres:postgres@127.0.0.1:54322/postgres`,
+      );
+    } else if (!isLocalHost(env.DATABASE_URL)) {
+      fail(
+        "DATABASE_URL points at the local stack",
+        "local",
+        `DATABASE_URL in web/.env.local is pointed at a remote host. In koom's current configuration model, this file is LOCAL ONLY — production Postgres is derived from the Supabase CLI link (supabase/.temp/), not from DATABASE_URL. Set DATABASE_URL back to the local Supabase stack URL:\n    postgresql://postgres:postgres@127.0.0.1:54322/postgres`,
+      );
+    } else {
+      pass("DATABASE_URL points at the local stack", "local");
+    }
+
+    // KOOM_PUBLIC_BASE_URL in this file is local-only. Production
+    // stores its public URL in Vercel.
+    if (!env.KOOM_PUBLIC_BASE_URL) {
+      warn(
+        "KOOM_PUBLIC_BASE_URL present",
+        "local",
+        `Not set. The dev server uses this to construct share URLs returned to the desktop client. The default 'http://localhost:3000' is fine.`,
+      );
+    } else if (!isLocalHost(env.KOOM_PUBLIC_BASE_URL)) {
+      warn(
+        "KOOM_PUBLIC_BASE_URL points at the local dev server",
+        "local",
+        `KOOM_PUBLIC_BASE_URL in web/.env.local is ${env.KOOM_PUBLIC_BASE_URL}, which isn't localhost. This file is local-dev-only — set the production base URL in your Vercel project's environment variable settings instead. Fix by setting KOOM_PUBLIC_BASE_URL=http://localhost:3000 here.`,
+      );
+    } else {
+      pass("KOOM_PUBLIC_BASE_URL points at the local dev server", "local");
+    }
   }
 
-  // ── Section: Configuration (web/.env.prod.local) ─────────────────
-  logSection("Configuration — web/.env.prod.local (production deploy)");
+  if (runOperatorChecks) {
+    logSection("Configuration — self-host/operator");
 
-  if (prodEnv.VERCEL_TOKEN) {
-    pass("VERCEL_TOKEN present", "prod");
-  } else {
-    warn(
-      "VERCEL_TOKEN present",
-      "prod",
-      `Not set in web/.env.prod.local. Mint a token at https://vercel.com/account/tokens so the doctor can verify your Vercel project is reachable. A future 'npm run vercel:sync' script will also use this to push production env vars into Vercel.`,
-    );
-  }
+    if (env.SUPABASE_DB_PASSWORD) {
+      pass("SUPABASE_DB_PASSWORD present", "prod");
+    } else {
+      warn(
+        "SUPABASE_DB_PASSWORD present",
+        "prod",
+        `Not set in web/.env.local. Needed by 'npm run db:push' and by the doctor's remote Postgres connectivity check. Find it at Supabase dashboard → Project Settings → Database → Database password.`,
+      );
+    }
 
-  if (prodEnv.VERCEL_PROJECT_ID) {
-    pass("VERCEL_PROJECT_ID present", "prod");
-  } else {
-    warn(
-      "VERCEL_PROJECT_ID present",
-      "prod",
-      `Not set in web/.env.prod.local. Find it at Vercel dashboard → koom project → Settings → General → Project ID (the 'prj_...' string, not the slug).`,
-    );
+    if (prodEnv.VERCEL_TOKEN) {
+      pass("VERCEL_TOKEN present", "prod");
+    } else {
+      warn(
+        "VERCEL_TOKEN present",
+        "prod",
+        `Not set in web/.env.prod.local. Mint a token at https://vercel.com/account/tokens so the doctor can verify your Vercel project is reachable and compare its environment variables.`,
+      );
+    }
+
+    if (prodEnv.VERCEL_PROJECT_ID) {
+      pass("VERCEL_PROJECT_ID present", "prod");
+    } else {
+      warn(
+        "VERCEL_PROJECT_ID present",
+        "prod",
+        `Not set in web/.env.prod.local. Find it at Vercel dashboard → koom project → Settings → General → Project ID (the 'prj_...' string, not the slug).`,
+      );
+    }
   }
 
   const r2VarsPresent = R2_REQUIRED_ENV_VARS.every((k) => !!env[k]);
@@ -418,22 +482,24 @@ async function main(): Promise<void> {
     await runR2Checks(env);
   }
 
-  // ── Section: Postgres (local) ────────────────────────────────────
-  logSection("Postgres (Supabase) — local stack");
+  if (runDevChecks) {
+    logSection("Postgres (Supabase) — local stack");
 
-  if (!env.DATABASE_URL || !isLocalHost(env.DATABASE_URL)) {
-    skip(
-      "Local Postgres connectivity",
-      "local",
-      "skipped because DATABASE_URL is missing or not pointed at the local stack",
-    );
-  } else {
-    await runLocalPostgresChecks(env);
+    if (!env.DATABASE_URL || !isLocalHost(env.DATABASE_URL)) {
+      skip(
+        "Local Postgres connectivity",
+        "local",
+        "skipped because DATABASE_URL is missing or not pointed at the local stack",
+      );
+    } else {
+      await runLocalPostgresChecks(env);
+    }
   }
 
-  // ── Section: Postgres (remote, via Supabase CLI link) ────────────
-  logSection("Postgres (Supabase) — remote, via supabase link");
-  await runRemoteSupabaseChecks(env);
+  if (runOperatorChecks) {
+    logSection("Postgres (Supabase) — hosted, via supabase link");
+    await runRemoteSupabaseChecks(env);
+  }
 
   // ── Section: Auto-title (Ollama) ──────────────────────────────────
   logSection("Auto-title (Ollama)");
@@ -443,11 +509,12 @@ async function main(): Promise<void> {
   logSection("Desktop client (macOS)");
   await runDesktopClientChecks();
 
-  // ── Section: Vercel ───────────────────────────────────────────────
-  logSection("Vercel");
-  await runVercelChecks(prodEnv, env, SUPABASE_POOLER_URL_PATH);
+  if (runOperatorChecks) {
+    logSection("Vercel");
+    await runVercelChecks(prodEnv, env, SUPABASE_POOLER_URL_PATH);
+  }
 
-  finish();
+  finish(mode);
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1016,10 +1083,9 @@ async function checkSupabaseCliInstalled(): Promise<boolean> {
  * exits 0 as long as everything else passed.
  */
 async function runOllamaChecks(): Promise<void> {
-  // Ollama is only consulted by the desktop client during local
-  // recording, so failures here only gate local-development readiness.
-  // Production deployment does not run Ollama.
-  const track: Track = "local";
+  // Ollama runs beside the desktop client for both local development
+  // and normal use against a self-hosted deployment.
+  const track: Track = "both";
 
   const enabledRaw = process.env.KOOM_AUTOTITLE_ENABLED ?? "true";
   const disabled = ["false", "0", "no", "off"].includes(
@@ -1112,10 +1178,9 @@ async function runOllamaChecks(): Promise<void> {
 }
 
 async function runDesktopClientChecks(): Promise<void> {
-  // The desktop codesigning identity only matters for local
-  // development builds — production deployment doesn't involve a
-  // local Mac.
-  const track: Track = "local";
+  // Self-hosters and contributors both build/run the desktop client,
+  // so stable signing is relevant to every mode.
+  const track: Track = "both";
 
   if (process.platform !== "darwin") {
     skip(
@@ -1156,7 +1221,7 @@ async function runDesktopClientChecks(): Promise<void> {
       track,
       `Identity '${identityName}' is missing from ${LOGIN_KEYCHAIN_PATH}.\n` +
         `Run:\n` +
-        `    ./scripts/setup-dev-codesign.sh\n` +
+        `    npm run app:codesign\n` +
         `Without it, the macOS app still runs, but rebuilds fall back to ad hoc signing and Keychain 'Always Allow' decisions may not stick.`,
     );
     return;
@@ -1187,7 +1252,7 @@ async function runDesktopClientChecks(): Promise<void> {
       track,
       `Identity '${identityName}' exists, but codesign could not use it.\n` +
         `Re-run:\n` +
-        `    ./scripts/setup-dev-codesign.sh --force\n` +
+        `    npm run app:codesign -- --force\n` +
         `That recreates the identity, trusts it for code signing, and refreshes the user keychain search list.\n` +
         `Underlying error: ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -1401,7 +1466,7 @@ async function runVercelEnvDriftCheck(
   );
 }
 
-function finish(): never {
+function finish(mode: DoctorMode): never {
   log("");
   log("─────────────────────────────────────────────────────");
   log("Readiness report");
@@ -1422,21 +1487,26 @@ function finish(): never {
   log(`Totals: ${bits.join(", ")}`);
   log("");
 
-  reportTrack(
-    "Local development",
-    "You can develop and run the stack on this machine.",
-    ["local", "both"],
-  );
-  log("");
-  reportTrack(
-    "Production deployment",
-    "You can deploy the web app to Vercel against a hosted Postgres + R2.",
-    ["prod", "both"],
-  );
-  log("");
+  if (mode === "dev" || mode === "all") {
+    reportTrack(
+      "Local development",
+      "You can develop and run the stack on this machine.",
+      ["local", "both"],
+    );
+    log("");
+  }
+  if (mode === "operator" || mode === "all") {
+    reportTrack(
+      "Self-host/operator",
+      "You can operate koom against hosted Supabase, R2, and Vercel.",
+      ["prod", "both"],
+    );
+    log("");
+  }
 
-  // Non-zero exit if *any* check failed, regardless of track. Warnings
-  // don't fail the exit code.
+  // Only checks selected by the mode were executed, so this exit code
+  // cannot be poisoned by an irrelevant readiness track. Warnings do
+  // not fail the command.
   process.exit(failCount > 0 ? 1 : 0);
 }
 
@@ -1489,6 +1559,10 @@ function reportTrack(
 }
 
 main().catch((err) => {
+  if (err instanceof DoctorUsageError) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(2);
+  }
   process.stderr.write(
     `\nUnexpected error: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`,
   );

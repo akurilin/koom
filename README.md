@@ -26,7 +26,7 @@ Features koom is particularly proud of:
 - **Inline admin rename.** Admins can click the title on the watch page to rename a recording inline — no separate admin form.
 - **Light/dark/system theme.** The watch page and admin UI respect `prefers-color-scheme` and offer a manual toggle that persists to `localStorage` with no flash of the wrong theme on first paint.
 - **Zero-egress storage.** Cloudflare R2 has no bandwidth fees, so cost stays flat no matter how much the links get shared.
-- **Guided self-hosting via `npm run doctor`.** One command bootstraps missing env files from committed templates, validates every external service end-to-end (R2 with Range-request checks, local Postgres schema, remote Supabase via the CLI link, Vercel project reachability, Vercel env var drift detection, Ollama), and produces a split readiness report for local development vs. production deployment. Self-hosting the stack means `git clone`, a handful of external-service signups, and iterating on the doctor until both tracks turn green — no hidden deployment gauntlet.
+- **Guided self-hosting via `npm run doctor`.** The default doctor validates operator prerequisites and external services: R2 with Range-request checks, hosted Supabase, Vercel configuration, and the desktop runtime. Contributors use `npm run doctor:dev` for local Postgres and development configuration, while `npm run doctor:all` runs the complete diagnostic sweep.
 - **Deliberately narrow scope.** Single-tenant, one admin secret, no teams, no transcoding, no custom domains. The whole stack fits in your head.
 
 Some of these features have longer write-ups — see [Deeper reading](#deeper-reading) at the bottom.
@@ -74,7 +74,7 @@ The Next.js app holds all R2 and Postgres credentials. The desktop client only k
 ### Nice-to-haves
 
 - **[Ollama](https://ollama.com)** — enables local auto-title generation. Install with `brew install ollama && ollama pull gemma4:e4b`. The app will auto-start `ollama serve` on first use and is fine running without it — auto-title and transcript extraction gracefully degrade when Ollama is unreachable.
-- **Docker Desktop** — lets you run the local Supabase stack via `npm run db:start` instead of developing directly against a hosted Supabase project. Recommended if you plan to touch migrations.
+- **Docker Desktop** — lets you run the local Supabase stack via `npm run db:start`. It is required for `npm run doctor:dev`, but not for the default self-host/operator doctor.
 - **`brew install gitleaks shellcheck`** — so the pre-commit hook can run locally with the same checks CI runs.
 
 ## Configuration model
@@ -85,11 +85,11 @@ koom has two environment files — keep this in mind while reading the setup ins
 - **`web/.env.prod.local`** holds values used only to validate and deploy to production from your dev machine (currently `VERCEL_TOKEN` and `VERCEL_PROJECT_ID`). A future `npm run vercel:sync` will read this file to push env vars into Vercel in one command.
 - **The production Postgres URL is never stored in either file.** It's derived live from the Supabase CLI link state (`supabase/.temp/`) after you run `supabase link --project-ref=…`. The doctor script reads those files directly and uses `SUPABASE_DB_PASSWORD` from `.env.local` for authentication. No swapping, no duplication, no drift.
 
-Both files are gitignored and auto-bootstrapped from their `.example` templates the first time you run the doctor, so you usually won't copy them by hand.
+Both files are gitignored. Every doctor mode bootstraps `web/.env.local` from its template when needed; the operator and all modes also bootstrap `web/.env.prod.local`. The dev doctor deliberately leaves the production-only file alone.
 
 ## Getting started
 
-First-time setup from a clean machine.
+### Self-hosting
 
 ```bash
 # 1. Clone the repo and install Node dependencies (npm workspaces, husky, etc.)
@@ -103,32 +103,50 @@ npm install
 npm run doctor
 ```
 
-The first doctor run will fail loudly because the env files are empty. Work through each blocked check in order:
+The first operator doctor run bootstraps both env files and fails loudly because they are empty. Work through each blocked check in order:
 
 1. **Cloudflare R2.** Create a Cloudflare account, enable R2 (requires a card — free tier is plenty), copy your Account ID, and mint an API token with `Workers R2 Storage → Edit` + `User API Tokens → Edit` permissions. Paste the token and account ID into `web/.env.local`. The file's comments walk through every click. Then run `npm run r2:setup` — it creates the bucket, generates the runtime S3 credentials, configures CORS, and fills in the remaining `R2_*` values for you.
-2. **Local Supabase.** Install Docker Desktop, then `npm run db:start` + `npm run db:reset` to boot the local stack and apply migrations.
-3. **`KOOM_ADMIN_SECRET`.** Generate with `openssl rand -hex 32` and paste into `web/.env.local`. Same value is used for local dev and production — the desktop client uses it as a bearer token, the web admin login uses it as a password.
-4. **Hosted Supabase project (for production).** Create a project at supabase.com, then link the repo to it:
+2. **`KOOM_ADMIN_SECRET`.** Generate with `openssl rand -hex 32` and paste into `web/.env.local`. Same value is used for local dev and production — the desktop client uses it as a bearer token, the web admin login uses it as a password.
+3. **Hosted Supabase project.** Create a project at supabase.com, then link the repo to it:
    ```bash
    npx -y supabase@2.87.2 login
    npx -y supabase@2.87.2 link --project-ref=<your-project-ref>
    ```
-   After linking, paste the project's database password into `SUPABASE_DB_PASSWORD` in `web/.env.local` (find it at Project Settings → Database → Database password). The doctor will now be able to connect to your production Postgres live.
-5. **Vercel.** Push the koom repo to GitHub and import it at [vercel.com/new](https://vercel.com/new). In the Vercel project settings → Environment Variables, paste the values that apply in production: `DATABASE_URL` (your hosted Supabase pooler URL, from Project Settings → Database → Connection string), `R2_*`, `KOOM_PUBLIC_BASE_URL` (your Vercel URL), and `KOOM_ADMIN_SECRET`. Then mint a Vercel token at [vercel.com/account/tokens](https://vercel.com/account/tokens), grab the project ID from Vercel → Settings → General → Project ID, and paste both into `web/.env.prod.local`. (We plan to automate this step with `npm run vercel:sync` in a later round.)
-6. **macOS code-signing identity.** `npm run app:codesign` creates a stable local identity so rebuilds don't break Keychain trust.
-7. **Rerun `npm run doctor`** until both readiness tracks are green.
+   After linking, paste the project's database password into `SUPABASE_DB_PASSWORD` in `web/.env.local` (find it at Project Settings → Database → Database password), then run `npm run db:push` to apply the committed migrations. The doctor will now be able to connect to your production Postgres live.
+4. **Vercel.** Push the koom repo to GitHub and import it at [vercel.com/new](https://vercel.com/new). In the Vercel project settings → Environment Variables, paste the values that apply in production: `DATABASE_URL` (your hosted Supabase pooler URL, from Project Settings → Database → Connection string), `R2_*`, `KOOM_PUBLIC_BASE_URL` (your Vercel URL), and `KOOM_ADMIN_SECRET`. Then mint a Vercel token at [vercel.com/account/tokens](https://vercel.com/account/tokens), grab the project ID from Vercel → Settings → General → Project ID, and paste both into `web/.env.prod.local`.
+5. **macOS code-signing identity.** `npm run app:codesign` creates a stable local identity so rebuilds don't break Keychain trust.
+6. **Rerun `npm run doctor`** until the self-host/operator report is ready.
 
-Once the doctor is happy, start the stack:
+Install the signed desktop client when the operator doctor is happy:
 
 ```bash
-# Web app
-npm run dev -w web
-
-# macOS client (development build)
-npm run app:run
-
-# Install the signed release app into /Applications when you're ready
 npm run app:install
+```
+
+### Local development
+
+Contributors can validate and run the local stack without configuring Vercel or linking a hosted Supabase project:
+
+```bash
+# Bootstrap and inspect only local-development requirements
+npm run doctor:dev
+
+# Start local Supabase and apply the migrations
+npm run db:start
+npm run db:reset
+
+# Create the stable local signing identity
+npm run app:codesign
+
+# Confirm the development environment
+npm run doctor:dev
+```
+
+The local web app currently uses the configured R2 bucket, so development still requires the R2 credentials and `KOOM_ADMIN_SECRET` in `web/.env.local`. Once the dev doctor is ready, start the two application processes:
+
+```bash
+npm run dev -w web
+npm run app:run
 ```
 
 The root `package.json` is the primary interface for repository tasks. The
@@ -137,24 +155,17 @@ implementations and retained compatibility entry points are described in
 
 ## Doctor script
 
-`npm run doctor` is the single "is this environment actually usable?" check. It's safe to re-run any time. It produces a readiness report that tells you separately whether local development is ready and whether production deployment is ready — and exactly what's missing if either isn't.
+The doctor has one implementation with three focused entry points:
 
-It exercises:
+| Command              | Purpose                                                           |
+| -------------------- | ----------------------------------------------------------------- |
+| `npm run doctor`     | Self-host/operator readiness; does not require Docker             |
+| `npm run doctor:dev` | Local development readiness; does not require Vercel or a DB link |
+| `npm run doctor:all` | Complete diagnostic sweep across both paths                       |
 
-- **Environment variables** — every required and optional var in `web/.env.local` and `web/.env.prod.local`, with bootstrap-from-template if either file is missing.
-- **Cloudflare R2** — credentials work, test PUT/HEAD/GET round-trips, public URL serves the bytes, and crucially `Range` requests return `HTTP 206` (the load-bearing assumption for video scrubbing). Counts toward both tracks because the same bucket is shared between local and production.
-- **Local Postgres** — connectivity, schema matches migrations (`recordings`, `comments`, `commenters`), and a round-trip INSERT/SELECT/DELETE on `recordings`.
-- **Remote Supabase** — verifies the Supabase CLI is installed, that `supabase link` has been run against a hosted project, and that the cached pooler URL + `SUPABASE_DB_PASSWORD` can actually connect to the remote Postgres with a `SELECT 1`. The doctor does **not** validate whether migrations have been applied to the remote DB — just that you have something you can migrate against. No test rows are written to production.
-- **Ollama (auto-title)** — server is reachable and the configured model is pulled (non-fatal).
-- **Desktop code signing** — local dev codesign identity is present and usable on macOS.
-- **Vercel** — if `VERCEL_TOKEN` and `VERCEL_PROJECT_ID` are set in `web/.env.prod.local`, the doctor verifies the project is reachable, the token has access, and every env var currently configured on the Vercel project matches what koom expects (see [Vercel sync](#vercel-sync) below for the drift-detection details).
+R2 connectivity, the admin secret, Ollama, and desktop code signing are shared checks. The dev mode adds localhost configuration plus local Postgres schema and round-trip checks. The operator mode adds hosted Supabase connectivity plus Vercel reachability and environment drift.
 
-The final summary splits the checks into two readiness tracks:
-
-- **Local development** — everything you need to run the recorder + web app against local Postgres.
-- **Production deployment** — everything you need to deploy to Vercel, with a hosted Supabase + R2 bucket to back it.
-
-Either track can be "ready" independently. If you don't care about local development and just want to run koom in production, the doctor still tells you exactly what's missing for prod, and vice versa.
+Each mode executes only its relevant sections and derives its exit code from those checks. A stopped local Docker stack therefore cannot fail `npm run doctor`, and missing Vercel credentials cannot fail `npm run doctor:dev`. All modes are safe to rerun: R2 test objects and local Postgres test rows are cleaned up.
 
 ### Vercel sync
 

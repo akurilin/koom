@@ -191,8 +191,8 @@ final class CameraOverlayWindowController: NSWindowController {
 
         let frame = screen.frame
         let origin = NSPoint(
-            x: frame.minX + 24 - Self.shadowInset,
-            y: frame.minY + 24 - Self.shadowInset
+            x: frame.minX + AppModel.windowEdgePadding - Self.shadowInset,
+            y: frame.minY + AppModel.windowEdgePadding - Self.shadowInset
         )
         window.setFrame(
             NSRect(origin: origin, size: Self.overlaySize(for: size)),

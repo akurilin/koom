@@ -326,13 +326,14 @@ final class AppModel: ObservableObject {
         applyControlWindowCapturePolicy(window)
 
         if !hasPlacedWindow, let screen = NSScreen.main ?? NSScreen.screens.first {
+            let visibleFrame = screen.visibleFrame
             let origin = NSPoint(
-                x: screen.visibleFrame.midX - (window.frame.width / 2),
-                y: screen.visibleFrame.midY - (window.frame.height / 2)
+                x: visibleFrame.maxX - window.frame.width - Self.windowEdgePadding,
+                y: visibleFrame.maxY - window.frame.height - Self.windowEdgePadding
             )
             window.setFrameOrigin(origin)
             hasPlacedWindow = true
-            AppLog.info("Placed control panel at (\(Int(origin.x)), \(Int(origin.y))) on \(screen.localizedName).")
+            AppLog.info("Placed control panel at the top-right of \(screen.localizedName), origin (\(Int(origin.x)), \(Int(origin.y))).")
         }
     }
 
@@ -380,6 +381,7 @@ final class AppModel: ObservableObject {
     // (the window resizes via the preferredContentSize observation in
     // AppDelegate).
     static let panelWidth: CGFloat = 430
+    static let windowEdgePadding: CGFloat = 24
 
     func showSettingsTab() {
         // The main panel is hidden (and irrelevant) while recording.

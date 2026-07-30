@@ -553,18 +553,15 @@ private struct UploadStatusView: View {
 
     private func postProcessingDescription(_ stage: PostUploadStage) -> String {
         switch stage {
-        case .preparingOllama(let modelName):
-            return
-                "Upload finished. Preparing Ollama (\(modelName)) for local title generation…"
         case .extractingAudio:
             return
                 "Upload finished. Extracting microphone audio for transcription…"
         case .transcribing(let modelName):
             return
                 "Upload finished. Transcribing narration with Whisper (\(modelName))…"
-        case .generatingTitle(let modelName):
+        case .generatingLocalTitle(let modelName):
             return
-                "Upload finished. Generating a short title summary with Ollama (\(modelName))…"
+                "Upload finished. Generating a local title with \(modelName)…"
         case .savingGeneratedTitle:
             return
                 "Upload finished. Saving the generated title to the backend…"

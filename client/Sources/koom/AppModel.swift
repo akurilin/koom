@@ -109,7 +109,8 @@ final class AppModel: ObservableObject {
     }
     private let drawingOverlayWindowController = DrawingOverlayWindowController()
     private let settingsStore: AppSettingsStore
-    private let uploader = Uploader()
+    let localTitleModelManager: LocalTitleModelManager
+    private let uploader: Uploader
     private let sessionStore = RecordingSessionStore()
     private let assembler = RecordingAssembler()
     /// Recordings roll onto a fresh segment file after this much media
@@ -136,6 +137,11 @@ final class AppModel: ObservableObject {
 
     init(settingsStore: AppSettingsStore = AppSettingsStore()) {
         self.settingsStore = settingsStore
+        let localTitleModelManager = LocalTitleModelManager()
+        self.localTitleModelManager = localTitleModelManager
+        self.uploader = Uploader(
+            localTitleModelManager: localTitleModelManager
+        )
 
         uploader.onStateChange = { @Sendable [weak self] state in
             Task { @MainActor in
@@ -218,23 +224,11 @@ final class AppModel: ObservableObject {
     }
 
     func warmBackgroundServices() {
-        guard uploadRecordingsEnabled else {
-            AppLog.info("Backend uploads are disabled; skipping background service preflight.")
-            return
-        }
+        localTitleModelManager.prepareSelectedModel()
+    }
 
-        Task { [uploader] in
-            let issue = await uploader.prepareForLaunch()
-            guard let issue else { return }
-
-            await MainActor.run {
-                if self.statusMessage == "Ready." {
-                    self.statusMessage =
-                        "Auto-title is unavailable right now. See Troubleshooting > Reveal Logs in Finder."
-                }
-            }
-            AppLog.error("Background services: \(issue)")
-        }
+    func stopBackgroundServices() {
+        localTitleModelManager.stop()
     }
 
     // MARK: - Catch-up
@@ -605,18 +599,15 @@ final class AppModel: ObservableObject {
             return "Finalizing upload…"
         case .postProcessing(let stage):
             switch stage {
-            case .preparingOllama(let modelName):
-                return
-                    "Upload finished. Preparing Ollama (\(modelName)) for local title generation…"
             case .extractingAudio:
                 return
                     "Upload finished. Extracting microphone audio for transcription…"
             case .transcribing(let modelName):
                 return
                     "Upload finished. Transcribing narration with Whisper (\(modelName))…"
-            case .generatingTitle(let modelName):
+            case .generatingLocalTitle(let modelName):
                 return
-                    "Upload finished. Generating a short title summary with Ollama (\(modelName))…"
+                    "Upload finished. Generating a local title with \(modelName)…"
             case .savingGeneratedTitle:
                 return
                     "Upload finished. Saving the generated title to the backend…"

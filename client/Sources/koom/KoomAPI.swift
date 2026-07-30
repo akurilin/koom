@@ -166,7 +166,7 @@ struct KoomAPI {
 
     /// Overwrite (or clear) the `title` column of a recording row.
     /// Pass `nil` to clear. Used by the auto-titler to land a
-    /// short generated title as soon as Whisper + Ollama finish,
+    /// short generated title as soon as local processing finishes,
     /// even if the upload itself is still in flight.
     func updateRecordingTitle(
         recordingId: String,

@@ -17,8 +17,8 @@
  *
  *   - `npm run doctor:all` runs both readiness tracks.
  *
- * Shared checks such as R2, Ollama, and desktop code signing run in
- * every mode.
+ * Shared checks such as R2, the desktop local-title assets, and code
+ * signing run in every mode.
  *
  * Configuration model:
  *
@@ -100,12 +100,18 @@ const LOGIN_KEYCHAIN_PATH = join(
   "login.keychain-db",
 );
 
-// Auto-title defaults must stay in sync with Autotitler.swift on the
-// client. The doctor reads overrides from its own process env (not
-// from web/.env.local) because those env vars are consumed by the
-// desktop client at runtime, not by the web backend.
-const DEFAULT_OLLAMA_URL = "http://localhost:11434";
-const DEFAULT_OLLAMA_MODEL = "gemma4:e4b";
+const LOCAL_TITLE_CATALOG_PATH = join(
+  REPO_ROOT,
+  "client",
+  "Resources",
+  "local-title-models.json",
+);
+const CLIENT_BUILD_SCRIPT_PATH = join(
+  REPO_ROOT,
+  "client",
+  "scripts",
+  "build-app.sh",
+);
 
 // Columns we expect to find on the `recordings` table. Keep in sync
 // with supabase/migrations/*_create_recordings.sql.
@@ -501,9 +507,9 @@ async function main(): Promise<void> {
     await runRemoteSupabaseChecks(env);
   }
 
-  // ── Section: Auto-title (Ollama) ──────────────────────────────────
-  logSection("Auto-title (Ollama)");
-  await runOllamaChecks();
+  // ── Section: Local title generation ───────────────────────────────
+  logSection("Local title generation");
+  await runLocalTitleChecks();
 
   // ── Section: Desktop client (macOS) ───────────────────────────────
   logSection("Desktop client (macOS)");
@@ -1071,110 +1077,113 @@ async function checkSupabaseCliInstalled(): Promise<boolean> {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Auto-title (Ollama) checks
+// Local title generation checks
 // ────────────────────────────────────────────────────────────────────
 
 /**
- * Verify the local Ollama server is reachable and that the model the
- * desktop client is configured to use for auto-titling has been
- * pulled. These checks are intentionally non-fatal: auto-titling is
- * a nice-to-have and the operator may deliberately run without it.
- * Failures here are reported as warnings, not errors, and the doctor
- * exits 0 as long as everything else passed.
+ * Validate the checked-in model catalog and the pinned llama.cpp
+ * packaging recipe. Models are intentionally not a setup prerequisite:
+ * the desktop client downloads the selected model on first launch.
  */
-async function runOllamaChecks(): Promise<void> {
-  // Ollama runs beside the desktop client for both local development
-  // and normal use against a self-hosted deployment.
+async function runLocalTitleChecks(): Promise<void> {
   const track: Track = "both";
+  type CatalogModel = {
+    id?: unknown;
+    downloadURL?: unknown;
+    byteCount?: unknown;
+    sha256?: unknown;
+  };
+  type Catalog = {
+    version?: unknown;
+    defaultModelID?: unknown;
+    models?: unknown;
+  };
 
-  const enabledRaw = process.env.KOOM_AUTOTITLE_ENABLED ?? "true";
-  const disabled = ["false", "0", "no", "off"].includes(
-    enabledRaw.toLowerCase(),
-  );
-  if (disabled) {
-    skip(
-      "Ollama reachable",
-      track,
-      `KOOM_AUTOTITLE_ENABLED=${enabledRaw}; auto-title pipeline is disabled`,
-    );
-    return;
-  }
-
-  const ollamaUrlRaw = process.env.KOOM_OLLAMA_URL ?? DEFAULT_OLLAMA_URL;
-  const ollamaModel = process.env.KOOM_OLLAMA_MODEL ?? DEFAULT_OLLAMA_MODEL;
-
-  let ollamaUrl: URL;
+  let catalog: Catalog;
   try {
-    ollamaUrl = new URL(ollamaUrlRaw);
-  } catch {
-    warn(
-      "Ollama reachable",
-      track,
-      `KOOM_OLLAMA_URL=${ollamaUrlRaw} is not a valid URL. The client will fall back to ${DEFAULT_OLLAMA_URL}.`,
-    );
-    return;
-  }
-
-  // Ollama exposes GET /api/tags — returns { models: [...] } and
-  // only requires the server to be up. This is the cheapest way to
-  // both check reachability and enumerate available models in one
-  // round-trip.
-  const tagsUrl = new URL("api/tags", ollamaUrl);
-  let tagsJson: { models?: Array<{ name?: unknown }> };
-  try {
-    const res = await fetch(tagsUrl, {
-      method: "GET",
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!res.ok) {
-      warn(
-        "Ollama reachable",
-        track,
-        `GET ${tagsUrl.href} returned HTTP ${res.status}.\n` +
-          `Start Ollama with 'ollama serve' (or the app) to enable auto-titling.`,
-      );
-      return;
-    }
-    tagsJson = (await res.json()) as typeof tagsJson;
+    catalog = JSON.parse(
+      await readFile(LOCAL_TITLE_CATALOG_PATH, "utf8"),
+    ) as Catalog;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    warn(
-      "Ollama reachable",
+    const message = err instanceof Error ? err.message : String(err);
+    fail(
+      "Curated model catalog",
       track,
-      `Could not reach ${tagsUrl.href}: ${msg}\n` +
-        `Start Ollama with 'ollama serve' (or the app) to enable auto-titling.\n` +
-        `This check is non-fatal — the upload flow still works without it.`,
+      `Could not read ${LOCAL_TITLE_CATALOG_PATH}: ${message}`,
     );
     return;
   }
 
-  pass("Ollama reachable", track, `(${ollamaUrl.origin})`);
-
-  // Ollama model names can round-trip with or without the ":latest"
-  // tag depending on how they were pulled, so accept either as a
-  // match. Every other case is a real miss.
-  const modelNames = (tagsJson.models ?? [])
-    .map((m) => (typeof m.name === "string" ? m.name : null))
-    .filter((n): n is string => n !== null);
-
-  const hasModel =
-    modelNames.includes(ollamaModel) ||
-    modelNames.includes(`${ollamaModel}:latest`) ||
-    (ollamaModel.endsWith(":latest") &&
-      modelNames.includes(ollamaModel.slice(0, -":latest".length)));
-
-  if (hasModel) {
-    pass(`Ollama model '${ollamaModel}' is pulled`, track);
-  } else {
-    warn(
-      `Ollama model '${ollamaModel}' is pulled`,
-      track,
-      `Model not found in /api/tags. Pull it with:\n` +
-        `    ollama pull ${ollamaModel}\n` +
-        `Known models: ${modelNames.length > 0 ? modelNames.join(", ") : "(none)"}`,
+  const models = Array.isArray(catalog.models)
+    ? (catalog.models as CatalogModel[])
+    : [];
+  const ids = models
+    .map((model) => (typeof model.id === "string" ? model.id : null))
+    .filter((id): id is string => id !== null);
+  const uniqueIDs = new Set(ids);
+  const catalogIsValid =
+    catalog.version === 1 &&
+    typeof catalog.defaultModelID === "string" &&
+    ids.includes(catalog.defaultModelID) &&
+    ids.length === models.length &&
+    uniqueIDs.size === ids.length &&
+    models.every(
+      (model) =>
+        typeof model.downloadURL === "string" &&
+        model.downloadURL.startsWith("https://huggingface.co/") &&
+        typeof model.byteCount === "number" &&
+        model.byteCount > 0 &&
+        typeof model.sha256 === "string" &&
+        /^[a-f0-9]{64}$/.test(model.sha256),
     );
+
+  if (!catalogIsValid) {
+    fail(
+      "Curated model catalog",
+      track,
+      "Expected version 1, a present default model, unique ids, pinned HTTPS downloads, byte sizes, and SHA-256 hashes.",
+    );
+    return;
   }
+  pass(
+    "Curated model catalog",
+    track,
+    `(${models.length} models; default: ${catalog.defaultModelID})`,
+  );
+
+  let buildScript: string;
+  try {
+    buildScript = await readFile(CLIENT_BUILD_SCRIPT_PATH, "utf8");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(
+      "Bundled llama.cpp recipe",
+      track,
+      `Could not read ${CLIENT_BUILD_SCRIPT_PATH}: ${message}`,
+    );
+    return;
+  }
+  const runtimeChecksums = [
+    ...buildScript.matchAll(/archive_sha256="[a-f0-9]{64}"/g),
+  ];
+  const runtimeIsPinned =
+    /LLAMA_CPP_RELEASE="b\d+"/.test(buildScript) &&
+    buildScript.includes("github.com/ggml-org/llama.cpp/releases/download/") &&
+    runtimeChecksums.length === 2 &&
+    buildScript.includes("Contents/Helpers/llama-runtime");
+  if (!runtimeIsPinned) {
+    fail(
+      "Bundled llama.cpp recipe",
+      track,
+      "The app build must pin and checksum the llama.cpp release before copying it into the bundle.",
+    );
+    return;
+  }
+  pass(
+    "Bundled llama.cpp recipe",
+    track,
+    "(downloaded and checksummed by the app build; no provider install required)",
+  );
 }
 
 async function runDesktopClientChecks(): Promise<void> {

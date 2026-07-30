@@ -26,7 +26,7 @@ struct TimedTranscript: Codable, Sendable {
 
     /// Plain-text rendering of the entire transcript — equivalent to
     /// joining every segment's text. Used by the auto-titler to feed
-    /// Ollama without needing to know about timestamps.
+    /// the local title model without needing to know about timestamps.
     var plainText: String {
         segments
             .map(\.text)

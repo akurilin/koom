@@ -1,42 +1,55 @@
 # Post-Upload Processing
 
-Everything the macOS client does on-device after the MP4 finishes uploading: auto-titles, word-level transcripts, and thumbnail generation. All three are best-effort, private, and never block the share link.
+Everything the macOS client does on-device after the MP4 finishes uploading: local titles, word-level transcripts, and thumbnail generation. All three are best-effort, private, and never block the share link.
 
-## Auto-titling and transcripts
+## Local titles and transcripts
 
-Recordings that otherwise would have stayed untitled get a short descriptive title and a word-level transcript generated on the same machine that did the recording — no cloud APIs, no third-party telemetry, no server-side worker. One WhisperKit pass produces both artifacts. The pipeline runs once per recording during post-upload processing. Everything remains best-effort: any failure (no mic track, WhisperKit error, Ollama request failure, empty transcript) logs a line, leaves the `title` column `NULL`, and skips the transcript upload.
+Recordings that otherwise would have stayed untitled can get a short descriptive title and a word-level transcript on the same Mac that made the recording. There are no cloud inference APIs, third-party telemetry calls, or server-side workers.
+
+Transcription and title generation intentionally have different readiness rules. WhisperKit runs whenever post-upload processing is enabled. Local title generation is an optional add-on: if its model is still downloading or unavailable when a recording's transcript finishes, koom preserves and uploads the transcript but skips that recording's title. There is no pending-title queue or later retry state.
 
 ### Stages
 
-All stages run in-process on the macOS client:
+1. **Extract.** `AVAssetReader` pulls microphone audio from the finalized MP4 into 16 kHz mono float PCM. No ffmpeg and no temporary audio file.
+2. **Transcribe.** An actor-wrapped `WhisperKit` instance runs `openai_whisper-small.en` with word timestamps. The model loads lazily and stays resident for the app session. WhisperKit manages its initial model download in the standard Hugging Face cache.
+3. **Generate a local title when ready.** The transcript goes to a loopback-only `llama-server` launched from koom's app bundle. The selected GGUF model stays loaded until the user switches models, deletes it, or quits koom. The prompt asks for an English, 4–10 word, sentence-case title with no quotes, prefix, or trailing period; the client sanitizes the result before use.
+4. **Persist.** The title is `PATCH`ed onto the `recordings` row. The timed transcript is uploaded as JSON to `PUT /api/admin/recordings/[id]/transcript`, which writes an R2 sidecar at `recordings/{id}/transcript.json`. The watch page fetches that public sidecar and degrades gracefully when it is absent.
 
-1. **Extract.** `AVAssetReader` pulls the mic audio out of the finalized MP4 into 16 kHz mono float PCM. No ffmpeg, no temp files.
-2. **Transcribe.** An actor-wrapped `WhisperKit` instance runs the CoreML model against the PCM buffer with `wordTimestamps: true`, producing a `TimedTranscript` of segments, each with a start/end time and an array of words with their own per-word timing. The instance is loaded lazily on first use and memoized for the rest of the process, so the ~500 MB model download only happens once (into the standard HuggingFace Hub cache at `~/.cache/huggingface/hub/`).
-3. **Summarize.** The plain-text rendering of the transcript is sent to a local Ollama model via `POST http://localhost:11434/api/generate` with `think: false` (important — reasoning-capable models like `gemma4:e4b` otherwise route their output into a separate `thinking` field and return an empty `response`). The client asks for a 4–10 word title and sanitizes it (strips `Title:` prefixes, smart/straight quotes, trailing punctuation, clamps to 10 words).
-4. **Persist.** The title is `PATCH`ed onto the `recordings` row via `PATCH /api/admin/recordings/[id]`. Pending rows (upload still in flight) are also allowed to take a title so the auto-titler can land early on fast uploads. The timed transcript is uploaded as JSON to `PUT /api/admin/recordings/[id]/transcript`, which writes it to R2 at `recordings/{id}/transcript.json` as sidecar metadata — there is no database column for the transcript. The watch page fetches the public R2 URL directly and falls back gracefully when the sidecar object does not exist.
+### Runtime and model lifecycle
 
-### Defaults
+Users do not install an inference provider. `client/scripts/build-app.sh` downloads a pinned, checksummed macOS release of [llama.cpp](https://github.com/ggml-org/llama.cpp) and copies `llama-server`, its dynamic libraries, and its license into the app bundle.
 
-The shipped client defaults are compiled into `AutotitleConfiguration.swift`:
+On first launch, koom downloads the selected model in the background to:
 
-- Whisper model: `openai_whisper-small.en`
-- Ollama URL: `http://localhost:11434`
-- Ollama model: `gemma4:e4b`
-- Auto-title enabled: yes
+```text
+~/Library/Application Support/koom/models/
+```
 
-At launch the app performs a best-effort Ollama warmup itself. If the configured URL is the default local HTTP endpoint, koom will try to start `ollama serve` automatically before giving up. Missing Ollama or a missing model no longer blocks app launch; the app logs the issue, surfaces a small status warning, and skips auto-title work until Ollama becomes available again.
+The download is checked against the byte size and SHA-256 hash in `client/Resources/local-title-models.json` before its `.part` file is promoted to a usable GGUF. The catalog also drives the model manager in Settings, including enable/disable, selection, download, atomic redownload, and delete actions. Deleting the selected model disables local title generation so it does not unexpectedly return on the next launch. Model URLs include immutable Hugging Face revisions.
 
-`npm run doctor` has an "Auto-title (Ollama)" section that verifies Ollama is reachable and the configured model has been pulled. Those checks remain non-fatal so the rest of the doctor sweep still runs.
+The shipped catalog currently contains:
+
+- Qwen3.5 0.8B Q4_0 — recommended default, about 563 MB
+- Qwen3 1.7B Q4_K_M — balanced option, about 1.28 GB
+- Qwen3 4B Q4_K_M — higher-quality option, about 2.5 GB
+
+All three catalog entries are Apache-2.0 models. Once the chosen files are present, both transcription and title inference work offline. A model download naturally requires internet access.
+
+### Isolation and debugging
+
+The server binds to `127.0.0.1` on a koom-owned port and requires a fresh random bearer token for every app session. It exposes no web UI or slot inspection endpoint. The token is held in memory and is not written to logs or preferences.
+
+Persistent client logs live in `~/Library/Logs/koom/`. llama.cpp stdout and stderr go to `local-title-server.log` in the same directory. **Troubleshooting → Reveal Logs in Finder** opens that directory.
+
+`npm run doctor` validates the curated catalog and the pinned llama.cpp packaging recipe. It does not require a model to have been downloaded: model installation is client-managed and optional.
 
 ## Thumbnail generation
 
-Each completed recording also gets a best-effort JPEG thumbnail generated locally on the macOS client. This stays intentionally simple: no queue, no worker, no background cloud media pipeline.
+Each completed recording also gets a best-effort JPEG thumbnail generated locally. This stays intentionally simple: no queue, worker, or background cloud media pipeline.
 
-Stages, all on the macOS client:
+1. **Extract.** `AVAssetImageGenerator` reads a still frame from the finalized MP4 and encodes it as JPEG without mutating the source.
+2. **Upload.** The client sends the JPEG to `PUT /api/admin/recordings/[id]/thumbnail`.
+3. **Store.** The backend writes `recordings/{id}/thumbnail-v1.jpg` to R2.
+4. **Render.** Recording payloads expose `thumbnailUrl`; list views fall back to `videoUrl#t=0.1` when the JPEG is absent.
 
-1. **Extract.** `AVAssetImageGenerator` reads a still frame from the finalized MP4 and encodes it as JPEG. No `ffmpeg`, no full-file re-download from R2, and no mutation of the source recording.
-2. **Upload.** The client sends that JPEG to `PUT /api/admin/recordings/[id]/thumbnail`.
-3. **Store.** The web backend writes the sidecar object to Cloudflare R2 at `recordings/{id}/thumbnail-v1.jpg`.
-4. **Render.** Admin/public recording payloads expose `thumbnailUrl`, and list views use that image first, falling back to `videoUrl#t=0.1` if the sidecar JPEG is missing.
-
-Like auto-titling, thumbnail generation is best-effort. A thumbnail failure never blocks the MP4 upload, never prevents the share URL from opening, and never deletes or mutates the local recording.
+A thumbnail failure never blocks the MP4 upload, prevents the share URL from opening, or deletes the local recording.

@@ -98,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        model.stopBackgroundServices()
         AppLog.info("koom terminating.")
     }
 

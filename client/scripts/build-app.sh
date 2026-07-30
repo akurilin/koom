@@ -12,6 +12,8 @@ APP_ICON_PATH=""
 CLEAN_BUILD=false
 DEFAULT_CODESIGN_IDENTITY="koom Local Dev"
 KOOM_CODESIGN_IDENTITY="${KOOM_CODESIGN_IDENTITY:-}"
+LLAMA_CPP_RELEASE="b10194"
+LLAMA_CPP_RUNTIME_DIR=""
 
 usage() {
     cat >&2 <<'EOF'
@@ -109,6 +111,22 @@ safe_remove_dir() {
     fi
 }
 
+reset_app_bundle() {
+    local canonical_root canonical_app expected_app
+    canonical_root=$(cd "$ROOT_DIR" && pwd -P)
+    canonical_app=$(canonicalize_path "$APP_PATH")
+    expected_app=$(canonicalize_path \
+        "$canonical_root/.build/$BUILD_CONFIGURATION/koom.app")
+
+    if [[ "$canonical_app" != "$expected_app" ]]; then
+        echo "Refusing to replace unexpected app path: $canonical_app" >&2
+        exit 1
+    fi
+    if [[ -e "$canonical_app" ]]; then
+        rm -rf -- "$canonical_app"
+    fi
+}
+
 generate_app_icon() {
     if [[ ! -f "$APP_ICON_SOURCE_PATH" ]]; then
         echo "App icon source not found at $APP_ICON_SOURCE_PATH; continuing without a custom icon." >&2
@@ -131,6 +149,61 @@ generate_app_icon() {
     done
 
     iconutil -c icns "$iconset_dir" -o "$APP_ICON_PATH"
+}
+
+prepare_llama_runtime() {
+    local architecture archive_name archive_sha256 archive_url
+    local vendor_dir archive_path extraction_dir extracted_runtime
+
+    architecture=$(uname -m)
+    case "$architecture" in
+        arm64)
+            archive_name="llama-b10194-bin-macos-arm64.tar.gz"
+            archive_sha256="03230460822cd2e69bba70488245f9745198d592874f8ca9c96fd0d808d3f866"
+            ;;
+        x86_64)
+            archive_name="llama-b10194-bin-macos-x64.tar.gz"
+            archive_sha256="2304d44161464310ae11e041e3f40f22873d8875e5f8f31f151ee2e21d38f105"
+            ;;
+        *)
+            echo "Unsupported macOS architecture for llama.cpp: $architecture" >&2
+            exit 1
+            ;;
+    esac
+
+    archive_url="https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_CPP_RELEASE/$archive_name"
+    vendor_dir="$BUILD_DIR/vendor/llama.cpp/$LLAMA_CPP_RELEASE/$architecture"
+    archive_path="$vendor_dir/$archive_name"
+    extracted_runtime="$vendor_dir/llama-$LLAMA_CPP_RELEASE"
+
+    mkdir -p "$vendor_dir"
+    if [[ ! -f "$archive_path" ]] || \
+        ! printf '%s  %s\n' "$archive_sha256" "$archive_path" | shasum -a 256 -c - >/dev/null 2>&1; then
+        echo "Downloading pinned llama.cpp runtime ($LLAMA_CPP_RELEASE, $architecture)." >&2
+        curl --fail --location --retry 3 --output "$archive_path.part" "$archive_url"
+        printf '%s  %s\n' "$archive_sha256" "$archive_path.part" | shasum -a 256 -c - >/dev/null
+        mv "$archive_path.part" "$archive_path"
+    fi
+
+    if [[ ! -x "$extracted_runtime/llama-server" ]]; then
+        extraction_dir=$(mktemp -d "$vendor_dir/extract.XXXXXX")
+        tar -xzf "$archive_path" -C "$extraction_dir"
+        rm -rf -- "$extracted_runtime"
+        mv "$extraction_dir/llama-$LLAMA_CPP_RELEASE" "$extracted_runtime"
+        rmdir "$extraction_dir"
+    fi
+
+    LLAMA_CPP_RUNTIME_DIR="$extracted_runtime"
+}
+
+copy_llama_runtime() {
+    local destination
+    destination="$APP_PATH/Contents/Helpers/llama-runtime"
+    mkdir -p "$destination"
+
+    cp "$LLAMA_CPP_RUNTIME_DIR/llama-server" "$destination/llama-server"
+    cp "$LLAMA_CPP_RUNTIME_DIR/LICENSE" "$destination/LICENSE"
+    cp -P "$LLAMA_CPP_RUNTIME_DIR"/*.dylib "$destination/"
 }
 
 sign_app_bundle() {
@@ -162,11 +235,19 @@ if [[ "$CLEAN_BUILD" == true ]]; then
 fi
 
 swift build -c "$BUILD_CONFIGURATION" --product koom >&2
+prepare_llama_runtime
+reset_app_bundle
 
-mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
+mkdir -p \
+    "$APP_PATH/Contents/MacOS" \
+    "$APP_PATH/Contents/Resources" \
+    "$APP_PATH/Contents/Helpers"
 
 cp "$EXECUTABLE_PATH" "$APP_PATH/Contents/MacOS/koom"
 cp "$ROOT_DIR/App/Info.plist" "$APP_PATH/Contents/Info.plist"
+cp "$ROOT_DIR/Resources/local-title-models.json" \
+    "$APP_PATH/Contents/Resources/local-title-models.json"
+copy_llama_runtime
 generate_app_icon
 
 sign_app_bundle >/dev/null

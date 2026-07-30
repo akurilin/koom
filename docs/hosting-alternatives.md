@@ -7,7 +7,7 @@ What it would take to move koom's backend off the current Vercel + Supabase + Cl
 
 ## Summary
 
-**The backend is already nearly cloud-agnostic by design.** The production footprint is a Next.js server, plain Postgres (the Supabase lockdown means we use none of Supabase's API surface — just a `pg` pool), and an S3-compatible blob store accessed through `@aws-sdk/client-s3` with an env-driven endpoint. Ollama runs on the desktop client and never moves. The entire deploy contract is seven env vars: `DATABASE_URL`, the five `R2_*` values, `KOOM_PUBLIC_BASE_URL`, plus `KOOM_ADMIN_SECRET`.
+**The backend is already nearly cloud-agnostic by design.** The production footprint is a Next.js server, plain Postgres (the Supabase lockdown means we use none of Supabase's API surface — just a `pg` pool), and an S3-compatible blob store accessed through `@aws-sdk/client-s3` with an env-driven endpoint. Local inference runs inside the desktop client through its bundled llama.cpp runtime and never moves. The entire deploy contract is seven env vars: `DATABASE_URL`, the five `R2_*` values, `KOOM_PUBLIC_BASE_URL`, plus `KOOM_ADMIN_SECRET`.
 
 ## What portability actually requires
 

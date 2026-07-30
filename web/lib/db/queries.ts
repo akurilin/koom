@@ -125,7 +125,7 @@ export async function deleteRecordingById(id: string): Promise<boolean> {
  * Pass `null` to clear an existing title. Status is deliberately
  * ignored — both pending and complete rows are updatable so that
  * the desktop client's auto-titler can land a title the moment
- * Whisper + Ollama finish, even if the upload itself is still in
+ * local post-processing finishes, even if the upload itself is still in
  * flight.
  */
 export async function updateRecordingTitle(

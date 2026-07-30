@@ -20,7 +20,7 @@ Features koom is particularly proud of:
 - **Share-link watch pages.** Anyone with the URL can watch at `/r/[id]` in the browser, no account needed. `?t=` deep-linking lands the viewer on an exact moment.
 - **Timestamped comments.** Viewers drop comments anchored to the exact second in the timeline. Anonymous viewers get a stable `koom-commenter` UUID cookie so they can delete their own comments without signing up; admins can reply under the same thread and moderate.
 - **Word-level transcripts.** Every recording gets a Loom-style clickable transcript alongside the video. Words highlight and auto-scroll as the video plays; clicking any word seeks the player. Transcription happens on-device via WhisperKit — the audio never leaves the machine.
-- **Private auto-titles.** The same WhisperKit pass feeds the transcript to a local Ollama model, which generates a short, descriptive title. No cloud API, no subscription.
+- **Private auto-titles.** The same WhisperKit pass feeds the transcript to a model running through the bundled llama.cpp runtime, which generates a short, descriptive title. No cloud API, provider install, or subscription.
 - **Local thumbnails.** Each recording gets a JPEG still generated on-device and uploaded alongside the video, so list views are lightweight instead of seeking into the MP4.
 - **Crash recovery.** Force-quit, crash, or lose power mid-recording and the next app launch offers to resume, finish, or discard the in-progress session. Recordings are written as a chain of complete ~30-second segment files while capture runs, so a crash loses at most the segment being written.
 - **Inline admin rename.** Admins can click the title on the watch page to rename a recording inline — no separate admin form.
@@ -37,7 +37,7 @@ koom is a small monorepo split by runtime:
 
 | Component   | Stack                                            | Role                                                                 |
 | ----------- | ------------------------------------------------ | -------------------------------------------------------------------- |
-| `client/`   | Swift 6, SwiftUI, AVFoundation, ScreenCaptureKit | Records the screen, uploads the file, transcribes locally            |
+| `client/`   | Swift 6, SwiftUI, AVFoundation, ScreenCaptureKit | Records, uploads, transcribes, and generates titles locally          |
 | `web/`      | Next.js 16 (App Router), TypeScript, React 19    | Public watch pages, admin UI, backend API routes                     |
 | `supabase/` | Hand-written SQL migrations, managed via `pg`    | `recordings`, `comments`, `commenters` tables (no ORM)               |
 | `scripts/`  | TypeScript, run through `tsx`                    | Operator tooling — `doctor`, `r2:setup`, `r2:orphans`, `vercel:sync` |
@@ -54,7 +54,7 @@ Deployment targets:
 1. The macOS client records to `~/Movies/koom/prod/koom_YYYY-MM-DD_HH-mm-ss.mp4` and keeps the local copy permanently.
 2. On completion, the client asks `POST /api/admin/uploads/init` for a presigned R2 `PUT` URL and writes a `pending` row to Postgres.
 3. The client `PUT`s the file straight to R2 — bytes never flow through Vercel.
-4. In parallel, on-device post-upload processing kicks off: WhisperKit produces a word-level transcript, a local Ollama model turns that transcript into a short title, and `AVAssetImageGenerator` grabs a JPEG thumbnail. Nothing leaves the machine except the derived artifacts you choose to upload back into your own stack.
+4. In parallel, on-device post-upload processing kicks off: WhisperKit produces a word-level transcript, a model hosted by the bundled llama.cpp runtime turns that transcript into a short title, and `AVAssetImageGenerator` grabs a JPEG thumbnail. Nothing leaves the machine except the derived artifacts you choose to upload back into your own stack.
 5. `POST /api/admin/uploads/complete` confirms the object landed, flips the row to `complete`, and returns the share URL. The client then `PATCH`es the title onto the row and uploads the transcript + thumbnail as sidecar artifacts in R2.
 6. The client copies the share URL to the clipboard and opens it. Anyone with the link can watch, read the clickable transcript, leave timestamped comments, and (if admin) rename the recording inline.
 
@@ -73,7 +73,7 @@ The Next.js app holds all R2 and Postgres credentials. The desktop client only k
 
 ### Nice-to-haves
 
-- **[Ollama](https://ollama.com)** — enables local auto-title generation. Install with `brew install ollama && ollama pull gemma4:e4b`. The app will auto-start `ollama serve` on first use and is fine running without it — auto-title and transcript extraction gracefully degrade when Ollama is unreachable.
+- **A local title model** — koom downloads the recommended ~563 MB Qwen model in the background on first launch. Local title generation is optional: recording and transcription keep working while it downloads or when it is disabled. Settings lets you enable, choose, redownload, or remove any model in the curated list.
 - **Docker Desktop** — lets you run the local Supabase stack via `npm run db:start`. It is required for `npm run doctor:dev`, but not for the default self-host/operator doctor.
 - **`brew install gitleaks shellcheck`** — so the pre-commit hook can run locally with the same checks CI runs.
 
@@ -163,7 +163,7 @@ The doctor has one implementation with three focused entry points:
 | `npm run doctor:dev` | Local development readiness; does not require Vercel or a DB link |
 | `npm run doctor:all` | Complete diagnostic sweep across both paths                       |
 
-R2 connectivity, the admin secret, Ollama, and desktop code signing are shared checks. The dev mode adds localhost configuration plus local Postgres schema and round-trip checks. The operator mode adds hosted Supabase connectivity plus Vercel reachability and environment drift.
+R2 connectivity, the admin secret, the local-title packaging recipe, and desktop code signing are shared checks. The dev mode adds localhost configuration plus local Postgres schema and round-trip checks. The operator mode adds hosted Supabase connectivity plus Vercel reachability and environment drift.
 
 Each mode executes only its relevant sections and derives its exit code from those checks. A stopped local Docker stack therefore cannot fail `npm run doctor`, and missing Vercel credentials cannot fail `npm run doctor:dev`. All modes are safe to rerun: R2 test objects and local Postgres test rows are cleaned up.
 

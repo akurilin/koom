@@ -21,10 +21,9 @@ enum UploadState: Equatable, Sendable {
 }
 
 enum PostUploadStage: Equatable, Sendable {
-    case preparingOllama(modelName: String)
     case extractingAudio
     case transcribing(modelName: String)
-    case generatingTitle(modelName: String)
+    case generatingLocalTitle(modelName: String)
     case savingGeneratedTitle
     case uploadingTranscript
     case generatingThumbnail
@@ -64,8 +63,8 @@ struct UploadCompletionSummary: Equatable, Sendable {
 
 /// Success payload for `performUpload`. The recording id is
 /// surfaced so the post-recording auto-titler can land a generated
-/// title on the row via PATCH once both the upload and Whisper +
-/// Ollama have finished.
+/// title on the row via PATCH once both the upload and local
+/// processing have finished.
 private struct UploadOutcome: Sendable {
     let recordingId: String
     let shareURL: URL
@@ -133,14 +132,14 @@ final class Uploader {
     /// the closure via `Task { @MainActor in ... }`.
     var onStateChange: (@Sendable (UploadState) -> Void)?
 
-    /// Long-lived auto-titler. Built once from the shipped client
-    /// defaults so the underlying `Transcriber` actor keeps its
-    /// loaded WhisperKit model warm across recordings. `nil` only
-    /// when auto-title is disabled in the app's compiled defaults.
-    private let autotitler: Autotitler? = Autotitler.shippedDefault()
-    func prepareForLaunch() async -> String? {
-        guard let autotitler else { return nil }
-        return await autotitler.preflightForLaunch()
+    /// Long-lived auto-titler. Its WhisperKit model and the selected
+    /// local title model stay warm for the app session.
+    private let autotitler: Autotitler?
+
+    init(localTitleModelManager: LocalTitleModelManager) {
+        autotitler = Autotitler.shippedDefault(
+            localTitleModelManager: localTitleModelManager
+        )
     }
 
     // MARK: Single-file upload (post-recording)

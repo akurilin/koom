@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "defaultModelID": "qwen3.5-0.8b-q4-0",
+  "models": [
+    {
+      "id": "qwen3.5-0.8b-q4-0",
+      "displayName": "Qwen3.5 0.8B",
+      "summary": "Recommended. Fast and compact.",
+      "parameterCount": "0.8B",
+      "quantization": "Q4_0",
+      "filename": "Qwen3.5-0.8B-Q4_0.gguf",
+      "downloadURL": "https://huggingface.co/ggml-org/Qwen3.5-0.8B-GGUF/resolve/8fea620810c4afa23dd6443f999a48574c1611a3/Qwen3.5-0.8B-Q4_0.gguf",
+      "byteCount": 563036064,
+      "sha256": "57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf",
+      "license": "Apache-2.0",
+      "sourceURL": "https://huggingface.co/ggml-org/Qwen3.5-0.8B-GGUF"
+    },
+    {
+      "id": "qwen3-1.7b-q4-k-m",
+      "displayName": "Qwen3 1.7B",
+      "summary": "Balanced quality and memory use.",
+      "parameterCount": "1.7B",
+      "quantization": "Q4_K_M",
+      "filename": "Qwen3-1.7B-Q4_K_M.gguf",
+      "downloadURL": "https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF/resolve/daeb8e2d528a760970442092f6bf1e55c3b659eb/Qwen3-1.7B-Q4_K_M.gguf",
+      "byteCount": 1282439264,
+      "sha256": "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5",
+      "license": "Apache-2.0",
+      "sourceURL": "https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF"
+    },
+    {
+      "id": "qwen3-4b-q4-k-m",
+      "displayName": "Qwen3 4B",
+      "summary": "Higher quality, with a larger download and memory footprint.",
+      "parameterCount": "4B",
+      "quantization": "Q4_K_M",
+      "filename": "Qwen3-4B-Q4_K_M.gguf",
+      "downloadURL": "https://huggingface.co/ggml-org/Qwen3-4B-GGUF/resolve/2f3b082b1356a6123f7ed71e65aea340da25d53c/Qwen3-4B-Q4_K_M.gguf",
+      "byteCount": 2497280640,
+      "sha256": "ab27b9bfa375a178d6cba48f3ad892b94b7739659dcc7aae8058ce0ffed6b328",
+      "license": "Apache-2.0",
+      "sourceURL": "https://huggingface.co/ggml-org/Qwen3-4B-GGUF"
+    }
+  ]
+}

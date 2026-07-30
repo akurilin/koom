@@ -13,7 +13,7 @@
  *
  *   - doctor is an on-demand, read-write diagnostic that PUTs test
  *     objects, round-trips a test row through the recordings table,
- *     and probes Ollama.
+ *     and validates desktop local-title packaging.
  *   - preflight is a read-only, fast connectivity probe intended to
  *     run on every server start in dev without being annoying.
  *

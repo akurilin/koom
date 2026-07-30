@@ -32,6 +32,7 @@ struct SettingsView: View {
     }
 
     private let settingsStore = AppSettingsStore()
+    @EnvironmentObject private var model: AppModel
 
     @State private var activeEnvironment: KoomEnvironment =
         KoomConfig.activeEnvironment
@@ -135,6 +136,10 @@ struct SettingsView: View {
                         "koom captures directly at the selected maximum resolution while preserving the display's aspect ratio. 4K uses substantially more processing time, disk space, and upload bandwidth. ffmpeg optimization keeps the selected resolution."
                     )
                 }
+
+                LocalTitleModelsSettingsView(
+                    manager: model.localTitleModelManager
+                )
 
                 settingsCard(header: "Upload") {
                     Toggle(
@@ -405,4 +410,179 @@ struct SettingsView: View {
         ).abbreviatingWithTildeInPath
     }
 
+}
+
+private struct LocalTitleModelsSettingsView: View {
+    @ObservedObject var manager: LocalTitleModelManager
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Local title generation")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.primary.opacity(0.72))
+
+            Toggle(
+                "Enable local title generation",
+                isOn: Binding(
+                    get: { manager.isEnabled },
+                    set: { manager.setEnabled($0) }
+                )
+            )
+            .font(.system(size: 13))
+
+            if let catalogIssue = manager.catalogIssue {
+                Text(catalogIssue)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(manager.models) { titleModel in
+                    modelRow(titleModel)
+
+                    if titleModel.id != manager.models.last?.id {
+                        Divider()
+                    }
+                }
+
+                Text(
+                    "The selected model downloads from Hugging Face once, then title generation stays on this Mac and works offline. If a recording finishes before the model is ready, only that recording's title is skipped."
+                )
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.74))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.06))
+        }
+    }
+
+    private func modelRow(_ titleModel: LocalTitleModel) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Text(titleModel.displayName)
+                        .font(.system(size: 13, weight: .medium))
+
+                    if titleModel.id == manager.selectedModelID {
+                        Text("Selected")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule().fill(Color.black.opacity(0.06))
+                            )
+                    }
+                }
+
+                Text(
+                    "\(titleModel.summary) \(titleModel.formattedDownloadSize) · \(titleModel.quantization) · \(titleModel.license)"
+                )
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
+                statusText(for: titleModel)
+                    .font(.system(size: 10))
+                    .foregroundStyle(statusColor(for: titleModel))
+                    .lineLimit(2)
+            }
+
+            Spacer()
+
+            modelAction(for: titleModel)
+
+            Menu {
+                if canManageDownloadedFile(titleModel) {
+                    Button("Redownload") {
+                        manager.redownload(titleModel)
+                    }
+                    Button("Delete", role: .destructive) {
+                        manager.delete(titleModel)
+                    }
+                    Divider()
+                }
+                Button("View model source") {
+                    NSWorkspace.shared.open(titleModel.sourceURL)
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private func modelAction(for titleModel: LocalTitleModel) -> some View {
+        switch manager.state(for: titleModel) {
+        case .downloading, .verifying, .starting:
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 54)
+        case .ready where titleModel.id == manager.selectedModelID:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .frame(width: 54)
+                .accessibilityLabel("Ready")
+        default:
+            Button(actionLabel(for: titleModel)) {
+                manager.use(titleModel)
+            }
+            .controlSize(.small)
+        }
+    }
+
+    private func actionLabel(for titleModel: LocalTitleModel) -> String {
+        switch manager.state(for: titleModel) {
+        case .downloaded, .ready:
+            return "Use"
+        default:
+            return "Download"
+        }
+    }
+
+    private func statusText(for titleModel: LocalTitleModel) -> Text {
+        switch manager.state(for: titleModel) {
+        case .notDownloaded:
+            return Text("Not downloaded")
+        case .downloaded:
+            return Text("Downloaded")
+        case .downloading:
+            return Text("Downloading…")
+        case .verifying:
+            return Text("Verifying download…")
+        case .starting:
+            return Text("Starting local model…")
+        case .ready:
+            return Text("Ready")
+        case .failed(let message):
+            return Text(message)
+        }
+    }
+
+    private func statusColor(for titleModel: LocalTitleModel) -> Color {
+        if case .failed = manager.state(for: titleModel) {
+            return .red
+        }
+        return .secondary
+    }
+
+    private func canManageDownloadedFile(
+        _ titleModel: LocalTitleModel
+    ) -> Bool {
+        switch manager.state(for: titleModel) {
+        case .downloaded, .ready, .failed:
+            return true
+        default:
+            return false
+        }
+    }
 }

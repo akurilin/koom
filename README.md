@@ -192,14 +192,4 @@ Each expected variable falls into one of six buckets: `in-sync`, `drift` (local 
 
 A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, `swift format`, ShellCheck, and gitleaks against staged changes before any commit lands. The same checks run in GitHub Actions on push and pull requests, plus a full-history gitleaks scan.
 
-## Deeper reading
-
-Longer-form write-ups of individual subsystems live in [`docs/`](docs/):
-
-- [`docs/recording-output.md`](docs/recording-output.md) — codec, bitrate heuristic, and approximate file sizes produced by the macOS client.
-- [`docs/crash-recovery.md`](docs/crash-recovery.md) — how segment rollover and the session manifest keep a recording alive across force-quits and crashes.
-- [`docs/post-upload-processing.md`](docs/post-upload-processing.md) — the on-device pipeline for auto-titles, word-level transcripts, and thumbnails.
-- [`docs/monorepo-backend-plan.md`](docs/monorepo-backend-plan.md) — the original architectural decision record for the monorepo split.
-- [`CLAUDE.md`](CLAUDE.md) — working rules, migration workflow, and the Supabase lockdown model used by every public table in the database.
-
 The desktop app writes persistent logs to `~/Library/Logs/koom/koom.log` (with one rotated `koom.previous.log`). From the app itself, **Troubleshooting → Reveal Logs in Finder** jumps straight to that directory.

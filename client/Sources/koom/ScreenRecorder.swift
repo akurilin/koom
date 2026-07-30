@@ -41,6 +41,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         /// the whole session into a single file.
         let segmentDuration: CMTime?
         let expectedFrameRate: Int
+        let outputDimensions: CaptureDimensions
     }
 
     private struct MicrophoneConfiguration {
@@ -91,7 +92,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     func start() async throws {
         AppLog.info(
-            "Recorder starting. Display ID: \(configuration.displayID), microphone: \(configuration.microphoneID ?? "none"), frame rate: \(configuration.expectedFrameRate) fps, output: \(configuration.outputURL.path)"
+            "Recorder starting. Display ID: \(configuration.displayID), microphone: \(configuration.microphoneID ?? "none"), dimensions: \(configuration.outputDimensions.width)x\(configuration.outputDimensions.height), frame rate: \(configuration.expectedFrameRate) fps, output: \(configuration.outputURL.path)"
         )
         if FileManager.default.fileExists(atPath: configuration.outputURL.path) {
             try FileManager.default.removeItem(at: configuration.outputURL)
@@ -109,10 +110,19 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             throw RecorderError.displayNotFound
         }
 
+        let contentFilter = SCContentFilter(
+            display: display,
+            excludingApplications: [],
+            exceptingWindows: []
+        )
+        let outputDimensions = configuration.outputDimensions
         var microphoneConfiguration: MicrophoneConfiguration?
         let streamConfiguration = SCStreamConfiguration()
-        streamConfiguration.width = display.width
-        streamConfiguration.height = display.height
+        streamConfiguration.width = outputDimensions.width
+        streamConfiguration.height = outputDimensions.height
+        streamConfiguration.captureResolution = .best
+        streamConfiguration.scalesToFit = true
+        streamConfiguration.preservesAspectRatio = true
         streamConfiguration.minimumFrameInterval = CMTime(
             value: 1,
             timescale: CMTimeScale(configuration.expectedFrameRate)
@@ -129,11 +139,6 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             streamConfiguration.microphoneCaptureDeviceID = microphoneID
         }
 
-        let contentFilter = SCContentFilter(
-            display: display,
-            excludingApplications: [],
-            exceptingWindows: []
-        )
         let stream = SCStream(
             filter: contentFilter,
             configuration: streamConfiguration,
@@ -152,7 +157,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             )
         }
 
-        self.videoDimensions = (display.width, display.height)
+        self.videoDimensions = (outputDimensions.width, outputDimensions.height)
         self.microphoneWriterConfiguration = microphoneConfiguration
         if let microphoneConfiguration {
             AppLog.info(
@@ -162,8 +167,8 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
         let segmentWriter = try makeSegmentWriter(
             outputURL: configuration.outputURL,
-            width: display.width,
-            height: display.height,
+            width: outputDimensions.width,
+            height: outputDimensions.height,
             microphoneConfiguration: microphoneConfiguration
         )
         self.writer = segmentWriter.writer
@@ -818,7 +823,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: max(width * height * 4, 8_000_000),
+                AVVideoAverageBitRateKey: max(width * height * 4, 4_000_000),
                 AVVideoExpectedSourceFrameRateKey: frameRate,
                 AVVideoMaxKeyFrameIntervalKey: max(frameRate * 2, 1),
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,

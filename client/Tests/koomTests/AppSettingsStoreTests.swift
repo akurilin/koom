@@ -5,6 +5,19 @@ import XCTest
 
 @MainActor
 final class AppSettingsStoreTests: XCTestCase {
+    func testCaptureResolutionRoundTrips() {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let settings = AppSettingsStore(defaults: defaults)
+        settings.saveCaptureResolution(.ultraHD4K)
+
+        XCTAssertEqual(
+            settings.loadCompressionSettings().captureResolution,
+            .ultraHD4K
+        )
+    }
+
     func testUploadRecordingsCanBeDisabled() {
         let (defaults, suiteName) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }

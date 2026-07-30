@@ -43,6 +43,8 @@ struct SettingsView: View {
         backendURLString: "",
         adminSecret: ""
     )
+    @State private var captureResolution: CaptureResolutionOption =
+        CompressionSettings.default.captureResolution
     @State private var captureFrameRate: CaptureFrameRateOption =
         CompressionSettings.default.captureFrameRate
     @State private var uploadRecordings: Bool =
@@ -53,7 +55,7 @@ struct SettingsView: View {
     @State private var confirmationMessage: String?
 
     var body: some View {
-        HuggingScrollView(maxHeight: 620) {
+        HuggingScrollView(maxHeight: 720) {
             VStack(alignment: .leading, spacing: 12) {
                 settingsCard(header: "Active environment") {
                     Picker("Active environment", selection: $activeEnvironment) {
@@ -92,7 +94,22 @@ struct SettingsView: View {
                     footnote(backendSectionFooter)
                 }
 
-                settingsCard(header: "Compression") {
+                settingsCard(header: "Recording quality") {
+                    HStack {
+                        Text("Resolution")
+                            .font(.system(size: 13))
+
+                        Spacer()
+
+                        Picker("Resolution", selection: $captureResolution) {
+                            ForEach(CaptureResolutionOption.allCases) { option in
+                                Text(option.label).tag(option)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+
                     HStack {
                         Text("Capture cadence")
                             .font(.system(size: 13))
@@ -115,7 +132,7 @@ struct SettingsView: View {
                     .font(.system(size: 13))
 
                     footnote(
-                        "15 fps usually shrinks static screen recordings with little quality cost. ffmpeg optimization runs after finalization and replaces the local MP4 only when the re-encode is at least 10% smaller. Upload is a separate final step."
+                        "koom captures directly at the selected maximum resolution while preserving the display's aspect ratio. 4K uses substantially more processing time, disk space, and upload bandwidth. ffmpeg optimization keeps the selected resolution."
                     )
                 }
 
@@ -264,6 +281,7 @@ struct SettingsView: View {
             KoomConfig.backendURL(for: .prod)?.absoluteString ?? ""
 
         let compressionSettings = settingsStore.loadCompressionSettings()
+        captureResolution = compressionSettings.captureResolution
         captureFrameRate = compressionSettings.captureFrameRate
         uploadRecordings = compressionSettings.uploadRecordings
         optimizeRecordings = compressionSettings.optimizeRecordings
@@ -325,12 +343,13 @@ struct SettingsView: View {
             return
         }
 
+        settingsStore.saveCaptureResolution(captureResolution)
         settingsStore.saveCaptureFrameRate(captureFrameRate)
         settingsStore.saveUploadRecordings(uploadRecordings)
         settingsStore.saveOptimizeRecordings(optimizeRecordings)
 
         AppLog.info(
-            "Settings saved. Active environment: \(activeEnvironment.displayName). Dev backend: \(KoomConfig.backendURL(for: .dev)?.absoluteString ?? "unset"), Prod backend: \(KoomConfig.backendURL(for: .prod)?.absoluteString ?? "unset"), active backend: \(effectiveActiveBackendURL?.absoluteString ?? "unset"), compression: \(CompressionSettings(captureFrameRate: captureFrameRate, uploadRecordings: uploadRecordings, optimizeRecordings: optimizeRecordings).logDescription)."
+            "Settings saved. Active environment: \(activeEnvironment.displayName). Dev backend: \(KoomConfig.backendURL(for: .dev)?.absoluteString ?? "unset"), Prod backend: \(KoomConfig.backendURL(for: .prod)?.absoluteString ?? "unset"), active backend: \(effectiveActiveBackendURL?.absoluteString ?? "unset"), compression: \(CompressionSettings(captureResolution: captureResolution, captureFrameRate: captureFrameRate, uploadRecordings: uploadRecordings, optimizeRecordings: optimizeRecordings).logDescription)."
         )
         confirmationMessage = "Saved."
     }

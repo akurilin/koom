@@ -8,6 +8,7 @@ final class AppModel: ObservableObject {
         let id: CGDirectDisplayID
         let name: String
         let size: CGSize
+        let pointPixelScale: Double
     }
 
     struct DeviceOption: Identifiable, Hashable {
@@ -655,7 +656,8 @@ final class AppModel: ObservableObject {
             return DisplayOption(
                 id: CGDirectDisplayID(number.uint32Value),
                 name: screen.localizedName,
-                size: screen.frame.size
+                size: screen.frame.size,
+                pointPixelScale: Double(screen.backingScaleFactor)
             )
         }
 
@@ -722,8 +724,19 @@ final class AppModel: ObservableObject {
 
         let previousRecoverableState = recoverableSession?.session.state ?? .recording
         var workingSession = recoverableSession
+        let compressionSettings = settingsStore.loadCompressionSettings()
 
         do {
+            guard
+                let captureConfiguration = captureConfiguration(
+                    for: workingSession,
+                    settings: compressionSettings
+                )
+            else {
+                statusMessage = "Choose a display before recording."
+                return
+            }
+
             if workingSession == nil {
                 guard let displaySnapshot = currentDisplaySnapshot() else {
                     statusMessage = "Choose a display before recording."
@@ -734,6 +747,7 @@ final class AppModel: ObservableObject {
                     finalFilename: makeOutputFilename(),
                     environment: KoomConfig.activeEnvironment,
                     display: displaySnapshot,
+                    captureConfiguration: captureConfiguration,
                     cameraID: selectedCameraID.isEmpty ? nil : selectedCameraID,
                     microphoneID: selectedMicrophoneID.isEmpty ? nil : selectedMicrophoneID
                 )
@@ -745,8 +759,10 @@ final class AppModel: ObservableObject {
             }
 
             let segmentURL = try sessionStore.createNextSegment(in: &workingSession)
-            let compressionSettings = settingsStore.loadCompressionSettings()
             AppLog.info("Using compression settings: \(compressionSettings.logDescription)")
+            AppLog.info(
+                "Resolved capture output: \(captureConfiguration.dimensions.width)x\(captureConfiguration.dimensions.height), \(captureConfiguration.frameRate.framesPerSecond) fps."
+            )
             let recorder = ScreenRecorder(
                 configuration: .init(
                     displayID: selectedDisplayID,
@@ -758,8 +774,9 @@ final class AppModel: ObservableObject {
                             preferredTimescale: 600
                         )
                         : nil,
-                    expectedFrameRate: compressionSettings.captureFrameRate
-                        .framesPerSecond
+                    expectedFrameRate: captureConfiguration.frameRate
+                        .framesPerSecond,
+                    outputDimensions: captureConfiguration.dimensions
                 ),
                 onRuntimeIssue: { [weak self] message in
                     Task { [weak self] in
@@ -1212,6 +1229,47 @@ final class AppModel: ObservableObject {
             name: selectedDisplay.name,
             width: Int(selectedDisplay.size.width),
             height: Int(selectedDisplay.size.height)
+        )
+    }
+
+    private func captureConfiguration(
+        for recoverableSession: RecordingSessionStore.SessionHandle?,
+        settings: CompressionSettings
+    ) -> RecordingSessionStore.RecordingSession.CaptureConfiguration? {
+        if let savedConfiguration = recoverableSession?.session.captureConfiguration {
+            return savedConfiguration
+        }
+
+        // Manifests from before selectable resolutions recorded at the
+        // display's logical point dimensions. Preserve those dimensions when
+        // resuming so old and new segments remain compatible for assembly.
+        if let recoverableSession {
+            return .init(
+                resolution: settings.captureResolution,
+                frameRate: settings.captureFrameRate,
+                dimensions: .init(
+                    width: recoverableSession.session.display.width,
+                    height: recoverableSession.session.display.height
+                )
+            )
+        }
+
+        guard
+            let selectedDisplay = displays.first(where: {
+                $0.id == selectedDisplayID
+            })
+        else {
+            return nil
+        }
+
+        return .init(
+            resolution: settings.captureResolution,
+            frameRate: settings.captureFrameRate,
+            dimensions: settings.captureResolution.captureDimensions(
+                displayPointWidth: Int(selectedDisplay.size.width),
+                displayPointHeight: Int(selectedDisplay.size.height),
+                pointPixelScale: selectedDisplay.pointPixelScale
+            )
         )
     }
 

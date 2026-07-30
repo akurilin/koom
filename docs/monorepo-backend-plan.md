@@ -117,9 +117,9 @@ These observations come from the code already in the repository and affect the d
 - Output container is MP4.
 - Local recording codec is H.264.
 - Recording writes directly to the final local output file.
-- Default capture cadence is 15 fps, with a 30 fps option in Settings.
-- Uploads can run a best-effort ffmpeg optimization pass that keeps the local file intact and uploads a smaller MP4 only when that re-encode is meaningfully smaller.
-- Resolution follows the native display capture size.
+- Default capture cadence is 30 fps, with a 15 fps option in Settings.
+- Recordings can run a best-effort ffmpeg optimization pass that preserves resolution and replaces the local MP4 only when the re-encode is meaningfully smaller.
+- Capture resolution defaults to 1080p, with aspect-preserving 720p and 4K options in Settings.
 - The current bitrate heuristic can produce fairly large files, especially for 4K displays. Rough guidance in the README is ~249 MB per minute for 4K, so a 30-minute recording can approach 7–8 GB.
 
 ### Build shape today

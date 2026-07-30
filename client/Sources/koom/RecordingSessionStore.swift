@@ -34,6 +34,12 @@ final class RecordingSessionStore: @unchecked Sendable {
             let height: Int
         }
 
+        struct CaptureConfiguration: Codable {
+            let resolution: CaptureResolutionOption
+            let frameRate: CaptureFrameRateOption
+            let dimensions: CaptureDimensions
+        }
+
         struct Segment: Codable, Identifiable {
             let index: Int
             let filename: String
@@ -55,6 +61,7 @@ final class RecordingSessionStore: @unchecked Sendable {
         var environment: KoomEnvironment?
         let finalFilename: String
         let display: DisplaySnapshot
+        let captureConfiguration: CaptureConfiguration?
         let cameraID: String?
         let microphoneID: String?
         var segments: [Segment]
@@ -70,6 +77,7 @@ final class RecordingSessionStore: @unchecked Sendable {
         finalFilename: String,
         environment: KoomEnvironment,
         display: RecordingSession.DisplaySnapshot,
+        captureConfiguration: RecordingSession.CaptureConfiguration,
         cameraID: String?,
         microphoneID: String?
     ) throws -> SessionHandle {
@@ -88,7 +96,7 @@ final class RecordingSessionStore: @unchecked Sendable {
 
         let now = Date()
         let session = RecordingSession(
-            manifestVersion: 2,
+            manifestVersion: 3,
             sessionID: sessionID,
             createdAt: now,
             updatedAt: now,
@@ -96,6 +104,7 @@ final class RecordingSessionStore: @unchecked Sendable {
             environment: environment,
             finalFilename: finalFilename,
             display: display,
+            captureConfiguration: captureConfiguration,
             cameraID: normalizedOptionalID(cameraID),
             microphoneID: normalizedOptionalID(microphoneID),
             segments: []

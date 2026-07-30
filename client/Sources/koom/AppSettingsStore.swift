@@ -8,6 +8,7 @@ final class AppSettingsStore {
         static let selectedCameraID = "selectedCameraID"
         static let selectedMicrophoneID = "selectedMicrophoneID"
         static let cameraBubbleSize = "cameraBubbleSize"
+        static let captureResolution = "captureResolution"
         static let captureFrameRate = "captureFrameRate"
         static let uploadRecordings = "uploadRecordings"
         // Preserve the existing preference while broadening it from
@@ -36,6 +37,11 @@ final class AppSettingsStore {
     }
 
     func loadCompressionSettings() -> CompressionSettings {
+        let captureResolution =
+            defaults.string(forKey: Key.captureResolution)
+            .flatMap(CaptureResolutionOption.init(rawValue:))
+            ?? CompressionSettings.default.captureResolution
+
         let captureFrameRate =
             (defaults.object(forKey: Key.captureFrameRate) as? NSNumber)
             .flatMap { CaptureFrameRateOption(rawValue: $0.intValue) }
@@ -56,6 +62,7 @@ final class AppSettingsStore {
             }
 
         return CompressionSettings(
+            captureResolution: captureResolution,
             captureFrameRate: captureFrameRate,
             uploadRecordings: uploadRecordings,
             optimizeRecordings: optimizeRecordings
@@ -76,6 +83,10 @@ final class AppSettingsStore {
 
     func saveCameraBubbleSize(_ cameraBubbleSize: CameraBubbleSize) {
         defaults.set(cameraBubbleSize.rawValue, forKey: Key.cameraBubbleSize)
+    }
+
+    func saveCaptureResolution(_ captureResolution: CaptureResolutionOption) {
+        defaults.set(captureResolution.rawValue, forKey: Key.captureResolution)
     }
 
     func saveCaptureFrameRate(_ captureFrameRate: CaptureFrameRateOption) {

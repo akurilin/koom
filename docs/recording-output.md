@@ -10,7 +10,7 @@ The macOS client captures with `ScreenCaptureKit` and writes directly to disk as
 
 - **Path:** `~/Movies/koom/koom_YYYY-MM-DD_HH-mm-ss.mp4`
 - **Codec:** H.264 (High Auto Level)
-- **Capture cadence:** 30 fps by default, 15 fps optional in Settings, keyframe every ~2 seconds
+- **Capture cadence:** 30 fps, keyframe every ~2 seconds
 - **Resolution:** 1080p by default; 720p and 4K are available in Settings
 - **Scaling:** presets are aspect-preserving upper bounds (1280×720, 1920×1080, or 3840×2160), swap for portrait displays, and never enlarge a lower-resolution source
 - **Bitrate heuristic:** `max(width × height × 4, 4 Mb/s)`

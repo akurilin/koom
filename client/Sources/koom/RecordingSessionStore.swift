@@ -36,7 +36,6 @@ final class RecordingSessionStore: @unchecked Sendable {
 
         struct CaptureConfiguration: Codable {
             let resolution: CaptureResolutionOption
-            let frameRate: CaptureFrameRateOption
             let dimensions: CaptureDimensions
         }
 
@@ -96,7 +95,7 @@ final class RecordingSessionStore: @unchecked Sendable {
 
         let now = Date()
         let session = RecordingSession(
-            manifestVersion: 3,
+            manifestVersion: 4,
             sessionID: sessionID,
             createdAt: now,
             updatedAt: now,

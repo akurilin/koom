@@ -24,6 +24,8 @@ enum RecorderError: LocalizedError {
 }
 
 final class ScreenRecorder: NSObject, @unchecked Sendable {
+    static let framesPerSecond = 30
+
     typealias RuntimeIssueHandler = @Sendable (String) -> Void
     /// Asks the owner to allocate the next segment file and call
     /// `rollToNextSegment(to:)` back with it. The recorder keeps
@@ -40,7 +42,6 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         /// capture, so a crash loses at most one segment. nil records
         /// the whole session into a single file.
         let segmentDuration: CMTime?
-        let expectedFrameRate: Int
         let outputDimensions: CaptureDimensions
     }
 
@@ -92,7 +93,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     func start() async throws {
         AppLog.info(
-            "Recorder starting. Display ID: \(configuration.displayID), microphone: \(configuration.microphoneID ?? "none"), dimensions: \(configuration.outputDimensions.width)x\(configuration.outputDimensions.height), frame rate: \(configuration.expectedFrameRate) fps, output: \(configuration.outputURL.path)"
+            "Recorder starting. Display ID: \(configuration.displayID), microphone: \(configuration.microphoneID ?? "none"), dimensions: \(configuration.outputDimensions.width)x\(configuration.outputDimensions.height), frame rate: \(Self.framesPerSecond) fps, output: \(configuration.outputURL.path)"
         )
         if FileManager.default.fileExists(atPath: configuration.outputURL.path) {
             try FileManager.default.removeItem(at: configuration.outputURL)
@@ -125,7 +126,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         streamConfiguration.preservesAspectRatio = true
         streamConfiguration.minimumFrameInterval = CMTime(
             value: 1,
-            timescale: CMTimeScale(configuration.expectedFrameRate)
+            timescale: CMTimeScale(Self.framesPerSecond)
         )
         streamConfiguration.queueDepth = 6
         streamConfiguration.showsCursor = true
@@ -401,8 +402,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             mediaType: .video,
             outputSettings: Self.videoSettings(
                 width: width,
-                height: height,
-                frameRate: configuration.expectedFrameRate
+                height: height
             )
         )
         videoInput.expectsMediaDataInRealTime = true
@@ -815,8 +815,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     private static func videoSettings(
         width: Int,
-        height: Int,
-        frameRate: Int
+        height: Int
     ) -> [String: Any] {
         [
             AVVideoCodecKey: AVVideoCodecType.h264,
@@ -824,8 +823,8 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
             AVVideoHeightKey: height,
             AVVideoCompressionPropertiesKey: [
                 AVVideoAverageBitRateKey: max(width * height * 4, 4_000_000),
-                AVVideoExpectedSourceFrameRateKey: frameRate,
-                AVVideoMaxKeyFrameIntervalKey: max(frameRate * 2, 1),
+                AVVideoExpectedSourceFrameRateKey: framesPerSecond,
+                AVVideoMaxKeyFrameIntervalKey: framesPerSecond * 2,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
             ],
         ]

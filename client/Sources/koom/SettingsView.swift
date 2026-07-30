@@ -45,8 +45,6 @@ struct SettingsView: View {
     )
     @State private var captureResolution: CaptureResolutionOption =
         CompressionSettings.default.captureResolution
-    @State private var captureFrameRate: CaptureFrameRateOption =
-        CompressionSettings.default.captureFrameRate
     @State private var uploadRecordings: Bool =
         CompressionSettings.default.uploadRecordings
     @State private var optimizeRecordings: Bool =
@@ -103,21 +101,6 @@ struct SettingsView: View {
 
                         Picker("Resolution", selection: $captureResolution) {
                             ForEach(CaptureResolutionOption.allCases) { option in
-                                Text(option.label).tag(option)
-                            }
-                        }
-                        .labelsHidden()
-                        .fixedSize()
-                    }
-
-                    HStack {
-                        Text("Capture cadence")
-                            .font(.system(size: 13))
-
-                        Spacer()
-
-                        Picker("Capture cadence", selection: $captureFrameRate) {
-                            ForEach(CaptureFrameRateOption.allCases) { option in
                                 Text(option.label).tag(option)
                             }
                         }
@@ -286,7 +269,6 @@ struct SettingsView: View {
 
         let compressionSettings = settingsStore.loadCompressionSettings()
         captureResolution = compressionSettings.captureResolution
-        captureFrameRate = compressionSettings.captureFrameRate
         uploadRecordings = compressionSettings.uploadRecordings
         optimizeRecordings = compressionSettings.optimizeRecordings
 
@@ -348,12 +330,11 @@ struct SettingsView: View {
         }
 
         settingsStore.saveCaptureResolution(captureResolution)
-        settingsStore.saveCaptureFrameRate(captureFrameRate)
         settingsStore.saveUploadRecordings(uploadRecordings)
         settingsStore.saveOptimizeRecordings(optimizeRecordings)
 
         AppLog.info(
-            "Settings saved. Active environment: \(activeEnvironment.displayName). Dev backend: \(KoomConfig.backendURL(for: .dev)?.absoluteString ?? "unset"), Prod backend: \(KoomConfig.backendURL(for: .prod)?.absoluteString ?? "unset"), active backend: \(effectiveActiveBackendURL?.absoluteString ?? "unset"), compression: \(CompressionSettings(captureResolution: captureResolution, captureFrameRate: captureFrameRate, uploadRecordings: uploadRecordings, optimizeRecordings: optimizeRecordings).logDescription)."
+            "Settings saved. Active environment: \(activeEnvironment.displayName). Dev backend: \(KoomConfig.backendURL(for: .dev)?.absoluteString ?? "unset"), Prod backend: \(KoomConfig.backendURL(for: .prod)?.absoluteString ?? "unset"), active backend: \(effectiveActiveBackendURL?.absoluteString ?? "unset"), compression: \(CompressionSettings(captureResolution: captureResolution, uploadRecordings: uploadRecordings, optimizeRecordings: optimizeRecordings).logDescription)."
         )
         confirmationMessage = "Saved."
     }

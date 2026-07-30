@@ -742,7 +742,7 @@ final class AppModel: ObservableObject {
             let segmentURL = try sessionStore.createNextSegment(in: &workingSession)
             AppLog.info("Using compression settings: \(compressionSettings.logDescription)")
             AppLog.info(
-                "Resolved capture output: \(captureConfiguration.dimensions.width)x\(captureConfiguration.dimensions.height), \(captureConfiguration.frameRate.framesPerSecond) fps."
+                "Resolved capture output: \(captureConfiguration.dimensions.width)x\(captureConfiguration.dimensions.height), \(ScreenRecorder.framesPerSecond) fps."
             )
             let recorder = ScreenRecorder(
                 configuration: .init(
@@ -755,8 +755,6 @@ final class AppModel: ObservableObject {
                             preferredTimescale: 600
                         )
                         : nil,
-                    expectedFrameRate: captureConfiguration.frameRate
-                        .framesPerSecond,
                     outputDimensions: captureConfiguration.dimensions
                 ),
                 onRuntimeIssue: { [weak self] message in
@@ -1227,7 +1225,6 @@ final class AppModel: ObservableObject {
         if let recoverableSession {
             return .init(
                 resolution: settings.captureResolution,
-                frameRate: settings.captureFrameRate,
                 dimensions: .init(
                     width: recoverableSession.session.display.width,
                     height: recoverableSession.session.display.height
@@ -1245,7 +1242,6 @@ final class AppModel: ObservableObject {
 
         return .init(
             resolution: settings.captureResolution,
-            frameRate: settings.captureFrameRate,
             dimensions: settings.captureResolution.captureDimensions(
                 displayPointWidth: Int(selectedDisplay.size.width),
                 displayPointHeight: Int(selectedDisplay.size.height),

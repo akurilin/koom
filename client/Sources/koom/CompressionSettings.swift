@@ -1,4 +1,3 @@
-import CoreMedia
 import Foundation
 
 struct CaptureDimensions: Codable, Equatable, Sendable {
@@ -67,44 +66,18 @@ enum CaptureResolutionOption: String, CaseIterable, Codable, Identifiable, Senda
     }
 }
 
-enum CaptureFrameRateOption: Int, CaseIterable, Codable, Identifiable, Sendable {
-    case reduced15 = 15
-    case standard30 = 30
-
-    var id: Int { rawValue }
-
-    var framesPerSecond: Int { rawValue }
-
-    var minimumFrameInterval: CMTime {
-        CMTime(value: 1, timescale: CMTimeScale(rawValue))
-    }
-
-    var keyFrameInterval: Int { rawValue * 2 }
-
-    var label: String {
-        switch self {
-        case .reduced15:
-            return "Reduced motion (15 fps)"
-        case .standard30:
-            return "Standard motion (30 fps)"
-        }
-    }
-}
-
 struct CompressionSettings: Equatable, Sendable {
     let captureResolution: CaptureResolutionOption
-    let captureFrameRate: CaptureFrameRateOption
     let uploadRecordings: Bool
     let optimizeRecordings: Bool
 
     static let `default` = CompressionSettings(
         captureResolution: .fullHD1080,
-        captureFrameRate: .standard30,
         uploadRecordings: true,
         optimizeRecordings: true
     )
 
     var logDescription: String {
-        "\(captureResolution.label), \(captureFrameRate.framesPerSecond) fps capture, recording optimization \(optimizeRecordings ? "enabled" : "disabled"), backend upload \(uploadRecordings ? "enabled" : "disabled")"
+        "\(captureResolution.label), recording optimization \(optimizeRecordings ? "enabled" : "disabled"), backend upload \(uploadRecordings ? "enabled" : "disabled")"
     }
 }

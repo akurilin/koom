@@ -125,7 +125,6 @@ final class AppModel: ObservableObject {
     private var recorder: ScreenRecorder?
     private weak var controlWindow: NSWindow?
     private var isControlWindowCaptureSuppressed = false
-    private var hasPlacedWindow = false
     private var currentSession: RecordingSessionStore.SessionHandle?
     private var currentSessionWasRecovered = false
     private var isHandlingRecorderRuntimeIssue = false
@@ -324,17 +323,6 @@ final class AppModel: ObservableObject {
         window.backgroundColor = .clear
         window.hasShadow = true
         applyControlWindowCapturePolicy(window)
-
-        if !hasPlacedWindow, let screen = NSScreen.main ?? NSScreen.screens.first {
-            let visibleFrame = screen.visibleFrame
-            let origin = NSPoint(
-                x: visibleFrame.maxX - window.frame.width - Self.windowEdgePadding,
-                y: visibleFrame.maxY - window.frame.height - Self.windowEdgePadding
-            )
-            window.setFrameOrigin(origin)
-            hasPlacedWindow = true
-            AppLog.info("Placed control panel at the top-right of \(screen.localizedName), origin (\(Int(origin.x)), \(Int(origin.y))).")
-        }
     }
 
     func displaySelectionDidChange() {

@@ -8,6 +8,50 @@ private final class BorderlessPanelWindow: NSWindow {
     override var canBecomeMain: Bool { true }
 }
 
+enum ControlPanelLayout {
+    static func resizedFrame(
+        currentFrame: NSRect,
+        preferredContentSize: NSSize,
+        visibleFrame: NSRect?,
+        edgePadding: CGFloat,
+        anchorAtTopRight: Bool
+    ) -> NSRect {
+        let fallbackOrigin = NSPoint(
+            x: currentFrame.minX,
+            y: currentFrame.maxY - preferredContentSize.height
+        )
+
+        guard let visibleFrame else {
+            return NSRect(
+                origin: fallbackOrigin,
+                size: preferredContentSize
+            )
+        }
+
+        let paddedMaxX = visibleFrame.maxX - edgePadding
+        let paddedMaxY = visibleFrame.maxY - edgePadding
+        let isAnchoredAtTopRight =
+            anchorAtTopRight
+            || (abs(currentFrame.maxX - paddedMaxX) < 1
+                && abs(currentFrame.maxY - paddedMaxY) < 1)
+
+        let origin =
+            if isAnchoredAtTopRight {
+                NSPoint(
+                    x: paddedMaxX - preferredContentSize.width,
+                    y: paddedMaxY - preferredContentSize.height
+                )
+            } else {
+                fallbackOrigin
+            }
+
+        return NSRect(
+            origin: origin,
+            size: preferredContentSize
+        )
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private enum TerminationDecision {
@@ -20,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controlPanelWindow: NSWindow?
     private var recorderRemoteController: RecorderRemoteWindowController?
     private var panelSizeObservation: NSKeyValueObservation?
+    private var hasPositionedControlPanel = false
     private var isResolvingTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -145,21 +190,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelSizeObservation = hostingController.observe(
             \.preferredContentSize,
             options: [.initial, .new]
-        ) { [weak window] _, change in
-            guard let window, let size = change.newValue, size.height > 1 else { return }
+        ) { [weak self, weak window] _, change in
+            guard
+                let self,
+                let window,
+                let size = change.newValue,
+                size.width > 1,
+                size.height > 1
+            else { return }
             Task { @MainActor in
                 let frame = window.frame
-                guard abs(frame.height - size.height) > 0.5 else { return }
-                window.setFrame(
-                    NSRect(
-                        x: frame.minX,
-                        y: frame.maxY - size.height,
-                        width: frame.width,
-                        height: size.height
-                    ),
-                    display: true,
-                    animate: true
+                let isInitialPlacement = !self.hasPositionedControlPanel
+                guard
+                    isInitialPlacement
+                        || abs(frame.width - size.width) > 0.5
+                        || abs(frame.height - size.height) > 0.5
+                else { return }
+
+                let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first
+                let resizedFrame = ControlPanelLayout.resizedFrame(
+                    currentFrame: frame,
+                    preferredContentSize: size,
+                    visibleFrame: screen?.visibleFrame,
+                    edgePadding: AppModel.windowEdgePadding,
+                    anchorAtTopRight: isInitialPlacement
                 )
+                window.setFrame(
+                    resizedFrame,
+                    display: true,
+                    animate: !isInitialPlacement
+                )
+                self.hasPositionedControlPanel = true
+
+                if isInitialPlacement, let screen {
+                    AppLog.info(
+                        "Placed control panel at the top-right of \(screen.localizedName), frame \(Int(resizedFrame.width))x\(Int(resizedFrame.height)) at (\(Int(resizedFrame.minX)), \(Int(resizedFrame.minY)))."
+                    )
+                }
             }
         }
 

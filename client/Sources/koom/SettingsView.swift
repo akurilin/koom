@@ -15,19 +15,13 @@ import SwiftUI
 ///   - Compression settings  → UserDefaults (via AppSettingsStore)
 ///
 /// The view never tries to call the backend or validate the secret
-/// online. Save just writes the values. The doctor script and the
+/// online. Changes persist automatically. The doctor script and the
 /// upload flow itself are where bad credentials surface as actionable
 /// errors.
 struct SettingsView: View {
     private struct EnvironmentDraft {
         var backendURLString: String
         var adminSecret: String
-    }
-
-    private struct ValidationError: LocalizedError {
-        let message: String
-
-        var errorDescription: String? { message }
     }
 
     private let settingsStore = AppSettingsStore()
@@ -49,14 +43,18 @@ struct SettingsView: View {
         CompressionSettings.default.uploadRecordings
     @State private var optimizeRecordings: Bool =
         CompressionSettings.default.optimizeRecordings
-    @State private var errorMessage: String?
-    @State private var confirmationMessage: String?
+    @State private var adminSecretErrors: [KoomEnvironment: String] = [:]
+    @State private var adminSecretsLoadError: String?
+    @State private var dirtyBackendURLs: Set<KoomEnvironment> = []
+    @State private var dirtyAdminSecrets: Set<KoomEnvironment> = []
+    @State private var backendURLSaveTasks: [KoomEnvironment: Task<Void, Never>] = [:]
+    @State private var adminSecretSaveTasks: [KoomEnvironment: Task<Void, Never>] = [:]
 
     var body: some View {
         HuggingScrollView(maxHeight: 720) {
             VStack(alignment: .leading, spacing: 12) {
                 settingsCard(header: "Active environment") {
-                    Picker("Active environment", selection: $activeEnvironment) {
+                    Picker("Active environment", selection: activeEnvironmentBinding) {
                         ForEach(KoomEnvironment.allCases) { environment in
                             Text(environment.displayName).tag(environment)
                         }
@@ -79,6 +77,9 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled(true)
                     .labelsHidden()
+                    .onSubmit {
+                        flushPendingTextSettings(for: activeEnvironment)
+                    }
 
                     fieldLabel("Admin secret")
                     SecureField(
@@ -88,6 +89,9 @@ struct SettingsView: View {
                     )
                     .textFieldStyle(.roundedBorder)
                     .labelsHidden()
+                    .onSubmit {
+                        flushPendingTextSettings(for: activeEnvironment)
+                    }
 
                     footnote(backendSectionFooter)
                 }
@@ -99,7 +103,7 @@ struct SettingsView: View {
 
                         Spacer()
 
-                        Picker("Resolution", selection: $captureResolution) {
+                        Picker("Resolution", selection: captureResolutionBinding) {
                             ForEach(CaptureResolutionOption.allCases) { option in
                                 Text(option.label).tag(option)
                             }
@@ -110,7 +114,7 @@ struct SettingsView: View {
 
                     Toggle(
                         "Optimize recordings with ffmpeg when available",
-                        isOn: $optimizeRecordings
+                        isOn: optimizeRecordingsBinding
                     )
                     .font(.system(size: 13))
 
@@ -126,7 +130,7 @@ struct SettingsView: View {
                 settingsCard(header: "Upload") {
                     Toggle(
                         "Upload recordings to the backend",
-                        isOn: $uploadRecordings
+                        isOn: uploadRecordingsBinding
                     )
                     .font(.system(size: 13))
 
@@ -135,31 +139,24 @@ struct SettingsView: View {
                     )
                 }
 
-                if let errorMessage {
+                if let errorMessage = displayedErrorMessage {
                     Text(errorMessage)
                         .font(.callout)
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                HStack {
-                    if let confirmationMessage {
-                        Text(confirmationMessage)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Save") {
-                        save()
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
-                }
+                Text("Changes are saved automatically.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear {
             loadFromStore()
+        }
+        .onDisappear {
+            flushAllPendingTextSettings()
         }
     }
 
@@ -203,6 +200,22 @@ struct SettingsView: View {
 
     // MARK: - Bindings
 
+    private var activeEnvironmentBinding: Binding<KoomEnvironment> {
+        Binding(
+            get: { activeEnvironment },
+            set: { newValue in
+                guard newValue != activeEnvironment else { return }
+
+                flushPendingTextSettings(for: activeEnvironment)
+                activeEnvironment = newValue
+                KoomConfig.activeEnvironment = newValue
+                AppLog.info(
+                    "Settings automatically saved active environment: \(newValue.displayName)."
+                )
+            }
+        )
+    }
+
     private var backendURLBinding: Binding<String> {
         Binding(
             get: {
@@ -214,12 +227,15 @@ struct SettingsView: View {
                 }
             },
             set: { newValue in
+                let environment = activeEnvironment
                 switch activeEnvironment {
                 case .dev:
                     devDraft.backendURLString = newValue
                 case .prod:
                     prodDraft.backendURLString = newValue
                 }
+                dirtyBackendURLs.insert(environment)
+                scheduleBackendURLPersistence(for: environment)
             }
         )
     }
@@ -235,12 +251,54 @@ struct SettingsView: View {
                 }
             },
             set: { newValue in
+                let environment = activeEnvironment
                 switch activeEnvironment {
                 case .dev:
                     devDraft.adminSecret = newValue
                 case .prod:
                     prodDraft.adminSecret = newValue
                 }
+                dirtyAdminSecrets.insert(environment)
+                scheduleAdminSecretPersistence(for: environment)
+            }
+        )
+    }
+
+    private var captureResolutionBinding: Binding<CaptureResolutionOption> {
+        Binding(
+            get: { captureResolution },
+            set: { newValue in
+                captureResolution = newValue
+                settingsStore.saveCaptureResolution(newValue)
+                AppLog.info(
+                    "Settings automatically saved capture resolution: \(newValue.rawValue)."
+                )
+            }
+        )
+    }
+
+    private var optimizeRecordingsBinding: Binding<Bool> {
+        Binding(
+            get: { optimizeRecordings },
+            set: { newValue in
+                optimizeRecordings = newValue
+                settingsStore.saveOptimizeRecordings(newValue)
+                AppLog.info(
+                    "Settings automatically saved recording optimization: \(newValue)."
+                )
+            }
+        )
+    }
+
+    private var uploadRecordingsBinding: Binding<Bool> {
+        Binding(
+            get: { uploadRecordings },
+            set: { newValue in
+                uploadRecordings = newValue
+                settingsStore.saveUploadRecordings(newValue)
+                AppLog.info(
+                    "Settings automatically saved backend uploads: \(newValue)."
+                )
             }
         )
     }
@@ -258,9 +316,49 @@ struct SettingsView: View {
         }
     }
 
+    private var displayedErrorMessage: String? {
+        backendURLValidationMessage
+            ?? adminSecretErrors[activeEnvironment]
+            ?? adminSecretsLoadError
+    }
+
+    private var backendURLValidationMessage: String? {
+        let environment = activeEnvironment
+        let rawValue =
+            switch environment {
+            case .dev:
+                devDraft.backendURLString
+            case .prod:
+                prodDraft.backendURLString
+            }
+
+        do {
+            let backendURL = try BackendURLSetting.normalizedURL(
+                rawValue,
+                for: environment
+            )
+            let effectiveBackendURL =
+                backendURL ?? environment.defaultBackendURL
+
+            guard !uploadRecordings || effectiveBackendURL != nil else {
+                return
+                    "\(environment.displayName) backend URL must be a valid http:// or https:// URL."
+            }
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     // MARK: - Actions
 
     private func loadFromStore() {
+        cancelScheduledTextPersistence()
+        dirtyBackendURLs.removeAll()
+        dirtyAdminSecrets.removeAll()
+        adminSecretErrors.removeAll()
+        adminSecretsLoadError = nil
+
         activeEnvironment = KoomConfig.activeEnvironment
         devDraft.backendURLString =
             KoomConfig.backendURL(for: .dev)?.absoluteString ?? ""
@@ -277,92 +375,156 @@ struct SettingsView: View {
             devDraft.adminSecret = adminSecrets.dev
             prodDraft.adminSecret = adminSecrets.prod
         } catch {
-            errorMessage =
+            adminSecretsLoadError =
                 "Could not read admin secret from Keychain: \(error.localizedDescription)"
         }
     }
 
-    private func save() {
-        errorMessage = nil
-        confirmationMessage = nil
-
-        let devURL: URL?
-        let prodURL: URL?
-        do {
-            devURL = try normalizedBackendURL(devDraft.backendURLString, for: .dev)
-            prodURL = try normalizedBackendURL(prodDraft.backendURLString, for: .prod)
-        } catch {
-            errorMessage = error.localizedDescription
-            return
-        }
-
-        let effectiveActiveBackendURL =
-            switch activeEnvironment {
-            case .dev:
-                devURL ?? KoomEnvironment.dev.defaultBackendURL
-            case .prod:
-                prodURL
+    private func scheduleBackendURLPersistence(
+        for environment: KoomEnvironment
+    ) {
+        backendURLSaveTasks[environment]?.cancel()
+        backendURLSaveTasks[environment] = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                return
             }
+            guard !Task.isCancelled else { return }
 
-        guard !uploadRecordings || effectiveActiveBackendURL != nil else {
-            errorMessage =
-                "\(activeEnvironment.displayName) backend URL must be a valid http:// or https:// URL."
-            return
+            persistBackendURL(for: environment)
+            backendURLSaveTasks[environment] = nil
         }
-
-        do {
-            KoomConfig.activeEnvironment = activeEnvironment
-            KoomConfig.setBackendURL(devURL, for: .dev)
-            KoomConfig.setBackendURL(prodURL, for: .prod)
-            try saveSecret(devDraft.adminSecret, for: .dev)
-            try saveSecret(prodDraft.adminSecret, for: .prod)
-
-            devDraft.backendURLString =
-                KoomConfig.backendURL(for: .dev)?.absoluteString ?? ""
-            prodDraft.backendURLString =
-                KoomConfig.backendURL(for: .prod)?.absoluteString ?? ""
-            devDraft.adminSecret = normalizedSecret(devDraft.adminSecret)
-            prodDraft.adminSecret = normalizedSecret(prodDraft.adminSecret)
-        } catch {
-            errorMessage =
-                "Could not save environment settings: \(error.localizedDescription)"
-            return
-        }
-
-        settingsStore.saveCaptureResolution(captureResolution)
-        settingsStore.saveUploadRecordings(uploadRecordings)
-        settingsStore.saveOptimizeRecordings(optimizeRecordings)
-
-        AppLog.info(
-            "Settings saved. Active environment: \(activeEnvironment.displayName). Dev backend: \(KoomConfig.backendURL(for: .dev)?.absoluteString ?? "unset"), Prod backend: \(KoomConfig.backendURL(for: .prod)?.absoluteString ?? "unset"), active backend: \(effectiveActiveBackendURL?.absoluteString ?? "unset"), compression: \(CompressionSettings(captureResolution: captureResolution, uploadRecordings: uploadRecordings, optimizeRecordings: optimizeRecordings).logDescription)."
-        )
-        confirmationMessage = "Saved."
     }
 
-    private func normalizedBackendURL(
-        _ rawValue: String,
+    private func scheduleAdminSecretPersistence(
         for environment: KoomEnvironment
-    ) throws -> URL? {
-        let trimmedURL = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedURL.isEmpty else {
-            return nil
-        }
+    ) {
+        adminSecretSaveTasks[environment]?.cancel()
+        adminSecretSaveTasks[environment] = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
 
-        guard let url = URL(string: trimmedURL),
-            let scheme = url.scheme?.lowercased(),
-            scheme == "http" || scheme == "https",
-            url.host != nil
-        else {
-            throw ValidationError(
-                message:
-                    "\(environment.displayName) backend URL must be a valid http:// or https:// URL."
+            persistAdminSecret(for: environment)
+            adminSecretSaveTasks[environment] = nil
+        }
+    }
+
+    private func persistBackendURL(for environment: KoomEnvironment) {
+        let rawValue =
+            switch environment {
+            case .dev:
+                devDraft.backendURLString
+            case .prod:
+                prodDraft.backendURLString
+            }
+
+        let backendURL: URL?
+        do {
+            backendURL = try BackendURLSetting.normalizedURL(
+                rawValue,
+                for: environment
             )
+        } catch {
+            return
         }
 
-        if url.absoluteString.hasSuffix("/") {
-            return URL(string: String(url.absoluteString.dropLast())) ?? url
+        KoomConfig.setBackendURL(backendURL, for: environment)
+        setBackendURLDraft(
+            backendURL?.absoluteString ?? "",
+            for: environment
+        )
+        dirtyBackendURLs.remove(environment)
+        AppLog.info(
+            "Settings automatically saved \(environment.displayName) backend URL: \(KoomConfig.backendURL(for: environment)?.absoluteString ?? "unset")."
+        )
+    }
+
+    private func persistAdminSecret(for environment: KoomEnvironment) {
+        let rawSecret =
+            switch environment {
+            case .dev:
+                devDraft.adminSecret
+            case .prod:
+                prodDraft.adminSecret
+            }
+
+        do {
+            try saveSecret(rawSecret, for: environment)
+            setAdminSecretDraft(
+                normalizedSecret(rawSecret),
+                for: environment
+            )
+            dirtyAdminSecrets.remove(environment)
+            adminSecretErrors[environment] = nil
+            AppLog.info(
+                "Settings automatically saved \(environment.displayName) admin secret."
+            )
+        } catch {
+            adminSecretErrors[environment] =
+                "Could not save environment settings: \(error.localizedDescription)"
         }
-        return url
+    }
+
+    private func flushPendingTextSettings(
+        for environment: KoomEnvironment
+    ) {
+        backendURLSaveTasks[environment]?.cancel()
+        backendURLSaveTasks[environment] = nil
+        adminSecretSaveTasks[environment]?.cancel()
+        adminSecretSaveTasks[environment] = nil
+
+        if dirtyBackendURLs.contains(environment) {
+            persistBackendURL(for: environment)
+        }
+        if dirtyAdminSecrets.contains(environment) {
+            persistAdminSecret(for: environment)
+        }
+    }
+
+    private func flushAllPendingTextSettings() {
+        for environment in KoomEnvironment.allCases {
+            flushPendingTextSettings(for: environment)
+        }
+    }
+
+    private func cancelScheduledTextPersistence() {
+        for task in backendURLSaveTasks.values {
+            task.cancel()
+        }
+        for task in adminSecretSaveTasks.values {
+            task.cancel()
+        }
+        backendURLSaveTasks.removeAll()
+        adminSecretSaveTasks.removeAll()
+    }
+
+    private func setBackendURLDraft(
+        _ value: String,
+        for environment: KoomEnvironment
+    ) {
+        switch environment {
+        case .dev:
+            devDraft.backendURLString = value
+        case .prod:
+            prodDraft.backendURLString = value
+        }
+    }
+
+    private func setAdminSecretDraft(
+        _ value: String,
+        for environment: KoomEnvironment
+    ) {
+        switch environment {
+        case .dev:
+            devDraft.adminSecret = value
+        case .prod:
+            prodDraft.adminSecret = value
+        }
     }
 
     private func saveSecret(
@@ -390,6 +552,40 @@ struct SettingsView: View {
         ).abbreviatingWithTildeInPath
     }
 
+}
+
+enum BackendURLSetting {
+    private struct ValidationError: LocalizedError {
+        let message: String
+
+        var errorDescription: String? { message }
+    }
+
+    static func normalizedURL(
+        _ rawValue: String,
+        for environment: KoomEnvironment
+    ) throws -> URL? {
+        let trimmedURL = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty else {
+            return nil
+        }
+
+        guard let url = URL(string: trimmedURL),
+            let scheme = url.scheme?.lowercased(),
+            scheme == "http" || scheme == "https",
+            url.host != nil
+        else {
+            throw ValidationError(
+                message:
+                    "\(environment.displayName) backend URL must be a valid http:// or https:// URL."
+            )
+        }
+
+        if url.absoluteString.hasSuffix("/") {
+            return URL(string: String(url.absoluteString.dropLast())) ?? url
+        }
+        return url
+    }
 }
 
 private struct LocalTitleModelsSettingsView: View {

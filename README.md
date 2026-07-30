@@ -115,7 +115,7 @@ The first doctor run will fail loudly because the env files are empty. Work thro
    ```
    After linking, paste the project's database password into `SUPABASE_DB_PASSWORD` in `web/.env.local` (find it at Project Settings → Database → Database password). The doctor will now be able to connect to your production Postgres live.
 5. **Vercel.** Push the koom repo to GitHub and import it at [vercel.com/new](https://vercel.com/new). In the Vercel project settings → Environment Variables, paste the values that apply in production: `DATABASE_URL` (your hosted Supabase pooler URL, from Project Settings → Database → Connection string), `R2_*`, `KOOM_PUBLIC_BASE_URL` (your Vercel URL), and `KOOM_ADMIN_SECRET`. Then mint a Vercel token at [vercel.com/account/tokens](https://vercel.com/account/tokens), grab the project ID from Vercel → Settings → General → Project ID, and paste both into `web/.env.prod.local`. (We plan to automate this step with `npm run vercel:sync` in a later round.)
-6. **macOS code-signing identity.** `./scripts/setup-dev-codesign.sh` creates a stable local identity so rebuilds don't break Keychain trust.
+6. **macOS code-signing identity.** `npm run app:codesign` creates a stable local identity so rebuilds don't break Keychain trust.
 7. **Rerun `npm run doctor`** until both readiness tracks are green.
 
 Once the doctor is happy, start the stack:
@@ -125,11 +125,15 @@ Once the doctor is happy, start the stack:
 npm run dev -w web
 
 # macOS client (development build)
-./scripts/run.sh
+npm run app:run
 
 # Install the signed release app into /Applications when you're ready
-./scripts/install-app.sh
+npm run app:install
 ```
+
+The root `package.json` is the primary interface for repository tasks. The
+implementations and retained compatibility entry points are described in
+[`scripts/README.md`](scripts/README.md).
 
 ## Doctor script
 

@@ -1223,8 +1223,8 @@ async function runRenderServiceChecks(
         `Service '${service.name}' is suspended (${service.suspended}). Resume it in the Render dashboard.`,
       );
     }
-    serviceUrl = service.url;
-    return `(service '${service.name}'${service.url ? `, ${service.url}` : ""})`;
+    serviceUrl = service.serviceDetails?.url;
+    return `(service '${service.name}'${serviceUrl ? `, ${serviceUrl}` : ""})`;
   });
 
   if (!reachable) {

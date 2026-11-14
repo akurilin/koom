@@ -124,9 +124,11 @@ async function renderGet<T>(apiKey: string, path: string): Promise<T> {
 export interface RenderService {
   id: string;
   name: string;
-  /** Public onrender.com URL for web services. */
-  url?: string;
   suspended?: string;
+  serviceDetails?: {
+    /** Public onrender.com URL for web services, e.g. https://koom-web.onrender.com */
+    url?: string;
+  };
 }
 
 export function fetchService(

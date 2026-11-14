@@ -14,7 +14,7 @@
  *     neither of which work on the Edge runtime)
  *   - development mode (production has its own observability and
  *     retry semantics; we don't want a transient outage to crash
- *     every cold start on Vercel)
+ *     every cold start on Render)
  */
 
 export async function register(): Promise<void> {

@@ -123,7 +123,6 @@ async function checkPostgres(
 
   const client = new pg.Client({
     connectionString,
-    ssl: isLocal ? undefined : { rejectUnauthorized: false },
     connectionTimeoutMillis: 5000,
   });
 
@@ -137,8 +136,8 @@ async function checkPostgres(
     let fix = "Check DATABASE_URL in web/.env.local.";
     if (msg.includes("ECONNREFUSED")) {
       fix = isLocal
-        ? "Postgres is not running. If you use the local Supabase stack,\n" +
-          "make sure Docker is running and start it with:\n" +
+        ? "Postgres is not running. Make sure Docker is running and\n" +
+          "start the local database with:\n" +
           "    npm run db:start"
         : "The database server refused the connection. Check that the\n" +
           "host and port in DATABASE_URL are correct and reachable.";

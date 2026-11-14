@@ -9,7 +9,8 @@ This directory still exists because those npm tasks need implementations that
 do not belong in `package.json`:
 
 - TypeScript and JavaScript programs implement operational workflows such as
-  `doctor`, R2 setup, and Vercel configuration checks.
+  `doctor`, database migrations (`db.ts`), R2 setup, and Render configuration
+  checks.
 - Shell scripts coordinate tools or operating-system behavior that is awkward
   to express as an npm command, such as the cross-platform test runner.
 - `build-app.sh`, `run.sh`, `install-app.sh`, and `setup-dev-codesign.sh` are

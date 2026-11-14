@@ -18,7 +18,7 @@
  * incorrectly.
  *
  * If web/.env.test.local doesn't exist yet, this script creates it
- * from a template with the known-good local Supabase URL, test port,
+ * from a template with the known-good local Docker Postgres URL, test port,
  * and fixed test admin secret baked in. The R2_* values are then
  * filled in by the shared provisionR2() helper.
  *
@@ -48,7 +48,7 @@ const TEST_ENV_PATH = join(REPO_ROOT, "web", ".env.test.local");
  *
  * Values chosen so the test environment is fully self-contained:
  *
- *   - DATABASE_URL points at the local Supabase Docker stack. E2E
+ *   - DATABASE_URL points at the local Docker Postgres. E2E
  *     tests prefix their rows and clean up after themselves, so no
  *     separate test database is needed.
  *   - KOOM_PUBLIC_BASE_URL matches the KOOM_TEST_PORT default used
@@ -70,10 +70,10 @@ const TEST_ENV_TEMPLATE = `# koom E2E test environment
 # re-running the script is always safe.
 
 # ─── Postgres ────────────────────────────────────────
-# Same local Supabase stack the dev server uses. E2E tests prefix
+# Same local Docker Postgres the dev server uses. E2E tests prefix
 # their data with "e2e-test-..." and clean up in afterAll, so
 # sharing is fine.
-DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres
+DATABASE_URL=postgresql://koom:koom@127.0.0.1:54322/koom
 
 # ─── koom app config ─────────────────────────────────
 # Must match KOOM_TEST_PORT in playwright.config.ts. Default port

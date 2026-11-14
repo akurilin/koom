@@ -72,7 +72,7 @@ export default defineConfig({
     timeout: 120_000,
     // Inherit the parent process env (including the dotenv-loaded
     // test variables) so the child Next.js process sees R2 test
-    // bucket credentials, the local Supabase URL, the fake admin
+    // bucket credentials, the local Docker Postgres URL, the fake admin
     // secret, etc. Next.js's own .env.local loading respects
     // already-set env vars, so this wins over web/.env.local.
     env: {

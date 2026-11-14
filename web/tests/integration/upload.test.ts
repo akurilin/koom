@@ -13,7 +13,7 @@
  * constructed Request objects rather than going through a running
  * Next.js dev server. This is faster and simpler while still
  * exercising the real auth header check, the real pg queries against
- * local Supabase, and the real S3 calls to Cloudflare R2. The only
+ * the local Docker Postgres, and the real S3 calls to Cloudflare R2. The only
  * thing it does NOT cover is Next.js's HTTP framing layer, which is
  * Next.js's job to test, not ours.
  *

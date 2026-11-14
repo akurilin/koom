@@ -13,7 +13,7 @@
  *     not require the local Docker/Postgres development stack.
  *
  *   - `npm run doctor:dev` checks local development readiness. It
- *     does not require a hosted Supabase project or Vercel access.
+ *     does not require access to the Render deployment.
  *
  *   - `npm run doctor:all` runs both readiness tracks.
  *
@@ -22,16 +22,16 @@
  *
  * Configuration model:
  *
- *   - `web/.env.local` holds local-development values plus the R2,
- *     admin, and hosted-Postgres credentials shared with operator
- *     tooling. DATABASE_URL here is always the local Supabase stack.
+ *   - `web/.env.local` holds local-development values plus the R2 and
+ *     admin credentials shared with the Render deployment. DATABASE_URL
+ *     here is always the local Docker Postgres.
  *
- *   - `web/.env.prod.local` holds values needed to validate and deploy
- *     to PRODUCTION from a dev machine (currently VERCEL_TOKEN and
- *     VERCEL_PROJECT_ID). Everything else that's technically needed
- *     for production is either shared with local (R2 credentials,
- *     KOOM_ADMIN_SECRET), stored in Vercel itself, or derived live
- *     from the Supabase CLI link (production Postgres URL).
+ *   - `web/.env.prod.local` holds values needed to validate the
+ *     PRODUCTION deployment from a dev machine: RENDER_API_KEY,
+ *     RENDER_SERVICE_ID, and RENDER_DATABASE_URL (the Render Postgres
+ *     external connection string). Everything else production needs is
+ *     either shared with local (R2 credentials, KOOM_ADMIN_SECRET) or
+ *     wired up inside Render by render.yaml.
  *
  *   - `web/.env.local` is needed in every mode because it also holds
  *     shared R2 credentials and the admin secret. The production-only
@@ -53,7 +53,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
 
-import { computeSyncDiff } from "./lib/vercel-sync";
+import { computeEnvDiff, fetchService } from "./lib/render";
 
 const { Client: PgClient } = pg;
 const execFileAsync = promisify(execFile);
@@ -69,18 +69,6 @@ const ENV_LOCAL_PATH = join(REPO_ROOT, "web", ".env.local");
 const ENV_LOCAL_EXAMPLE_PATH = join(REPO_ROOT, "web", ".env.example");
 const ENV_PROD_PATH = join(REPO_ROOT, "web", ".env.prod.local");
 const ENV_PROD_EXAMPLE_PATH = join(REPO_ROOT, "web", ".env.prod.example");
-
-const SUPABASE_TEMP_DIR = join(REPO_ROOT, "supabase", ".temp");
-const SUPABASE_LINKED_PROJECT_PATH = join(
-  SUPABASE_TEMP_DIR,
-  "linked-project.json",
-);
-const SUPABASE_POOLER_URL_PATH = join(SUPABASE_TEMP_DIR, "pooler-url");
-
-// Pinned version must stay in sync with the one package.json uses for
-// db:start / db:push / etc. so the doctor is checking the same CLI the
-// rest of the repo uses.
-const SUPABASE_CLI_SPEC = "supabase@2.87.2";
 
 const TEST_KEY_PREFIX = "_koom-doctor/";
 const TEST_BYTE_COUNT = 1024;
@@ -114,7 +102,7 @@ const CLIENT_BUILD_SCRIPT_PATH = join(
 );
 
 // Columns we expect to find on the `recordings` table. Keep in sync
-// with supabase/migrations/*_create_recordings.sql.
+// with db/migrations/*_create_recordings.sql.
 const RECORDINGS_EXPECTED_COLUMNS = [
   "id",
   "created_at",
@@ -129,7 +117,7 @@ const RECORDINGS_EXPECTED_COLUMNS = [
 ] as const;
 
 // Columns we expect on the `comments` table. Keep in sync with
-// supabase/migrations/*_create_comments.sql.
+// db/migrations/*_create_comments.sql.
 const COMMENTS_EXPECTED_COLUMNS = [
   "id",
   "recording_id",
@@ -173,8 +161,8 @@ Direct invocation:
   tsx scripts/doctor.ts [--operator | --dev | --all]
 
 Options:
-  --operator  Check hosted Supabase, R2, Vercel, and the desktop runtime.
-  --dev       Check local Postgres, R2, local configuration, and the desktop runtime.
+  --operator  Check Render Postgres, the Render web service, R2, and the desktop runtime.
+  --dev       Check local Docker Postgres, R2, local configuration, and the desktop runtime.
   --all       Run every operator and development check.
   --help      Show this help text.`;
 
@@ -402,26 +390,27 @@ async function main(): Promise<void> {
   if (runDevChecks) {
     logSection("Configuration — local development (web/.env.local)");
 
-    // DATABASE_URL is strictly local-only. Production Postgres is
-    // derived from the Supabase CLI link.
+    // DATABASE_URL is strictly local-only. The Render web service gets
+    // its own from render.yaml, and the doctor reaches Render Postgres
+    // through RENDER_DATABASE_URL in web/.env.prod.local.
     if (!env.DATABASE_URL) {
       fail(
         "DATABASE_URL present",
         "local",
-        `Not set in web/.env.local. Expected the local Supabase stack URL:\n    postgresql://postgres:postgres@127.0.0.1:54322/postgres`,
+        `Not set in web/.env.local. Expected the local Docker Postgres URL:\n    postgresql://koom:koom@127.0.0.1:54322/koom`,
       );
     } else if (!isLocalHost(env.DATABASE_URL)) {
       fail(
         "DATABASE_URL points at the local stack",
         "local",
-        `DATABASE_URL in web/.env.local is pointed at a remote host. In koom's current configuration model, this file is LOCAL ONLY — production Postgres is derived from the Supabase CLI link (supabase/.temp/), not from DATABASE_URL. Set DATABASE_URL back to the local Supabase stack URL:\n    postgresql://postgres:postgres@127.0.0.1:54322/postgres`,
+        `DATABASE_URL in web/.env.local is pointed at a remote host. This file is LOCAL ONLY — put the Render Postgres external URL in RENDER_DATABASE_URL in web/.env.prod.local instead. Set DATABASE_URL back to the local Docker Postgres URL:\n    postgresql://koom:koom@127.0.0.1:54322/koom`,
       );
     } else {
       pass("DATABASE_URL points at the local stack", "local");
     }
 
-    // KOOM_PUBLIC_BASE_URL in this file is local-only. Production
-    // stores its public URL in Vercel.
+    // KOOM_PUBLIC_BASE_URL in this file is local-only. On Render the
+    // app falls back to the injected RENDER_EXTERNAL_URL.
     if (!env.KOOM_PUBLIC_BASE_URL) {
       warn(
         "KOOM_PUBLIC_BASE_URL present",
@@ -432,7 +421,7 @@ async function main(): Promise<void> {
       warn(
         "KOOM_PUBLIC_BASE_URL points at the local dev server",
         "local",
-        `KOOM_PUBLIC_BASE_URL in web/.env.local is ${env.KOOM_PUBLIC_BASE_URL}, which isn't localhost. This file is local-dev-only — set the production base URL in your Vercel project's environment variable settings instead. Fix by setting KOOM_PUBLIC_BASE_URL=http://localhost:3000 here.`,
+        `KOOM_PUBLIC_BASE_URL in web/.env.local is ${env.KOOM_PUBLIC_BASE_URL}, which isn't localhost. This file is local-dev-only — on Render the app uses the service's onrender.com URL automatically. Fix by setting KOOM_PUBLIC_BASE_URL=http://localhost:3000 here.`,
       );
     } else {
       pass("KOOM_PUBLIC_BASE_URL points at the local dev server", "local");
@@ -442,33 +431,33 @@ async function main(): Promise<void> {
   if (runOperatorChecks) {
     logSection("Configuration — self-host/operator");
 
-    if (env.SUPABASE_DB_PASSWORD) {
-      pass("SUPABASE_DB_PASSWORD present", "prod");
+    if (prodEnv.RENDER_API_KEY) {
+      pass("RENDER_API_KEY present", "prod");
     } else {
       warn(
-        "SUPABASE_DB_PASSWORD present",
+        "RENDER_API_KEY present",
         "prod",
-        `Not set in web/.env.local. Needed by 'npm run db:push' and by the doctor's remote Postgres connectivity check. Find it at Supabase dashboard → Project Settings → Database → Database password.`,
+        `Not set in web/.env.prod.local. Create a key at Render dashboard → Account Settings → API Keys so the doctor can verify the koom-web service and compare its environment variables.`,
       );
     }
 
-    if (prodEnv.VERCEL_TOKEN) {
-      pass("VERCEL_TOKEN present", "prod");
+    if (prodEnv.RENDER_SERVICE_ID) {
+      pass("RENDER_SERVICE_ID present", "prod");
     } else {
       warn(
-        "VERCEL_TOKEN present",
+        "RENDER_SERVICE_ID present",
         "prod",
-        `Not set in web/.env.prod.local. Mint a token at https://vercel.com/account/tokens so the doctor can verify your Vercel project is reachable and compare its environment variables.`,
+        `Not set in web/.env.prod.local. Open the koom-web service in the Render dashboard and copy the 'srv-...' id from its URL.`,
       );
     }
 
-    if (prodEnv.VERCEL_PROJECT_ID) {
-      pass("VERCEL_PROJECT_ID present", "prod");
+    if (prodEnv.RENDER_DATABASE_URL) {
+      pass("RENDER_DATABASE_URL present", "prod");
     } else {
       warn(
-        "VERCEL_PROJECT_ID present",
+        "RENDER_DATABASE_URL present",
         "prod",
-        `Not set in web/.env.prod.local. Find it at Vercel dashboard → koom project → Settings → General → Project ID (the 'prj_...' string, not the slug).`,
+        `Not set in web/.env.prod.local. Copy the External Database URL from Render dashboard → koom-db → Connect so the doctor can verify the production database.`,
       );
     }
   }
@@ -489,7 +478,7 @@ async function main(): Promise<void> {
   }
 
   if (runDevChecks) {
-    logSection("Postgres (Supabase) — local stack");
+    logSection("Postgres — local Docker");
 
     if (!env.DATABASE_URL || !isLocalHost(env.DATABASE_URL)) {
       skip(
@@ -503,8 +492,8 @@ async function main(): Promise<void> {
   }
 
   if (runOperatorChecks) {
-    logSection("Postgres (Supabase) — hosted, via supabase link");
-    await runRemoteSupabaseChecks(env);
+    logSection("Postgres — Render");
+    await runRenderPostgresChecks(prodEnv);
   }
 
   // ── Section: Local title generation ───────────────────────────────
@@ -516,8 +505,8 @@ async function main(): Promise<void> {
   await runDesktopClientChecks();
 
   if (runOperatorChecks) {
-    logSection("Vercel");
-    await runVercelChecks(prodEnv, env, SUPABASE_POOLER_URL_PATH);
+    logSection("Render web service");
+    await runRenderServiceChecks(prodEnv, env);
   }
 
   finish(mode);
@@ -714,8 +703,8 @@ async function runLocalPostgresChecks(
             throw new Error(
               `${msg}\n` +
                 `Postgres is not reachable at the configured host/port.\n` +
-                `If you're targeting the local Supabase stack, make sure it's\n` +
-                `running: 'npm run db:start'.`,
+                `Make sure Docker is running and start the local database:\n` +
+                `    npm run db:start`,
             );
           }
           throw err;
@@ -738,18 +727,33 @@ async function runLocalPostgresChecks(
       "recordings table exists with expected columns",
       track,
       () =>
-        checkTableColumns(client, "recordings", RECORDINGS_EXPECTED_COLUMNS),
+        checkTableColumns(
+          client,
+          "recordings",
+          RECORDINGS_EXPECTED_COLUMNS,
+          LOCAL_MIGRATE_HINT,
+        ),
     );
     if (!tableOk) return;
 
     // comments table exists with expected columns
     await runCheck("comments table exists with expected columns", track, () =>
-      checkTableColumns(client, "comments", COMMENTS_EXPECTED_COLUMNS),
+      checkTableColumns(
+        client,
+        "comments",
+        COMMENTS_EXPECTED_COLUMNS,
+        LOCAL_MIGRATE_HINT,
+      ),
     );
 
     // commenters table exists with expected columns
     await runCheck("commenters table exists with expected columns", track, () =>
-      checkTableColumns(client, "commenters", COMMENTERS_EXPECTED_COLUMNS),
+      checkTableColumns(
+        client,
+        "commenters",
+        COMMENTERS_EXPECTED_COLUMNS,
+        LOCAL_MIGRATE_HINT,
+      ),
     );
 
     // INSERT a throwaway row
@@ -861,10 +865,15 @@ async function runLocalPostgresChecks(
  * verify that every expected column is present. Throws with a helpful
  * message if the table is missing or any column is missing.
  */
+const LOCAL_MIGRATE_HINT = "Apply migrations with 'npm run db:reset'.";
+const RENDER_MIGRATE_HINT =
+  "Render applies migrations in the koom-web pre-deploy step; check the latest deploy's logs.";
+
 async function checkTableColumns(
   client: pg.Client,
   tableName: string,
   expectedColumns: readonly string[],
+  migrateHint: string,
 ): Promise<string> {
   const { rows } = await client.query<{ column_name: string }>(
     `SELECT column_name
@@ -876,8 +885,7 @@ async function checkTableColumns(
   );
   if (rows.length === 0) {
     throw new Error(
-      `No '${tableName}' table in the public schema.\n` +
-        `Did you apply migrations? Try 'npm run db:reset'.`,
+      `No '${tableName}' table in the public schema.\n` + migrateHint,
     );
   }
   const actual = rows.map((r) => r.column_name);
@@ -886,193 +894,87 @@ async function checkTableColumns(
     throw new Error(
       `Missing columns: ${missing.join(", ")}\n` +
         `Present columns: ${actual.join(", ")}\n` +
-        `The migration in supabase/migrations/ may be out of sync\n` +
-        `with the expected schema.`,
+        `The migrations in db/migrations/ may be out of sync\n` +
+        `with the expected schema. ${migrateHint}`,
     );
   }
   return `(${rows.length} columns, all expected)`;
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Remote Supabase checks (via `supabase link` state)
+// Render Postgres checks
 // ────────────────────────────────────────────────────────────────────
 
 /**
- * Verify that the Supabase CLI is installed, that `supabase link` has
- * been run at least once against a hosted project, and that the
- * resulting pooler URL + SUPABASE_DB_PASSWORD can actually connect to
- * the remote Postgres. We intentionally do NOT validate whether
- * migrations have been applied — per the doctor's contract, this
- * check is "do you have something you can migrate against?", not
- * "is your schema up to date?".
+ * Connect to Render Postgres over its external URL and verify that the
+ * pre-deploy migrations have produced the expected schema. Read-only:
+ * unlike the local checks, nothing is inserted into production.
  */
-async function runRemoteSupabaseChecks(
-  env: Record<string, string>,
+async function runRenderPostgresChecks(
+  prodEnv: Record<string, string>,
 ): Promise<void> {
   const track: Track = "prod";
 
-  const linkExists = existsSync(SUPABASE_LINKED_PROJECT_PATH);
-  const poolerUrlExists = existsSync(SUPABASE_POOLER_URL_PATH);
-
-  if (!linkExists || !poolerUrlExists) {
-    // Fast path failed. Before giving up, try to figure out WHY —
-    // is the Supabase CLI itself missing, or is it installed but
-    // not linked? This is the one place in the doctor where we
-    // actually shell out to the CLI.
-    const cliInstalled = await checkSupabaseCliInstalled();
-    if (!cliInstalled) {
-      fail(
-        "Supabase CLI installed",
-        track,
-        `Could not invoke the Supabase CLI. koom uses 'npx -y ${SUPABASE_CLI_SPEC}' (same as the package.json scripts), so install Node.js + npm and rerun the doctor. If Node is already installed, try priming the CLI cache with:\n    npx -y ${SUPABASE_CLI_SPEC} --version`,
-      );
-      skip(
-        "Supabase project linked",
-        track,
-        "skipped because the Supabase CLI is not usable",
-      );
-      return;
-    }
-
-    pass("Supabase CLI installed", track);
-    fail(
-      "Supabase project linked",
-      track,
-      `No linked project state found under supabase/.temp/. Authenticate and link your hosted Supabase project:\n    npx -y ${SUPABASE_CLI_SPEC} login\n    npx -y ${SUPABASE_CLI_SPEC} link --project-ref=<your-project-ref>\nYou'll find <your-project-ref> in the Supabase dashboard URL for your project.`,
-    );
-    return;
-  }
-
-  // Link state is present — the CLI must be installed and has been
-  // used successfully at least once. Skip the explicit CLI version
-  // shell-out as a performance optimization; linked-project.json
-  // existing is proof enough.
-  pass("Supabase CLI installed", track);
-
-  // Read and parse the linked project metadata.
-  let linkedProject: {
-    name?: string;
-    ref?: string;
-    organization_slug?: string;
-  };
-  try {
-    const raw = await readFile(SUPABASE_LINKED_PROJECT_PATH, "utf-8");
-    linkedProject = JSON.parse(raw);
-  } catch (err) {
-    fail(
-      "Supabase project linked",
-      track,
-      `Found ${SUPABASE_LINKED_PROJECT_PATH} but could not parse it: ${
-        err instanceof Error ? err.message : String(err)
-      }. Re-run 'npx -y ${SUPABASE_CLI_SPEC} link --project-ref=<ref>' to regenerate it.`,
-    );
-    return;
-  }
-
-  const friendly =
-    linkedProject.name && linkedProject.ref
-      ? `(project '${linkedProject.name}', ref ${linkedProject.ref}${
-          linkedProject.organization_slug
-            ? `, org ${linkedProject.organization_slug}`
-            : ""
-        })`
-      : undefined;
-  pass("Supabase project linked", track, friendly);
-
-  // Now try to actually connect to the remote Postgres. We need both
-  // the pooler URL (from the CLI link) and the password (from
-  // .env.local). If the password isn't set, we can't make this call.
-  if (!env.SUPABASE_DB_PASSWORD) {
+  if (!prodEnv.RENDER_DATABASE_URL) {
     skip(
-      "Remote Postgres reachable",
+      "Render Postgres reachable",
       track,
-      "skipped because SUPABASE_DB_PASSWORD is not set in web/.env.local",
+      "skipped because RENDER_DATABASE_URL is not set in web/.env.prod.local",
     );
     return;
   }
 
-  let poolerUrl: string;
-  try {
-    poolerUrl = (await readFile(SUPABASE_POOLER_URL_PATH, "utf-8")).trim();
-  } catch (err) {
-    fail(
-      "Remote Postgres reachable",
-      track,
-      `Could not read ${SUPABASE_POOLER_URL_PATH}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-    return;
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(poolerUrl);
-  } catch {
-    fail(
-      "Remote Postgres reachable",
-      track,
-      `${SUPABASE_POOLER_URL_PATH} did not contain a valid URL. Re-run 'supabase link' to regenerate it.`,
-    );
-    return;
-  }
-
-  await runCheck("Remote Postgres reachable", track, async () => {
-    // Connect using the URL components pulled straight from the
-    // Supabase CLI's cached pooler URL. We pass host/port/user
-    // explicitly so there's no URL-encoding footgun with the
-    // password, and we force SSL because the Supabase pooler always
-    // requires it.
-    const client = new PgClient({
-      host: parsed.hostname,
-      port: parsed.port ? parseInt(parsed.port, 10) : 5432,
-      user: decodeURIComponent(parsed.username),
-      password: env.SUPABASE_DB_PASSWORD,
-      database: parsed.pathname.replace(/^\//, "") || "postgres",
-      ssl: { rejectUnauthorized: false },
-      connectionTimeoutMillis: 10_000,
-    });
-    try {
-      await client.connect();
-      const { rows } = await client.query<{ n: number }>("SELECT 1::int AS n");
-      if (rows[0]?.n !== 1) {
-        throw new Error(`Expected SELECT 1 to return 1, got ${rows[0]?.n}`);
-      }
-      return `(host ${parsed.hostname}, user ${parsed.username})`;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("password authentication failed")) {
-        throw new Error(
-          `Password authentication failed against the remote Supabase Postgres. Double-check SUPABASE_DB_PASSWORD in web/.env.local — it must match the password in Supabase dashboard → Project Settings → Database → Database password.`,
-        );
-      }
-      throw err;
-    } finally {
-      try {
-        await client.end();
-      } catch {
-        // ignore cleanup failures
-      }
-    }
+  // Render requires TLS on external connections. An explicit
+  // `sslmode` in the URL wins over this default.
+  const client = new PgClient({
+    connectionString: prodEnv.RENDER_DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+    connectionTimeoutMillis: 10_000,
   });
-}
 
-/**
- * Probe whether the Supabase CLI can be invoked via npx. Used only
- * when the faster "link state exists" check fails, so we can give
- * the user a precise "CLI missing" error vs a "CLI installed but
- * not linked" error. Runs with a 10s timeout — long enough for a
- * cold npx download but not so long that a broken install hangs the
- * doctor indefinitely.
- */
-async function checkSupabaseCliInstalled(): Promise<boolean> {
+  const connected = await runCheck(
+    "Render Postgres reachable",
+    track,
+    async () => {
+      try {
+        await client.connect();
+        await client.query("SELECT 1");
+        return `(host ${new URL(prodEnv.RENDER_DATABASE_URL).hostname})`;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("password authentication failed")) {
+          throw new Error(
+            `Password authentication failed. Re-copy the External Database URL from Render dashboard → koom-db → Connect into RENDER_DATABASE_URL.`,
+          );
+        }
+        if (msg.includes("ENOTFOUND")) {
+          throw new Error(
+            `${msg}\nRENDER_DATABASE_URL must be the EXTERNAL Database URL (host ending in .render.com); the internal URL only resolves inside Render.`,
+          );
+        }
+        throw err;
+      }
+    },
+  );
+
   try {
-    await execFileAsync("npx", ["-y", SUPABASE_CLI_SPEC, "--version"], {
-      timeout: 10_000,
-    });
-    return true;
-  } catch {
-    return false;
+    if (!connected) return;
+    const tables: Array<[string, readonly string[]]> = [
+      ["recordings", RECORDINGS_EXPECTED_COLUMNS],
+      ["comments", COMMENTS_EXPECTED_COLUMNS],
+      ["commenters", COMMENTERS_EXPECTED_COLUMNS],
+    ];
+    for (const [table, columns] of tables) {
+      await runCheck(`${table} table exists with expected columns`, track, () =>
+        checkTableColumns(client, table, columns, RENDER_MIGRATE_HINT),
+      );
+    }
+  } finally {
+    try {
+      await client.end();
+    } catch {
+      // ignore — the connection may never have opened
+    }
   }
 }
 
@@ -1275,204 +1177,111 @@ async function runDesktopClientChecks(): Promise<void> {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Vercel checks
+// Render web service checks
 // ────────────────────────────────────────────────────────────────────
 
 /**
- * Runs two Vercel checks, both tagged prod-track:
+ * Three prod-track checks against the deployed koom-web service:
  *
- *   1. "Vercel project reachable" — confirms VERCEL_TOKEN has access
- *      to VERCEL_PROJECT_ID via GET /v9/projects/{id}.
- *
- *   2. "Vercel env vars in sync" — delegates to computeSyncDiff() in
- *      scripts/lib/vercel-sync.ts and aggregates the per-variable
- *      results into a single doctor check. Pass when every expected
- *      variable is either in-sync or opaque (sensitive type, cannot
- *      verify). Warn with a count + hint to run `npm run vercel:sync`
- *      when any drift, missing, or unresolvable variable is
- *      detected. The drift check is skipped entirely when the
- *      reachability check fails, because there's nothing to compare
- *      against.
+ *   1. "Render service reachable" — RENDER_API_KEY can read
+ *      RENDER_SERVICE_ID and the service isn't suspended.
+ *   2. "Render env vars in sync" — the same comparison as
+ *      `npm run render:sync`, folded into one check.
+ *   3. "Public URL serves the web app" — the service's onrender.com
+ *      URL answers /login (the Blueprint's health check path).
  */
-async function runVercelChecks(
+async function runRenderServiceChecks(
   prodEnv: Record<string, string>,
   localEnv: Record<string, string>,
-  poolerUrlPath: string,
 ): Promise<void> {
   const track: Track = "prod";
+  const checks = [
+    "Render service reachable",
+    "Render env vars in sync",
+    "Public URL serves the web app",
+  ];
 
-  if (!prodEnv.VERCEL_TOKEN || !prodEnv.VERCEL_PROJECT_ID) {
-    skip(
-      "Vercel project reachable",
-      track,
-      `VERCEL_TOKEN / VERCEL_PROJECT_ID not set in web/.env.prod.local (optional — only needed if you want the doctor to verify your Vercel project is live and compare production env vars against the local sources of truth)`,
-    );
-    skip(
-      "Vercel env vars in sync",
-      track,
-      "skipped because Vercel credentials are not configured",
-    );
+  if (!prodEnv.RENDER_API_KEY || !prodEnv.RENDER_SERVICE_ID) {
+    for (const name of checks) {
+      skip(
+        name,
+        track,
+        "skipped because RENDER_API_KEY / RENDER_SERVICE_ID are not set in web/.env.prod.local",
+      );
+    }
     return;
   }
 
-  const reachable = await runVercelProjectReachableCheck(prodEnv);
+  let serviceUrl: string | undefined;
+  const reachable = await runCheck(checks[0]!, track, async () => {
+    const service = await fetchService(
+      prodEnv.RENDER_API_KEY,
+      prodEnv.RENDER_SERVICE_ID,
+    );
+    if (service.suspended === "suspended") {
+      throw new Error(
+        `Service '${service.name}' is suspended (${service.suspended}). Resume it in the Render dashboard.`,
+      );
+    }
+    serviceUrl = service.url;
+    return `(service '${service.name}'${service.url ? `, ${service.url}` : ""})`;
+  });
+
   if (!reachable) {
     skip(
-      "Vercel env vars in sync",
+      checks[1]!,
       track,
-      "skipped because the Vercel project is not reachable",
+      "skipped because the Render service is not reachable",
+    );
+    skip(
+      checks[2]!,
+      track,
+      "skipped because the Render service is not reachable",
     );
     return;
   }
 
-  await runVercelEnvDriftCheck(prodEnv, localEnv, poolerUrlPath);
-}
-
-/**
- * Calls GET /v9/projects/{id} to verify the token/project combo.
- * Returns true on success so the caller knows whether to continue
- * with the drift check.
- */
-async function runVercelProjectReachableCheck(
-  prodEnv: Record<string, string>,
-): Promise<boolean> {
-  const track: Track = "prod";
-  const projectUrl = new URL(
-    `https://api.vercel.com/v9/projects/${encodeURIComponent(
-      prodEnv.VERCEL_PROJECT_ID,
-    )}`,
-  );
-
   try {
-    const res = await fetch(projectUrl, {
-      headers: {
-        Authorization: `Bearer ${prodEnv.VERCEL_TOKEN}`,
-        Accept: "application/json",
-      },
-      signal: AbortSignal.timeout(10_000),
-    });
-
-    if (res.status === 401 || res.status === 403) {
-      fail(
-        "Vercel project reachable",
-        track,
-        `HTTP ${res.status} from Vercel API. The VERCEL_TOKEN does not have access to project '${prodEnv.VERCEL_PROJECT_ID}'. Re-mint a token at https://vercel.com/account/tokens with the right scope.`,
-      );
-      return false;
-    }
-    if (res.status === 404) {
-      fail(
-        "Vercel project reachable",
-        track,
-        `HTTP 404: project '${prodEnv.VERCEL_PROJECT_ID}' not found. Double-check VERCEL_PROJECT_ID in web/.env.prod.local — it's the project ID string (prj_...), not the project slug.`,
-      );
-      return false;
-    }
-    if (!res.ok) {
-      fail(
-        "Vercel project reachable",
-        track,
-        `HTTP ${res.status} from ${projectUrl.href}`,
-      );
-      return false;
-    }
-
-    const body = (await res.json()) as { name?: string };
-    pass(
-      "Vercel project reachable",
-      track,
-      body.name ? `(project '${body.name}')` : undefined,
-    );
-    return true;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    fail(
-      "Vercel project reachable",
-      track,
-      `Could not reach ${projectUrl.href}: ${msg}`,
-    );
-    return false;
-  }
-}
-
-/**
- * Aggregate drift check. Runs the same computeSyncDiff() that the
- * standalone vercel:sync CLI uses, then folds the per-variable
- * results into a single doctor check so the Vercel section stays
- * readable. The user can run `npm run vercel:sync` any time for the
- * full per-variable breakdown.
- */
-async function runVercelEnvDriftCheck(
-  prodEnv: Record<string, string>,
-  localEnv: Record<string, string>,
-  poolerUrlPath: string,
-): Promise<void> {
-  const track: Track = "prod";
-
-  let diff;
-  try {
-    diff = await computeSyncDiff({
-      vercelToken: prodEnv.VERCEL_TOKEN,
-      vercelProjectId: prodEnv.VERCEL_PROJECT_ID,
+    const diff = await computeEnvDiff({
+      apiKey: prodEnv.RENDER_API_KEY,
+      serviceId: prodEnv.RENDER_SERVICE_ID,
       localEnv,
-      poolerUrlPath,
     });
+    const problems = diff.results.filter((r) => r.status !== "in-sync");
+    if (problems.length === 0) {
+      pass(checks[1]!, track, `(${diff.results.length} verified)`);
+    } else {
+      warn(
+        checks[1]!,
+        track,
+        problems.map((r) => `${r.key}: ${r.status}`).join(", ") +
+          `\nRun 'npm run render:sync' for details, then fix the values in Render dashboard → koom-web → Environment.`,
+      );
+    }
   } catch (err) {
-    fail(
-      "Vercel env vars in sync",
-      track,
-      `computeSyncDiff threw: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    return;
+    fail(checks[1]!, track, err instanceof Error ? err.message : String(err));
   }
 
-  if (diff.error) {
-    fail("Vercel env vars in sync", track, diff.error);
+  if (!serviceUrl) {
+    skip(checks[2]!, track, "skipped because Render reported no public URL");
     return;
   }
-
-  const { summary } = diff;
-
-  if (summary.allInSyncOrOpaque) {
-    // Detail line tells the user how many variables were actually
-    // verified vs how many are opaque so they don't mistake opaque
-    // for "proven in sync."
-    const opaqueNote =
-      summary.opaque > 0
-        ? `, ${summary.opaque} opaque (sensitive type, cannot verify)`
-        : "";
-    pass(
-      "Vercel env vars in sync",
-      track,
-      `(${summary.inSync} verified${opaqueNote}${summary.unknown > 0 ? `, ${summary.unknown} extra on Vercel (ignored)` : ""})`,
-    );
-    return;
-  }
-
-  // Build a short warning message that names which variables need
-  // attention without dumping the full report. `npm run vercel:sync`
-  // is the place to get the full breakdown.
-  const problems: string[] = [];
-  if (summary.drift > 0) problems.push(`${summary.drift} drift`);
-  if (summary.missing > 0) problems.push(`${summary.missing} missing`);
-  if (summary.unresolvable > 0)
-    problems.push(`${summary.unresolvable} unresolvable`);
-
-  const affectedKeys = diff.results
-    .filter(
-      (r) =>
-        r.status === "drift" ||
-        r.status === "missing-on-vercel" ||
-        r.status === "unresolvable",
-    )
-    .map((r) => r.key);
-
-  warn(
-    "Vercel env vars in sync",
-    track,
-    `${problems.join(", ")} detected: ${affectedKeys.join(", ")}.\n` +
-      `Run 'npm run vercel:sync' for the full per-variable breakdown. The sync command is currently dry-run only; a future --write mode will apply the changes automatically.`,
-  );
+  const base = serviceUrl.startsWith("http")
+    ? serviceUrl
+    : `https://${serviceUrl}`;
+  await runCheck(checks[2]!, track, async () => {
+    const loginUrl = new URL("/login", base);
+    const res = await fetch(loginUrl, {
+      redirect: "manual",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (res.status !== 200) {
+      throw new Error(
+        `GET ${loginUrl.href} returned HTTP ${res.status}. Check the koom-web deploy and runtime logs in the Render dashboard.`,
+      );
+    }
+    return `(${loginUrl.origin})`;
+  });
 }
 
 function finish(mode: DoctorMode): never {
@@ -1507,7 +1316,7 @@ function finish(mode: DoctorMode): never {
   if (mode === "operator" || mode === "all") {
     reportTrack(
       "Self-host/operator",
-      "You can operate koom against hosted Supabase, R2, and Vercel.",
+      "You can operate koom on Render with Cloudflare R2.",
       ["prod", "both"],
     );
     log("");

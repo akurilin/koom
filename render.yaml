@@ -1,0 +1,89 @@
+# Render Blueprint for koom (https://render.com/docs/blueprint-spec).
+#
+# Declares the two Render resources koom needs:
+#
+#   koom-db   Render Postgres holding the recordings, comments, and
+#             commenters tables. Video bytes stay in Cloudflare R2.
+#   koom-web  The Next.js app in web/: public watch pages, admin UI,
+#             and the API routes the desktop client calls.
+#
+# Deploy: Render dashboard → New → Blueprint → pick this repo. Render
+# prompts once for every `sync: false` value below; paste the same
+# values you have in web/.env.local. `npm run doctor` then verifies the
+# live deployment from your machine.
+#
+# Plans: both resources use Render's smallest PAID instance types on
+# purpose. Free Postgres expires 30 days after creation (and is deleted
+# after a 14-day grace period), free web services spin down after 15
+# idle minutes with a ~1 minute cold start, and free web services can't
+# run the pre-deploy migration step.
+
+databases:
+  - name: koom-db
+    plan: 0.1c-256mb
+    region: oregon
+    databaseName: koom
+    user: koom
+    # Keep in lockstep with docker-compose.yml and .squawk.toml.
+    postgresMajorVersion: "17"
+    # Single-tenant metadata is tiny; 1 GB is the minimum size and can
+    # only grow later, never shrink.
+    diskSizeGB: 1
+
+services:
+  - type: web
+    name: koom-web
+    runtime: node
+    plan: 0.5c-512mb
+    # Must match the database region so the internal connection string
+    # in DATABASE_URL resolves over Render's private network.
+    region: oregon
+    # Node comes from .nvmrc. The repo's .npmrc sets engine-strict and
+    # package.json requires npm >= 11.11.0, newer than the npm bundled
+    # with that Node release, so install with a pinned npm via npx (the
+    # same version CI uses).
+    buildCommand: npx -y npm@11.18.0 ci && npm run build -w web
+    # Applies pending db/migrations/*.sql before each new release goes
+    # live. A failing migration fails the deploy and the previous
+    # release keeps serving.
+    preDeployCommand: npm run db:migrate
+    startCommand: npm run start -w web
+    # Unauthenticated page that renders without touching Postgres or R2.
+    healthCheckPath: /login
+    autoDeployTrigger: commit
+    # The desktop client and the API live in the same repo; only
+    # rebuild the web service when something it ships with changes.
+    buildFilter:
+      paths:
+        - web/**
+        - db/**
+        - scripts/db.ts
+        - package.json
+        - package-lock.json
+        - .nvmrc
+        - .npmrc
+        - render.yaml
+    envVars:
+      # Internal (private-network) URL; no TLS needed or used.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: koom-db
+          property: connectionString
+      # Shared with the desktop client (bearer token) and the admin
+      # login form, so it must equal KOOM_ADMIN_SECRET in
+      # web/.env.local rather than being generated here.
+      - key: KOOM_ADMIN_SECRET
+        sync: false
+      # Produced by `npm run r2:setup` in web/.env.local.
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      # KOOM_PUBLIC_BASE_URL is intentionally absent: share URLs fall
+      # back to RENDER_EXTERNAL_URL, which Render injects automatically.

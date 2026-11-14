@@ -35,11 +35,6 @@
 --   - Body CHECK allows up to 4000 chars at the DB level; the API
 --     validates at 2000. The headroom lets us relax the API limit
 --     later without a migration.
---
---   - Both tables land in public and are automatically locked down
---     by the koom_lock_down_new_public_tables DDL event trigger
---     (RLS enabled, no grants to anon/authenticated). The app
---     connects as postgres with BYPASSRLS, so no policies needed.
 
 CREATE TABLE commenters (
     id         TEXT PRIMARY KEY,

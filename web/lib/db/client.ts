@@ -27,20 +27,11 @@ export function getDb(): Pool {
     );
   }
 
-  // Local Supabase (via `supabase start`) runs over plaintext on
-  // localhost:54322 and doesn't negotiate TLS. Managed providers —
-  // including Supabase Cloud's pooler at pooler.supabase.com:6543 —
-  // require TLS and reject unencrypted connections, and node-postgres
-  // won't enable SSL just because the server asks for it: we have to
-  // set it explicitly here. Detect by hostname so the same code
-  // handles dev and prod without an extra env var.
-  const isLocal =
-    connectionString.includes("localhost") ||
-    connectionString.includes("127.0.0.1");
-
-  pool = new pg.Pool({
-    connectionString,
-    ssl: isLocal ? undefined : { rejectUnauthorized: false },
-  });
+  // TLS is driven by the connection string itself. On Render the app
+  // receives the database's internal (private-network) URL, which
+  // needs no TLS; the local Docker Postgres is plaintext too. A URL
+  // that must be encrypted (e.g. Render's external URL used from
+  // operator tooling) carries `?sslmode=require`.
+  pool = new pg.Pool({ connectionString });
   return pool;
 }

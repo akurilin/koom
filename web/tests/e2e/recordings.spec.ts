@@ -13,7 +13,7 @@
  *   - Cloudflare R2 → koom-recordings-test bucket, with a
  *     bucket-scoped S3 token that physically cannot reach the
  *     production koom-recordings bucket.
- *   - Postgres → same local Supabase, but every row this test
+ *   - Postgres → same local Docker Postgres, but every row this test
  *     creates is namespaced via a generated UUID and removed in
  *     the `finally` block.
  *   - Next.js → spawned by Playwright on port 3456 (or

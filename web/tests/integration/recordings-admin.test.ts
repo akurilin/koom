@@ -50,7 +50,7 @@ function requireEnv(name: string): string {
 function authHeaders(): Record<string, string> {
   return {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${requireEnv("KOOM_ADMIN_SECRET")}`,
+    Authorization: `Bearer ${requireEnv("KOOM_TEST_DEVICE_TOKEN")}`,
   };
 }
 

@@ -31,6 +31,7 @@ let package = Package(
             path: "Sources/koom",
             linkerSettings: [
                 .linkedFramework("AppKit"),
+                .linkedFramework("AuthenticationServices"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("ImageIO"),
@@ -39,6 +40,7 @@ let package = Package(
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("Security"),
                 .linkedFramework("SwiftUI"),
+                .linkedFramework("SystemConfiguration"),
                 .linkedFramework("UniformTypeIdentifiers"),
             ]
         ),
@@ -46,6 +48,6 @@ let package = Package(
             name: "koomTests",
             dependencies: ["koom"],
             path: "Tests/koomTests"
-        )
+        ),
     ]
 )

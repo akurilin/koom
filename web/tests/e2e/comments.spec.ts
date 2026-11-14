@@ -13,6 +13,8 @@
 
 import { expect, test } from "@playwright/test";
 
+import { signInAsAdmin } from "./helpers/auth";
+
 import {
   cleanupFixtures,
   generateFixtures,
@@ -26,17 +28,9 @@ import {
 
 test.describe.configure({ mode: "serial" });
 
-test("comment system happy path", async ({ page }) => {
+test("comment system happy path", async ({ page, baseURL }) => {
   let fixtures: FixtureSpec[] = [];
   let seeded: SeededRecording[] = [];
-
-  const adminSecret = process.env.KOOM_ADMIN_SECRET;
-  if (!adminSecret) {
-    throw new Error(
-      "KOOM_ADMIN_SECRET is not set in the Playwright environment. " +
-        "Check that web/.env.test.local exists and was loaded by playwright.config.ts.",
-    );
-  }
 
   try {
     // ─── Seed a recording ──────────────────────────────────────
@@ -143,12 +137,7 @@ test("comment system happy path", async ({ page }) => {
     // ─────────────────────────────────────────────────────────────
     // 8. Admin login then post an admin comment.
     // ─────────────────────────────────────────────────────────────
-    // Log in by navigating to /login
-    await page.goto("/login");
-    await page.getByTestId("admin-secret-input").fill(adminSecret);
-    await page.getByTestId("login-button").click();
-    // Wait for redirect to recordings page
-    await expect(page).toHaveURL(/\/(\?.*)?$/);
+    await signInAsAdmin(page, baseURL!);
 
     // Go back to the watch page and switch to Comments tab
     await page.goto(watchUrl);

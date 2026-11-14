@@ -203,13 +203,13 @@ describe("POST /api/admin/uploads/diff", () => {
   });
 
   it("rejects a non-JSON body as 400", async () => {
-    const adminSecret = requireEnv("KOOM_ADMIN_SECRET");
+    const deviceToken = requireEnv("KOOM_TEST_DEVICE_TOKEN");
     const res = await diffPOST(
       new Request("http://localhost/api/admin/uploads/diff", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${adminSecret}`,
+          Authorization: `Bearer ${deviceToken}`,
         },
         body: "not json at all",
       }),
@@ -239,7 +239,7 @@ describe("POST /api/admin/uploads/diff", () => {
 
 describe("catch-up simulation (client behavior without Swift)", () => {
   it("uploads one file via init/PUT/complete, inserts another directly, and diffs correctly", async () => {
-    const adminSecret = requireEnv("KOOM_ADMIN_SECRET");
+    const deviceToken = requireEnv("KOOM_TEST_DEVICE_TOKEN");
     const r2Bucket = requireEnv("R2_BUCKET");
     const databaseUrl = requireEnv("DATABASE_URL");
 
@@ -262,7 +262,7 @@ describe("catch-up simulation (client behavior without Swift)", () => {
       const initRes = await initPOST(
         buildAdminRequest(
           "http://localhost/api/admin/uploads/init",
-          adminSecret,
+          deviceToken,
           {
             originalFilename: filenameA,
             contentType: "video/mp4",
@@ -294,7 +294,7 @@ describe("catch-up simulation (client behavior without Swift)", () => {
       const completeRes = await completePOST(
         buildAdminRequest(
           "http://localhost/api/admin/uploads/complete",
-          adminSecret,
+          deviceToken,
           { recordingId: initBody.recordingId },
         ),
       );
@@ -371,25 +371,25 @@ function requireEnv(name: string): string {
 
 function buildAdminRequest(
   url: string,
-  adminSecret: string,
+  deviceToken: string,
   body: unknown,
 ): Request {
   return new Request(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${adminSecret}`,
+      Authorization: `Bearer ${deviceToken}`,
     },
     body: JSON.stringify(body),
   });
 }
 
 async function callDiff(body: unknown): Promise<Response> {
-  const adminSecret = requireEnv("KOOM_ADMIN_SECRET");
+  const deviceToken = requireEnv("KOOM_TEST_DEVICE_TOKEN");
   return diffPOST(
     buildAdminRequest(
       "http://localhost/api/admin/uploads/diff",
-      adminSecret,
+      deviceToken,
       body,
     ),
   );

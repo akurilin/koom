@@ -69,11 +69,18 @@ services:
         fromDatabase:
           name: koom-db
           property: connectionString
-      # Shared with the desktop client (bearer token) and the admin
-      # login form, so it must equal KOOM_ADMIN_SECRET in
-      # web/.env.local rather than being generated here.
-      - key: KOOM_ADMIN_SECRET
+      # Google sign-in for the admin UI and the desktop app. Same OAuth
+      # client and allowlist as web/.env.local.
+      - key: GOOGLE_CLIENT_ID
         sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: KOOM_ADMIN_EMAILS
+        sync: false
+      # Seals browser session cookies. Generated once by Render and
+      # never needed anywhere else.
+      - key: KOOM_SESSION_SECRET
+        generateValue: true
       # Produced by `npm run r2:setup` in web/.env.local.
       - key: R2_BUCKET
         sync: false

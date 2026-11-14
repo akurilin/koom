@@ -61,9 +61,36 @@ for (const rawLine of content.split("\n")) {
   }
 
   // Don't override values already set in the shell env — lets a
-  // developer experiment with `KOOM_ADMIN_SECRET=foo npm test` if
+  // developer experiment with `KOOM_ADMIN_EMAILS=foo npm test` if
   // they want, without this setup file clobbering it.
   if (!(key in process.env)) {
     process.env[key] = value;
   }
+}
+
+// ── Test device token ────────────────────────────────────────────
+// Admin route tests authenticate the way the desktop app does: with
+// a device token as `Authorization: Bearer`. Register the fixed
+// KOOM_TEST_DEVICE_TOKEN from .env.test.local (idempotently) so those
+// tests have a valid credential, owned by the first allowlisted
+// KOOM_ADMIN_EMAILS address.
+{
+  const { getDb } = await import("@/lib/db/client");
+  const { hashDeviceToken } = await import("@/lib/auth/device-tokens");
+  const { adminEmailAllowlist } = await import("@/lib/auth/config");
+
+  const token = process.env.KOOM_TEST_DEVICE_TOKEN;
+  const email = adminEmailAllowlist()[0];
+  if (!token || !email) {
+    throw new Error(
+      "web/.env.test.local must set KOOM_TEST_DEVICE_TOKEN and KOOM_ADMIN_EMAILS. Delete the file and rerun `npm run r2:setup:test` to regenerate it.",
+    );
+  }
+  await getDb().query(
+    `INSERT INTO device_tokens (id, token_hash, email, label)
+     VALUES ('vitest-device', $1, $2, 'vitest')
+     ON CONFLICT (id) DO UPDATE
+        SET token_hash = EXCLUDED.token_hash, email = EXCLUDED.email`,
+    [hashDeviceToken(token), email],
+  );
 }

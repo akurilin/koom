@@ -19,7 +19,7 @@
  *
  * If web/.env.test.local doesn't exist yet, this script creates it
  * from a template with the known-good local Docker Postgres URL, test port,
- * and fixed test admin secret baked in. The R2_* values are then
+ * and fixed test auth values baked in. The R2_* values are then
  * filled in by the shared provisionR2() helper.
  *
  * Usage:
@@ -54,8 +54,9 @@ const TEST_ENV_PATH = join(REPO_ROOT, "web", ".env.test.local");
  *   - KOOM_PUBLIC_BASE_URL matches the KOOM_TEST_PORT default used
  *     by the Playwright webServer config. If you override the port,
  *     update this value too.
- *   - KOOM_ADMIN_SECRET is a fixed, intentionally-obvious test
- *     string. Never use this secret outside the E2E test environment.
+ *   - The auth values (session secret, test device token, Google
+ *     client placeholders) are fixed, intentionally-obvious test
+ *     strings. Never use them outside the test environment.
  */
 const TEST_ENV_TEMPLATE = `# koom E2E test environment
 #
@@ -66,7 +67,7 @@ const TEST_ENV_TEMPLATE = `# koom E2E test environment
 #
 # Never put real secrets in this file. It exists specifically so the
 # Playwright test server runs against an isolated Cloudflare R2
-# bucket with a dummy admin secret. Cleaning this file up and
+# bucket with dummy auth values. Cleaning this file up and
 # re-running the script is always safe.
 
 # ─── Postgres ────────────────────────────────────────
@@ -82,9 +83,16 @@ DATABASE_URL=postgresql://koom:koom@127.0.0.1:54322/koom
 # fail.
 KOOM_PUBLIC_BASE_URL=http://localhost:3456
 
-# Fixed test admin secret. Not used in production. Playwright types
-# this exact string into the login form.
-KOOM_ADMIN_SECRET=e2e-test-admin-secret-not-for-production
+# Admin auth for tests. Browser sign-in is Google-only, so E2E tests
+# sign in by sealing a session cookie with KOOM_SESSION_SECRET, and
+# integration tests send KOOM_TEST_DEVICE_TOKEN as a bearer token
+# (tests/setup.ts registers it in the local database). The Google
+# client values are placeholders: tests never talk to Google.
+KOOM_ADMIN_EMAILS=admin@koom.test
+KOOM_SESSION_SECRET=e2e-test-session-secret-not-for-production-0123456789
+KOOM_TEST_DEVICE_TOKEN=koom_dt_e2e-test-device-token-not-for-production
+GOOGLE_CLIENT_ID=test-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=test-client-secret
 
 # ─── Cloudflare R2 (TEST bucket) ─────────────────────
 # Filled in by scripts/r2-setup-test.ts. The bucket is

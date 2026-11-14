@@ -49,7 +49,7 @@ const UUID_REGEX =
 
 describe("POST /api/admin/uploads (init → PUT → complete)", () => {
   it("uploads a real MP4 end-to-end and marks the row complete", async () => {
-    const adminSecret = requireEnv("KOOM_ADMIN_SECRET");
+    const deviceToken = requireEnv("KOOM_TEST_DEVICE_TOKEN");
     const r2Bucket = requireEnv("R2_BUCKET");
     const databaseUrl = requireEnv("DATABASE_URL");
 
@@ -64,7 +64,7 @@ describe("POST /api/admin/uploads (init → PUT → complete)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${adminSecret}`,
+          Authorization: `Bearer ${deviceToken}`,
         },
         body: JSON.stringify({
           originalFilename: "sample.mp4",
@@ -112,7 +112,7 @@ describe("POST /api/admin/uploads (init → PUT → complete)", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${adminSecret}`,
+            Authorization: `Bearer ${deviceToken}`,
           },
           body: JSON.stringify({ recordingId: initBody.recordingId }),
         },

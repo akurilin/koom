@@ -3,7 +3,7 @@
  *
  * Starts an upload session for the desktop client.
  *
- *   1. Require admin auth (Authorization: Bearer <KOOM_ADMIN_SECRET>).
+ *   1. Require admin auth (device token bearer or admin session).
  *   2. Parse and validate the JSON body.
  *   3. Generate a new recordingId (UUID v4).
  *   4. INSERT a row into recordings with status = 'pending'.

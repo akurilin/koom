@@ -1,4 +1,5 @@
 import AppKit
+import AuthenticationServices
 import SwiftUI
 
 /// Settings tab of the main panel: backend credentials, active
@@ -11,17 +12,16 @@ import SwiftUI
 ///
 ///   - Active environment    → UserDefaults (via KoomConfig)
 ///   - Backend URLs          → UserDefaults (via KoomConfig)
-///   - Admin secrets         → Keychain     (via KoomConfig)
+///   - Device credentials    → Keychain     (via KoomConfig), obtained
+///                             by signing in with Google (DeviceSignIn)
 ///   - Compression settings  → UserDefaults (via AppSettingsStore)
 ///
-/// The view never tries to call the backend or validate the secret
-/// online. Changes persist automatically. The doctor script and the
-/// upload flow itself are where bad credentials surface as actionable
-/// errors.
+/// Apart from signing in and out, the view never calls the backend.
+/// Changes persist automatically. The upload flow is where a revoked
+/// sign-in surfaces as an actionable error.
 struct SettingsView: View {
     private struct EnvironmentDraft {
         var backendURLString: String
-        var adminSecret: String
     }
 
     private let settingsStore = AppSettingsStore()
@@ -29,26 +29,20 @@ struct SettingsView: View {
 
     @State private var activeEnvironment: KoomEnvironment =
         KoomConfig.activeEnvironment
-    @State private var devDraft = EnvironmentDraft(
-        backendURLString: "",
-        adminSecret: ""
-    )
-    @State private var prodDraft = EnvironmentDraft(
-        backendURLString: "",
-        adminSecret: ""
-    )
+    @Environment(\.webAuthenticationSession) private var webAuthenticationSession
+    @State private var devDraft = EnvironmentDraft(backendURLString: "")
+    @State private var prodDraft = EnvironmentDraft(backendURLString: "")
+    @State private var credentials: [KoomEnvironment: KoomConfig.DeviceCredential] = [:]
+    @State private var isSigningIn = false
+    @State private var accountError: String?
     @State private var captureResolution: CaptureResolutionOption =
         CompressionSettings.default.captureResolution
     @State private var uploadRecordings: Bool =
         CompressionSettings.default.uploadRecordings
     @State private var optimizeRecordings: Bool =
         CompressionSettings.default.optimizeRecordings
-    @State private var adminSecretErrors: [KoomEnvironment: String] = [:]
-    @State private var adminSecretsLoadError: String?
     @State private var dirtyBackendURLs: Set<KoomEnvironment> = []
-    @State private var dirtyAdminSecrets: Set<KoomEnvironment> = []
     @State private var backendURLSaveTasks: [KoomEnvironment: Task<Void, Never>] = [:]
-    @State private var adminSecretSaveTasks: [KoomEnvironment: Task<Void, Never>] = [:]
 
     var body: some View {
         HuggingScrollView(maxHeight: 720) {
@@ -81,17 +75,8 @@ struct SettingsView: View {
                         flushPendingTextSettings(for: activeEnvironment)
                     }
 
-                    fieldLabel("Admin secret")
-                    SecureField(
-                        "Admin secret",
-                        text: adminSecretBinding,
-                        prompt: Text("KOOM_ADMIN_SECRET")
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .labelsHidden()
-                    .onSubmit {
-                        flushPendingTextSettings(for: activeEnvironment)
-                    }
+                    fieldLabel("Account")
+                    accountRow
 
                     footnote(backendSectionFooter)
                 }
@@ -240,30 +225,6 @@ struct SettingsView: View {
         )
     }
 
-    private var adminSecretBinding: Binding<String> {
-        Binding(
-            get: {
-                switch activeEnvironment {
-                case .dev:
-                    devDraft.adminSecret
-                case .prod:
-                    prodDraft.adminSecret
-                }
-            },
-            set: { newValue in
-                let environment = activeEnvironment
-                switch activeEnvironment {
-                case .dev:
-                    devDraft.adminSecret = newValue
-                case .prod:
-                    prodDraft.adminSecret = newValue
-                }
-                dirtyAdminSecrets.insert(environment)
-                scheduleAdminSecretPersistence(for: environment)
-            }
-        )
-    }
-
     private var captureResolutionBinding: Binding<CaptureResolutionOption> {
         Binding(
             get: { captureResolution },
@@ -309,17 +270,15 @@ struct SettingsView: View {
         switch activeEnvironment {
         case .dev:
             return
-                "Leave the URL blank to use \(KoomEnvironment.dev.backendURLPrompt). Store the Dev secret separately so switching environments does not overwrite Prod."
+                "Leave the URL blank to use \(KoomEnvironment.dev.backendURLPrompt). Dev and Prod are signed in separately."
         case .prod:
             return
-                "Use the deployed backend URL and its matching admin secret. Prod recordings are stored separately from Dev."
+                "Use the deployed backend URL, then sign in with a Google account allowed on that deployment. Prod recordings are stored separately from Dev."
         }
     }
 
     private var displayedErrorMessage: String? {
-        backendURLValidationMessage
-            ?? adminSecretErrors[activeEnvironment]
-            ?? adminSecretsLoadError
+        backendURLValidationMessage ?? accountError
     }
 
     private var backendURLValidationMessage: String? {
@@ -355,9 +314,7 @@ struct SettingsView: View {
     private func loadFromStore() {
         cancelScheduledTextPersistence()
         dirtyBackendURLs.removeAll()
-        dirtyAdminSecrets.removeAll()
-        adminSecretErrors.removeAll()
-        adminSecretsLoadError = nil
+        accountError = nil
 
         activeEnvironment = KoomConfig.activeEnvironment
         devDraft.backendURLString =
@@ -371,12 +328,14 @@ struct SettingsView: View {
         optimizeRecordings = compressionSettings.optimizeRecordings
 
         do {
-            let adminSecrets = try KoomConfig.loadAdminSecrets()
-            devDraft.adminSecret = adminSecrets.dev
-            prodDraft.adminSecret = adminSecrets.prod
+            for environment in KoomEnvironment.allCases {
+                credentials[environment] = try KoomConfig.loadDeviceCredential(
+                    for: environment
+                )
+            }
         } catch {
-            adminSecretsLoadError =
-                "Could not read admin secret from Keychain: \(error.localizedDescription)"
+            accountError =
+                "Could not read sign-in from Keychain: \(error.localizedDescription)"
         }
     }
 
@@ -394,23 +353,6 @@ struct SettingsView: View {
 
             persistBackendURL(for: environment)
             backendURLSaveTasks[environment] = nil
-        }
-    }
-
-    private func scheduleAdminSecretPersistence(
-        for environment: KoomEnvironment
-    ) {
-        adminSecretSaveTasks[environment]?.cancel()
-        adminSecretSaveTasks[environment] = Task { @MainActor in
-            do {
-                try await Task.sleep(for: .milliseconds(500))
-            } catch {
-                return
-            }
-            guard !Task.isCancelled else { return }
-
-            persistAdminSecret(for: environment)
-            adminSecretSaveTasks[environment] = nil
         }
     }
 
@@ -444,45 +386,14 @@ struct SettingsView: View {
         )
     }
 
-    private func persistAdminSecret(for environment: KoomEnvironment) {
-        let rawSecret =
-            switch environment {
-            case .dev:
-                devDraft.adminSecret
-            case .prod:
-                prodDraft.adminSecret
-            }
-
-        do {
-            try saveSecret(rawSecret, for: environment)
-            setAdminSecretDraft(
-                normalizedSecret(rawSecret),
-                for: environment
-            )
-            dirtyAdminSecrets.remove(environment)
-            adminSecretErrors[environment] = nil
-            AppLog.info(
-                "Settings automatically saved \(environment.displayName) admin secret."
-            )
-        } catch {
-            adminSecretErrors[environment] =
-                "Could not save environment settings: \(error.localizedDescription)"
-        }
-    }
-
     private func flushPendingTextSettings(
         for environment: KoomEnvironment
     ) {
         backendURLSaveTasks[environment]?.cancel()
         backendURLSaveTasks[environment] = nil
-        adminSecretSaveTasks[environment]?.cancel()
-        adminSecretSaveTasks[environment] = nil
 
         if dirtyBackendURLs.contains(environment) {
             persistBackendURL(for: environment)
-        }
-        if dirtyAdminSecrets.contains(environment) {
-            persistAdminSecret(for: environment)
         }
     }
 
@@ -496,11 +407,7 @@ struct SettingsView: View {
         for task in backendURLSaveTasks.values {
             task.cancel()
         }
-        for task in adminSecretSaveTasks.values {
-            task.cancel()
-        }
         backendURLSaveTasks.removeAll()
-        adminSecretSaveTasks.removeAll()
     }
 
     private func setBackendURLDraft(
@@ -515,32 +422,95 @@ struct SettingsView: View {
         }
     }
 
-    private func setAdminSecretDraft(
-        _ value: String,
-        for environment: KoomEnvironment
-    ) {
-        switch environment {
-        case .dev:
-            devDraft.adminSecret = value
-        case .prod:
-            prodDraft.adminSecret = value
-        }
-    }
+    // MARK: - Account
 
-    private func saveSecret(
-        _ rawSecret: String,
-        for environment: KoomEnvironment
-    ) throws {
-        let secret = normalizedSecret(rawSecret)
-        if secret.isEmpty {
-            try KoomConfig.clearAdminSecret(for: environment)
+    @ViewBuilder
+    private var accountRow: some View {
+        if let credential = credentials[activeEnvironment] {
+            HStack {
+                Text("Signed in as \(credential.email)")
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button("Sign out") {
+                    Task { await signOut(of: activeEnvironment) }
+                }
+            }
         } else {
-            try KoomConfig.saveAdminSecret(secret, for: environment)
+            Button(isSigningIn ? "Signing in…" : "Sign in with Google") {
+                Task { await signIn(to: activeEnvironment) }
+            }
+            .disabled(isSigningIn || backendURLValidationMessage != nil)
         }
     }
 
-    private func normalizedSecret(_ rawSecret: String) -> String {
-        rawSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func signIn(to environment: KoomEnvironment) async {
+        flushPendingTextSettings(for: environment)
+        guard let backendURL = KoomConfig.backendURL(for: environment) else {
+            accountError = "Set the \(environment.displayName) backend URL first."
+            return
+        }
+
+        isSigningIn = true
+        accountError = nil
+        defer { isSigningIn = false }
+
+        let state = DeviceSignIn.makeState()
+        do {
+            let callbackURL = try await webAuthenticationSession.authenticate(
+                using: DeviceSignIn.connectURL(
+                    backendURL: backendURL,
+                    state: state,
+                    deviceName: DeviceSignIn.deviceName
+                ),
+                callback: .customScheme(DeviceSignIn.callbackScheme),
+                preferredBrowserSession: .shared,
+                additionalHeaderFields: [:]
+            )
+            switch try DeviceSignIn.parseCallback(callbackURL, expectedState: state) {
+            case .signedIn(let credential):
+                try KoomConfig.saveDeviceCredential(credential, for: environment)
+                credentials[environment] = credential
+                AppLog.info(
+                    "Signed in to \(environment.displayName) as \(credential.email)."
+                )
+            case .cancelled:
+                break
+            }
+        } catch ASWebAuthenticationSessionError.canceledLogin {
+            // The user closed the sign-in window; nothing to report.
+        } catch {
+            accountError = "Sign-in failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func signOut(of environment: KoomEnvironment) async {
+        guard let credential = credentials[environment] else { return }
+        accountError = nil
+
+        // Revoke server-side first so the token stops working, but
+        // never let an unreachable server trap the user signed in.
+        if let backendURL = KoomConfig.backendURL(for: environment) {
+            do {
+                try await KoomAPI(
+                    backendURL: backendURL,
+                    deviceToken: credential.token
+                ).revokeDeviceToken()
+            } catch {
+                AppLog.error(
+                    "Could not revoke the \(environment.displayName) device token: \(error.localizedDescription)"
+                )
+            }
+        }
+
+        do {
+            try KoomConfig.clearDeviceCredential(for: environment)
+            credentials[environment] = nil
+            AppLog.info("Signed out of \(environment.displayName).")
+        } catch {
+            accountError = "Could not sign out: \(error.localizedDescription)"
+        }
     }
 
     private func recordingsDirectoryPath(

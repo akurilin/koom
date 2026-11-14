@@ -4,7 +4,7 @@
  * What this config wires up:
  *
  *   1. Loads `web/.env.test.local` via dotenv at config-import
- *      time so KOOM_ADMIN_SECRET, R2_BUCKET, DATABASE_URL, etc.
+ *      time so KOOM_SESSION_SECRET, R2_BUCKET, DATABASE_URL, etc.
  *      are present in `process.env` before anything else runs.
  *      The Playwright-managed Next.js child process inherits
  *      these via env inheritance.

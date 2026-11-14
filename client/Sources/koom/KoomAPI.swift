@@ -2,11 +2,12 @@ import Foundation
 
 /// Typed async HTTP client for the koom web backend.
 ///
-/// All admin endpoints authenticate via `Authorization: Bearer <secret>`
-/// where `<secret>` is the shared admin credential stored in
-/// Keychain. The secret is passed into the client at construction
-/// time, so each call does a single Keychain read at the call site
-/// that builds the client — not on every request.
+/// All admin endpoints authenticate via `Authorization: Bearer <token>`
+/// where `<token>` is this Mac's device token, minted by the server
+/// when the user signed in with Google in Settings. The token is
+/// passed into the client at construction time, so each call does a
+/// single Keychain read at the call site that builds the client — not
+/// on every request.
 ///
 /// The public API has three methods matching the backend contract:
 ///
@@ -20,7 +21,7 @@ import Foundation
 /// progress bar tracking the streaming PUT.
 struct KoomAPI {
     let backendURL: URL
-    let adminSecret: String
+    let deviceToken: String
 
     // MARK: - Request / response models
 
@@ -90,13 +91,13 @@ struct KoomAPI {
         case invalidResponse
         case invalidUploadURL(String)
         case missingBackendURL
-        case missingAdminSecret
+        case notSignedIn
         case network(Error)
 
         var errorDescription: String? {
             switch self {
             case .unauthorized:
-                return "Admin secret rejected by the server. Check koom settings (Cmd+,) and re-enter the secret."
+                return "The server no longer accepts this Mac's sign-in. Sign in with Google again in koom Settings (Cmd+,)."
             case .badStatus(let code, let body):
                 return "Server returned HTTP \(code). \(body.isEmpty ? "" : "Body: \(body)")"
             case .invalidResponse:
@@ -105,8 +106,8 @@ struct KoomAPI {
                 return "Server returned an invalid upload URL: \(urlString)"
             case .missingBackendURL:
                 return "koom backend URL is not configured. Open Settings (Cmd+,) to set it."
-            case .missingAdminSecret:
-                return "koom admin secret is not configured. Open Settings (Cmd+,) to set it."
+            case .notSignedIn:
+                return "koom isn't signed in. Open Settings (Cmd+,) and sign in with Google."
             case .network(let err):
                 return "Network error: \(err.localizedDescription)"
             }
@@ -114,6 +115,32 @@ struct KoomAPI {
     }
 
     // MARK: - API calls
+
+    /// Revoke this Mac's device token on the server (sign out). A 401
+    /// means it was already revoked, which counts as success.
+    func revokeDeviceToken() async throws {
+        var request = URLRequest(
+            url: backendURL.appendingPathComponent("api/admin/device-tokens/current")
+        )
+        request.httpMethod = "DELETE"
+        request.setValue(
+            "Bearer \(deviceToken)",
+            forHTTPHeaderField: "Authorization"
+        )
+
+        let response: URLResponse
+        do {
+            (_, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw APIError.network(error)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        guard (200...299).contains(http.statusCode) || http.statusCode == 401 else {
+            throw APIError.badStatus(code: http.statusCode, body: "")
+        }
+    }
 
     func initUpload(
         originalFilename: String,
@@ -197,7 +224,7 @@ struct KoomAPI {
         request.httpMethod = "PUT"
         request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
         request.setValue(
-            "Bearer \(adminSecret)",
+            "Bearer \(deviceToken)",
             forHTTPHeaderField: "Authorization"
         )
         request.httpBody = jpegData
@@ -245,7 +272,7 @@ struct KoomAPI {
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(
-            "Bearer \(adminSecret)",
+            "Bearer \(deviceToken)",
             forHTTPHeaderField: "Authorization"
         )
         request.httpBody = jsonData
@@ -281,7 +308,7 @@ struct KoomAPI {
     /// PUT. Progress is reported to `progressHandler` as a value in
     /// [0.0, 1.0]. This call does NOT add the `Authorization` header
     /// — the presigned URL is already signed by the backend and the
-    /// admin secret must not be sent to the storage backend.
+    /// device token must not be sent to the storage backend.
     ///
     /// `progressHandler` must be `@Sendable` because URLSession
     /// invokes it from a background delegate queue, not from the
@@ -349,7 +376,7 @@ struct KoomAPI {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(
-            "Bearer \(adminSecret)",
+            "Bearer \(deviceToken)",
             forHTTPHeaderField: "Authorization"
         )
         request.httpBody = try JSONEncoder().encode(body)

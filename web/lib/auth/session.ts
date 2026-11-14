@@ -1,111 +1,104 @@
 /**
  * iron-session wiring for the browser admin UI.
  *
- * Single-tenant koom uses one session per logged-in browser: if
- * the cookie decrypts and carries an `authenticatedAt` timestamp,
- * the browser is admin-authenticated. No user identity, no
- * multi-role support — this is deliberately minimal.
+ * Two sealed, HttpOnly cookies share one password:
  *
- * The session password is derived from `KOOM_ADMIN_SECRET` via
- * `sha256(secret + ':session')` so operators don't have to manage
- * a second env var. Rotating `KOOM_ADMIN_SECRET` naturally
- * invalidates every active session, which is the right behavior
- * for "my admin secret leaked, rotate it immediately."
+ *   koom-admin-session  Set after a successful Google sign-in. Holds
+ *                       the verified email; valid only while that
+ *                       email is on the KOOM_ADMIN_EMAILS allowlist.
+ *   koom-oauth          Short-lived state for an in-flight Google
+ *                       sign-in (state, nonce, PKCE verifier, and the
+ *                       path to return to).
  *
- * The desktop client and the existing integration tests continue
- * to authenticate with the `Authorization: Bearer` header via
- * `requireAdmin` in `./admin`. Both auth transports are accepted
- * on every admin endpoint.
+ * The password comes from KOOM_SESSION_SECRET (at least 32
+ * characters). Rotating it signs every browser out. Desktop devices
+ * are unaffected: they authenticate with device tokens (./device-tokens).
  */
-
-import { createHash } from "node:crypto";
 
 import { getIronSession, type SessionOptions } from "iron-session";
 import { cookies } from "next/headers";
 
-const SESSION_COOKIE_NAME = "koom-admin-session";
-const SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+import { isAllowedAdminEmail } from "./config";
 
-/**
- * The only field we need in the session payload is "when was this
- * session authenticated." The presence of a non-zero value means
- * the user is authenticated; the value itself could be used for
- * future "re-auth after N hours" logic if we ever want it.
- */
+export const ADMIN_SESSION_COOKIE_NAME = "koom-admin-session";
+const ADMIN_SESSION_MAX_AGE_SECONDS = 7 * 24 * 60 * 60;
+const OAUTH_COOKIE_NAME = "koom-oauth";
+const OAUTH_MAX_AGE_SECONDS = 10 * 60;
+
 export interface AdminSession {
+  email?: string;
   authenticatedAt?: number;
 }
 
-/**
- * Build the iron-session options. Throws if `KOOM_ADMIN_SECRET`
- * is not set — which can only happen if the operator deployed a
- * Next.js app without configuring it, in which case a 500 at
- * auth time is the correct failure mode.
- */
-function getSessionOptions(): SessionOptions {
-  const adminSecret = process.env.KOOM_ADMIN_SECRET;
-  if (!adminSecret) {
+export interface OAuthFlowState {
+  state?: string;
+  nonce?: string;
+  codeVerifier?: string;
+  next?: string;
+}
+
+export function sessionPassword(): string {
+  const secret = process.env.KOOM_SESSION_SECRET;
+  if (!secret || secret.length < 32) {
     throw new Error(
-      "KOOM_ADMIN_SECRET is not configured — cannot build session options.",
+      "KOOM_SESSION_SECRET must be set to at least 32 characters.",
     );
   }
+  return secret;
+}
 
-  // Deterministically derive a 64-char hex password from the admin
-  // secret. iron-session requires ≥ 32 characters; 64 hex chars is
-  // 256 bits of entropy, which is plenty, and the hash function
-  // cleanly decouples the "user types this at login" secret from
-  // the "encrypts the cookie contents" secret. Rotating the admin
-  // secret automatically rotates the session password and
-  // invalidates every existing session, because the cookie can no
-  // longer be decrypted.
-  const password = createHash("sha256")
-    .update(adminSecret)
-    .update(":session")
-    .digest("hex");
-
+function options(cookieName: string, maxAge: number): SessionOptions {
   return {
-    password,
-    cookieName: SESSION_COOKIE_NAME,
+    password: sessionPassword(),
+    cookieName,
     cookieOptions: {
       httpOnly: true,
+      // Lax so the cookie rides along on the top-level GET redirect
+      // back from Google, but never on cross-site POSTs.
       sameSite: "lax",
       secure: process.env.NODE_ENV === "production",
-      maxAge: SESSION_MAX_AGE_SECONDS,
+      maxAge,
       path: "/",
     },
   };
 }
 
+export const adminSessionOptions = () =>
+  options(ADMIN_SESSION_COOKIE_NAME, ADMIN_SESSION_MAX_AGE_SECONDS);
+
 /**
- * Fetch (or construct) the admin session for the current request.
- *
- * This reads the cookie store from Next.js's `cookies()` helper,
- * which is only available inside route handlers, server actions,
- * and server components — i.e. this must be called from request-
- * scoped server code. It is NOT safe to call from module-top-level
- * or from test code that directly imports route handlers; in
- * those contexts the cookie store is not available and iron-session
- * will throw.
+ * Must be called from request-scoped server code (route handlers,
+ * server components), where `cookies()` is available.
  */
 export async function getAdminSession() {
-  const cookieStore = await cookies();
-  return getIronSession<AdminSession>(cookieStore, getSessionOptions());
+  return getIronSession<AdminSession>(await cookies(), adminSessionOptions());
+}
+
+export async function getOAuthFlowSession() {
+  return getIronSession<OAuthFlowState>(
+    await cookies(),
+    options(OAUTH_COOKIE_NAME, OAUTH_MAX_AGE_SECONDS),
+  );
 }
 
 /**
- * Best-effort "is the current request authenticated via session
- * cookie?" check. Returns `false` on any error (including
- * "cookie store not available") so callers can fall back to
- * bearer-token auth without the whole request exploding on a
- * missing next/headers context.
+ * The signed-in admin's email, or null. Returns null on any error
+ * (including "cookie store not available" when a route handler is
+ * invoked directly from tests) so callers can fall back to bearer
+ * auth.
  */
-export async function isAdminSessionValid(): Promise<boolean> {
+export async function currentAdminEmail(): Promise<string | null> {
   try {
     const session = await getAdminSession();
-    return (
-      typeof session.authenticatedAt === "number" && session.authenticatedAt > 0
-    );
+    if (session.email && isAllowedAdminEmail(session.email)) {
+      return session.email;
+    }
+    return null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export async function isAdminSessionValid(): Promise<boolean> {
+  return (await currentAdminEmail()) !== null;
 }

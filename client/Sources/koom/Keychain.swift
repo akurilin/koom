@@ -4,12 +4,12 @@ import Security
 /// Thin wrapper around the Security framework's SecItem APIs for
 /// storing generic password items.
 ///
-/// koom uses this for one thing only: the admin secret that
-/// authenticates the upload flow against the web backend. The secret
-/// is a long-lived shared credential — long-lived enough that storing
-/// it in `UserDefaults` would be a real security mistake, since
-/// `~/Library/Preferences/` is unencrypted and accessible to
-/// backup/sync tools.
+/// koom uses this for one thing only: the per-device token that
+/// authenticates the upload flow against the web backend (see
+/// `KoomConfig.DeviceCredential`). The token is long-lived — long-lived
+/// enough that storing it in `UserDefaults` would be a real security
+/// mistake, since `~/Library/Preferences/` is unencrypted and
+/// accessible to backup/sync tools.
 ///
 /// `kSecAttrAccessibleAfterFirstUnlock` means the item becomes
 /// readable once the user has unlocked their Mac after boot, which is

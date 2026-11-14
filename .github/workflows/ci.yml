@@ -129,11 +129,18 @@ jobs:
     #   R2_SECRET_ACCESS_KEY   — bucket-scoped S3 secret
     #   R2_PUBLIC_BASE_URL     — e.g. https://pub-<hash>.r2.dev
     #
-    # KOOM_ADMIN_SECRET is a fixed test string (same one r2-setup-test.ts
-    # bakes into the template) — it's deliberately not a real secret.
+    # The auth values are fixed, intentionally fake test strings (the
+    # same ones r2-setup-test.ts writes locally). Tests never contact
+    # Google; tests/setup.ts registers KOOM_TEST_DEVICE_TOKEN in the
+    # database, and E2E tests seal session cookies with
+    # KOOM_SESSION_SECRET.
     env:
       DATABASE_URL: postgresql://koom:koom@localhost:5432/koom
-      KOOM_ADMIN_SECRET: e2e-test-admin-secret-not-for-production
+      KOOM_ADMIN_EMAILS: admin@koom.test
+      KOOM_SESSION_SECRET: e2e-test-session-secret-not-for-production-0123456789
+      KOOM_TEST_DEVICE_TOKEN: koom_dt_e2e-test-device-token-not-for-production
+      GOOGLE_CLIENT_ID: test-client-id.apps.googleusercontent.com
+      GOOGLE_CLIENT_SECRET: test-client-secret
       KOOM_PUBLIC_BASE_URL: http://localhost:3456
       KOOM_TEST_PORT: "3456"
       R2_BUCKET: ${{ secrets.R2_BUCKET }}
@@ -191,7 +198,11 @@ jobs:
           {
             printf 'DATABASE_URL=%s\n' "$DATABASE_URL"
             printf 'KOOM_PUBLIC_BASE_URL=%s\n' "$KOOM_PUBLIC_BASE_URL"
-            printf 'KOOM_ADMIN_SECRET=%s\n' "$KOOM_ADMIN_SECRET"
+            printf 'KOOM_ADMIN_EMAILS=%s\n' "$KOOM_ADMIN_EMAILS"
+            printf 'KOOM_SESSION_SECRET=%s\n' "$KOOM_SESSION_SECRET"
+            printf 'KOOM_TEST_DEVICE_TOKEN=%s\n' "$KOOM_TEST_DEVICE_TOKEN"
+            printf 'GOOGLE_CLIENT_ID=%s\n' "$GOOGLE_CLIENT_ID"
+            printf 'GOOGLE_CLIENT_SECRET=%s\n' "$GOOGLE_CLIENT_SECRET"
             printf 'R2_BUCKET=%s\n' "$R2_BUCKET"
             printf 'R2_ACCOUNT_ID=%s\n' "$R2_ACCOUNT_ID"
             printf 'R2_ACCESS_KEY_ID=%s\n' "$R2_ACCESS_KEY_ID"

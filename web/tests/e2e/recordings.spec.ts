@@ -18,8 +18,8 @@
  *     the `finally` block.
  *   - Next.js → spawned by Playwright on port 3456 (or
  *     KOOM_TEST_PORT) with env vars from web/.env.test.local
- *     passed through, so the running app authenticates against
- *     the fake e2e-test admin secret, not the real one.
+ *     passed through, so the running app uses the fake test session
+ *     secret and admin allowlist, not the real ones.
  *
  * The single test deliberately mirrors the scenario as written
  * end-to-end rather than splitting into many smaller tests.
@@ -30,6 +30,8 @@
  */
 
 import { expect, test } from "@playwright/test";
+
+import { signInAsAdmin } from "./helpers/auth";
 
 import {
   cleanupFixtures,
@@ -44,17 +46,9 @@ import {
 
 test.describe.configure({ mode: "serial" });
 
-test("admin recordings happy path", async ({ page }) => {
+test("admin recordings happy path", async ({ page, baseURL }) => {
   let fixtures: FixtureSpec[] = [];
   let seeded: SeededRecording[] = [];
-
-  const adminSecret = process.env.KOOM_ADMIN_SECRET;
-  if (!adminSecret) {
-    throw new Error(
-      "KOOM_ADMIN_SECRET is not set in the Playwright environment. " +
-        "Check that web/.env.test.local exists and was loaded by playwright.config.ts.",
-    );
-  }
 
   try {
     // Generate fixtures and seed both DB rows and R2 objects so
@@ -76,19 +70,14 @@ test("admin recordings happy path", async ({ page }) => {
     await page.goto("/");
     await expect(page).toHaveURL(/\/login(\?.*)?$/);
 
-    // The login form is on screen.
-    await expect(page.getByTestId("admin-secret-input")).toBeVisible();
-    await expect(page.getByTestId("login-button")).toBeVisible();
+    // The Google sign-in button is on screen.
+    await expect(page.getByTestId("google-sign-in")).toBeVisible();
 
     // ─────────────────────────────────────────────────────────────
-    // 2. Log in with the test admin secret.
+    // 2. Sign in (sealed session cookie standing in for Google).
     // ─────────────────────────────────────────────────────────────
-    await page.getByTestId("admin-secret-input").fill(adminSecret);
-    await page.getByTestId("login-button").click();
-
-    // After successful login the client component does
-    // router.replace('/'). Wait for the navigation
-    // and the page header to appear.
+    await signInAsAdmin(page, baseURL!);
+    await page.goto("/");
     await expect(page).toHaveURL(/\/(\?.*)?$/);
     await expect(page.getByTestId("recordings-header")).toBeVisible();
     await expect(page.getByTestId("delete-all-button")).toBeVisible();

@@ -29,7 +29,7 @@ Features koom is particularly proud of:
 - **Zero-egress storage.** Cloudflare R2 has no bandwidth fees, so cost stays flat no matter how much the links get shared.
 - **One-click hosting via a Render Blueprint.** `render.yaml` declares the web service and its Postgres database; migrations run automatically before each deploy goes live.
 - **Guided self-hosting via `npm run doctor`.** The default doctor validates operator prerequisites and external services: R2 with Range-request checks, the Render Postgres schema, the Render web service and its environment, and the desktop runtime. Contributors use `npm run doctor:dev` for the local Docker Postgres and development configuration, while `npm run doctor:all` runs the complete diagnostic sweep.
-- **Deliberately narrow scope.** Single-tenant, one admin secret, no teams, no server-side transcoding. The whole stack fits in your head.
+- **Deliberately narrow scope.** Single-tenant, a short allowlist of Google admins, no teams, no server-side transcoding. The whole stack fits in your head.
 
 Some of these features have longer write-ups — see [Deeper reading](#deeper-reading) at the bottom.
 
@@ -50,7 +50,7 @@ Deployment targets:
 - **Metadata:** Render Postgres (`koom-db` in [`render.yaml`](render.yaml)), reached only by the web service over Render's private network
 - **Video + CDN:** Cloudflare R2 with its built-in CDN
 - **Local development:** a project-local Postgres container ([`docker-compose.yml`](docker-compose.yml)) with its own `koom` database
-- **Auth:** a single deployment-wide admin secret; browsers use a signed cookie, the desktop client uses `Authorization: Bearer`. Anonymous commenters are tracked by a plain UUID cookie.
+- **Auth:** Google sign-in restricted to the accounts in `KOOM_ADMIN_EMAILS`. Browsers get a sealed session cookie; the desktop app signs in through the same browser flow and receives its own revocable device token, sent as `Authorization: Bearer`. Anonymous commenters are tracked by a plain UUID cookie.
 
 ### How a recording flows end to end
 
@@ -61,7 +61,7 @@ Deployment targets:
 5. `POST /api/admin/uploads/complete` confirms the object landed, flips the row to `complete`, and returns the share URL. The client then `PATCH`es the title onto the row and uploads the transcript + thumbnail as sidecar artifacts in R2.
 6. The client copies the share URL to the clipboard and opens it. Anyone with the link can watch, read the clickable transcript, leave timestamped comments, and (if admin) rename the recording inline.
 
-The Next.js app holds all R2 and Postgres credentials. The desktop client only knows the web URL and the admin secret; every interaction with R2 is gated by short-lived presigned URLs.
+The Next.js app holds all R2 and Postgres credentials. The desktop client only knows the web URL and its own device token; every interaction with R2 is gated by short-lived presigned URLs.
 
 ## Requirements
 
@@ -85,9 +85,9 @@ The Next.js app holds all R2 and Postgres credentials. The desktop client only k
 
 koom has two environment files — keep this in mind while reading the setup instructions below:
 
-- **`web/.env.local`** holds everything needed for local development, plus the handful of shared secrets that are the same in local and production (R2 credentials, `KOOM_ADMIN_SECRET`). `DATABASE_URL` here is **always** the local Docker Postgres.
+- **`web/.env.local`** holds everything needed for local development, plus the handful of shared secrets that are the same in local and production (R2 credentials, the Google OAuth client, and the admin allowlist). `DATABASE_URL` here is **always** the local Docker Postgres.
 - **`web/.env.prod.local`** holds values used only to inspect production from your dev machine: `RENDER_API_KEY`, `RENDER_SERVICE_ID`, and `RENDER_DATABASE_URL` (koom-db's external connection string). Nothing in it is deployed.
-- **Production configuration lives in Render.** [`render.yaml`](render.yaml) wires `DATABASE_URL` to the database's internal connection string, and Render prompts once for the R2 values and `KOOM_ADMIN_SECRET` when you create the Blueprint. Share URLs use the service's `onrender.com` URL unless you set `KOOM_PUBLIC_BASE_URL` (see [Custom domain](#custom-domain)).
+- **Production configuration lives in Render.** [`render.yaml`](render.yaml) wires `DATABASE_URL` to the database's internal connection string, and Render prompts once for the R2 values and the Google sign-in values when you create the Blueprint (it generates `KOOM_SESSION_SECRET` itself). Share URLs use the service's `onrender.com` URL unless you set `KOOM_PUBLIC_BASE_URL` (see [Custom domain](#custom-domain)).
 
 Both files are gitignored. Every doctor mode bootstraps `web/.env.local` from its template when needed; the operator and all modes also bootstrap `web/.env.prod.local`. The dev doctor deliberately leaves the production-only file alone.
 
@@ -110,8 +110,8 @@ npm run doctor
 The first operator doctor run bootstraps both env files and fails loudly because they are empty. Work through each blocked check in order:
 
 1. **Cloudflare R2.** Create a Cloudflare account, enable R2 (requires a card — free tier is plenty), copy your Account ID, and mint an API token with `Workers R2 Storage → Edit` + `User API Tokens → Edit` permissions. Paste the token and account ID into `web/.env.local`. The file's comments walk through every click. Then run `npm run r2:setup` — it creates the bucket, generates the runtime S3 credentials, configures CORS, and fills in the remaining `R2_*` values for you.
-2. **`KOOM_ADMIN_SECRET`.** Generate with `openssl rand -hex 32` and paste into `web/.env.local`. Same value is used for local dev and production — the desktop client uses it as a bearer token, the web admin login uses it as a password.
-3. **Render.** Push your koom repo to GitHub, then in the Render dashboard choose **New → Blueprint** and select the repo. Render reads [`render.yaml`](render.yaml), creates the `koom-db` Postgres instance and the `koom-web` service, and prompts once for `KOOM_ADMIN_SECRET` and the five `R2_*` values — paste them from `web/.env.local`. The first deploy builds the app, applies `db/migrations/` in its pre-deploy step, and serves koom at `https://koom-web.onrender.com` (or the variant Render assigns). Enter that URL as the backend URL in the desktop app's Settings.
+2. **Google sign-in.** In a Google Cloud project, create an OAuth client of type _Web application_ with redirect URIs `http://localhost:3000/api/auth/google/callback` and `https://<your host>/api/auth/google/callback` (`web/.env.example` walks through the consent screen). Put `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and your address in `KOOM_ADMIN_EMAILS` in `web/.env.local`, and generate a local `KOOM_SESSION_SECRET` with `openssl rand -hex 32`.
+3. **Render.** Push your koom repo to GitHub, then in the Render dashboard choose **New → Blueprint** and select the repo. Render reads [`render.yaml`](render.yaml), creates the `koom-db` Postgres instance and the `koom-web` service, and prompts once for `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `KOOM_ADMIN_EMAILS`, and the five `R2_*` values — paste them from `web/.env.local`. The first deploy builds the app, applies `db/migrations/` in its pre-deploy step, and serves koom at `https://koom-web.onrender.com` (or the variant Render assigns). Enter that URL as the backend URL in the desktop app's Settings, then click **Sign in with Google** there.
 4. **Operator credentials.** Fill in `web/.env.prod.local`: create an API key under Render → Account Settings → API Keys (`RENDER_API_KEY`), copy the `srv-...` id from the koom-web service URL (`RENDER_SERVICE_ID`), and copy koom-db's **External Database URL** from its Connect menu (`RENDER_DATABASE_URL`).
 5. **macOS code-signing identity.** `npm run app:codesign` creates a stable local identity so rebuilds don't break Keychain trust.
 6. **Rerun `npm run doctor`** until the self-host/operator report is ready.
@@ -129,7 +129,17 @@ To serve koom from your own hostname instead of `onrender.com`:
 1. In Render, open koom-web → **Settings → Custom Domains** and add the hostname (e.g. `koom.example.com`). Render shows the DNS record it expects.
 2. At your DNS provider, create that record — for a subdomain, a `CNAME` from the subdomain to the service's `onrender.com` hostname. If your domain lives at Squarespace (including domains migrated from Google Domains), that's **Domains → your domain → DNS → Custom records**. Remove any old record for the same hostname that pointed at a previous host first.
 3. Wait for Render to verify the domain and issue its certificate.
-4. Set `KOOM_PUBLIC_BASE_URL=https://koom.example.com` on koom-web (**Environment**) so new share links use your hostname, then update the backend URL in the desktop app's Settings to match. Existing links keep working on `onrender.com`.
+4. Add `https://koom.example.com/api/auth/google/callback` to your Google OAuth client's authorized redirect URIs. Google sign-in uses `KOOM_PUBLIC_BASE_URL` to build its redirect, so this must match exactly.
+5. Set `KOOM_PUBLIC_BASE_URL=https://koom.example.com` on koom-web (**Environment**) so new share links and sign-in use your hostname, then update the backend URL in the desktop app's Settings to match. Existing links keep working on `onrender.com`.
+
+### Desktop app sign-in
+
+The desktop app never sees a shared secret. In **Settings → Account**, **Sign in with Google** opens the deployment's `/connect` page in a system sign-in sheet; after you sign in and confirm, the server mints a token for that one Mac and the app keeps it in the Keychain. Dev and Prod are signed in separately.
+
+- **Sign out** in Settings revokes that Mac's token on the server.
+- Removing an address from `KOOM_ADMIN_EMAILS` immediately signs that account out of every browser and revokes all of its devices.
+- Tokens live in the `device_tokens` table (hashed, with the device name and last use), so you can also revoke one by deleting its row.
+- For unattended runs, `npm run device:token` (or `-- --env prod`) mints a token directly and writes it to `~/.config/koom/device-credentials.json`, which the app reads when launched with `KOOM_DEVICE_CREDENTIALS_FILE` set (as `npm run app:run:prod` does).
 
 ### Local development
 
@@ -150,7 +160,7 @@ npm run app:codesign
 npm run doctor:dev
 ```
 
-The local web app currently uses the configured R2 bucket, so development still requires the R2 credentials and `KOOM_ADMIN_SECRET` in `web/.env.local`. Once the dev doctor is ready, start the two application processes:
+The local web app currently uses the configured R2 bucket, so development still requires the R2 credentials and the Google sign-in values in `web/.env.local`. Once the dev doctor is ready, start the two application processes:
 
 ```bash
 npm run dev -w web
@@ -166,7 +176,7 @@ npm run app:run:onboarding
 
 Every invocation creates a unique directory under macOS's per-user temporary
 directory. Client preferences remain in memory for that run, while downloaded
-models, logs, recordings, recovery data, and development admin secrets are
+models, logs, recordings, recovery data, and device sign-ins are
 written beneath the temporary profile. The directory is intentionally left for
 macOS to clean up later. This replays Koom's onboarding state but retains the
 app's existing macOS privacy permissions because the bundle identity is
@@ -186,7 +196,7 @@ The doctor has one implementation with three focused entry points:
 | `npm run doctor:dev` | Local development readiness; does not require Render access |
 | `npm run doctor:all` | Complete diagnostic sweep across both paths                 |
 
-R2 connectivity, the admin secret, the local-title packaging recipe, and desktop code signing are shared checks. The dev mode adds localhost configuration plus local Postgres schema and round-trip checks. The operator mode adds Render Postgres connectivity and schema checks (read-only), plus the Render web service's reachability, environment drift, and public URL.
+R2 connectivity, the Google sign-in configuration, the local-title packaging recipe, and desktop code signing are shared checks. The dev mode adds localhost configuration plus local Postgres schema and round-trip checks. The operator mode adds Render Postgres connectivity and schema checks (read-only), plus the Render web service's reachability, environment drift, and public URL.
 
 Each mode executes only its relevant sections and derives its exit code from those checks. A stopped local Docker stack therefore cannot fail `npm run doctor`, and missing Render credentials cannot fail `npm run doctor:dev`. All modes are safe to rerun: R2 test objects and local Postgres test rows are cleaned up.
 

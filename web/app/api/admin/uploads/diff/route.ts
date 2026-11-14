@@ -6,7 +6,7 @@
  * missing. Used by the desktop client's catch-up feature to figure
  * out what to re-upload after a failed previous run.
  *
- *   1. Require admin auth (Authorization: Bearer <KOOM_ADMIN_SECRET>).
+ *   1. Require admin auth (device token bearer or admin session).
  *   2. Parse and validate the JSON body { filenames: string[] }.
  *   3. Dedupe and filter the input; empty strings are dropped.
  *   4. Query recordings WHERE original_filename = ANY($1) AND

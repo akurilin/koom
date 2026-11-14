@@ -562,7 +562,7 @@ interface CallOpts {
 function buildHeaders(opts: CallOpts): Record<string, string> {
   const headers: Record<string, string> = {};
   if (opts.admin) {
-    headers["Authorization"] = `Bearer ${requireEnv("KOOM_ADMIN_SECRET")}`;
+    headers["Authorization"] = `Bearer ${requireEnv("KOOM_TEST_DEVICE_TOKEN")}`;
   }
   if (opts.commenterId) {
     headers["Cookie"] = `koom-commenter=${opts.commenterId}`;

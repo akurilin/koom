@@ -586,21 +586,17 @@ final class Uploader {
         guard let backendURL = KoomConfig.backendURL(for: environment) else {
             return nil
         }
-        let secret: String
         do {
-            guard let loaded = try KoomConfig.loadAdminSecret(for: environment),
-                !loaded.isEmpty
-            else {
+            guard let credential = try KoomConfig.loadDeviceCredential(for: environment) else {
                 return nil
             }
-            secret = loaded
+            return KoomAPI(backendURL: backendURL, deviceToken: credential.token)
         } catch {
             AppLog.error(
-                "Could not read admin secret from Keychain: \(error.localizedDescription)"
+                "Could not read device credential from Keychain: \(error.localizedDescription)"
             )
             return nil
         }
-        return KoomAPI(backendURL: backendURL, adminSecret: secret)
     }
 
     private func emit(_ state: UploadState) {

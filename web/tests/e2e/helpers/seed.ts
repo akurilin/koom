@@ -19,7 +19,7 @@
  * thrown so test failures don't get masked by cleanup errors.
  *
  * The test environment variables (DATABASE_URL, R2_*,
- * KOOM_ADMIN_SECRET) are populated by playwright.config.ts via
+ * KOOM_SESSION_SECRET) are populated by playwright.config.ts via
  * dotenv at config import time, so they're already in process.env
  * when these helpers run.
  */

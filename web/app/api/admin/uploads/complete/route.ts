@@ -4,7 +4,7 @@
  * Finalizes an upload session after the client has PUT the bytes to
  * the presigned R2 URL.
  *
- *   1. Require admin auth (Authorization: Bearer <KOOM_ADMIN_SECRET>).
+ *   1. Require admin auth (device token bearer or admin session).
  *   2. Parse and validate the JSON body { recordingId }.
  *   3. Look up the recording row; must exist, and either be 'pending'
  *      or already 'complete' (idempotent retry).

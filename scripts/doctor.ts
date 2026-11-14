@@ -30,11 +30,11 @@
  *     PRODUCTION deployment from a dev machine: RENDER_API_KEY,
  *     RENDER_SERVICE_ID, and RENDER_DATABASE_URL (the Render Postgres
  *     external connection string). Everything else production needs is
- *     either shared with local (R2 credentials, KOOM_ADMIN_SECRET) or
+ *     either shared with local (R2 credentials, Google OAuth client) or
  *     wired up inside Render by render.yaml.
  *
  *   - `web/.env.local` is needed in every mode because it also holds
- *     shared R2 credentials and the admin secret. The production-only
+ *     shared R2 credentials and Google sign-in values. The production-only
  *     file is bootstrapped only for operator/all runs.
  */
 
@@ -375,15 +375,29 @@ async function main(): Promise<void> {
     }
   }
 
-  // The admin secret is shared by the local web app, production
-  // deployment, and desktop client.
-  if (env.KOOM_ADMIN_SECRET) {
-    pass("KOOM_ADMIN_SECRET present", "both");
+  // Google sign-in values are shared by the local web app and the
+  // Render deployment (one OAuth client with both redirect URIs).
+  const googleHelp =
+    "Create an OAuth client (type: Web application) in Google Cloud Console → APIs & Services → Credentials. See web/.env.example for the redirect URIs to register.";
+  for (const key of ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]) {
+    if (env[key]) {
+      pass(`${key} present`, "both");
+    } else {
+      fail(
+        `${key} present`,
+        "both",
+        `Not set in web/.env.local. ${googleHelp}`,
+      );
+    }
+  }
+
+  if (env.KOOM_ADMIN_EMAILS?.includes("@")) {
+    pass("KOOM_ADMIN_EMAILS present", "both", `(${env.KOOM_ADMIN_EMAILS})`);
   } else {
     fail(
-      "KOOM_ADMIN_SECRET present",
+      "KOOM_ADMIN_EMAILS present",
       "both",
-      `Not set. The web app and desktop client both need this at runtime to authenticate admin actions. Generate one with:\n    openssl rand -hex 32`,
+      `Not set in web/.env.local. List the Google account(s) allowed to administer koom, comma-separated.`,
     );
   }
 
@@ -425,6 +439,18 @@ async function main(): Promise<void> {
       );
     } else {
       pass("KOOM_PUBLIC_BASE_URL points at the local dev server", "local");
+    }
+
+    // Production generates its own session secret (render.yaml
+    // generateValue); this one only signs local browser sessions.
+    if ((env.KOOM_SESSION_SECRET ?? "").length >= 32) {
+      pass("KOOM_SESSION_SECRET present", "local");
+    } else {
+      fail(
+        "KOOM_SESSION_SECRET present",
+        "local",
+        `Missing or shorter than 32 characters in web/.env.local. Generate one with:\n    openssl rand -hex 32`,
+      );
     }
   }
 

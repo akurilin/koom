@@ -41,8 +41,20 @@ export const EXPECTED_VARS: ReadonlyArray<{ key: string; source: VarSource }> =
       source: { kind: "blueprint", description: "render.yaml fromDatabase" },
     },
     {
-      key: "KOOM_ADMIN_SECRET",
-      source: { kind: "env-local", envKey: "KOOM_ADMIN_SECRET" },
+      key: "GOOGLE_CLIENT_ID",
+      source: { kind: "env-local", envKey: "GOOGLE_CLIENT_ID" },
+    },
+    {
+      key: "GOOGLE_CLIENT_SECRET",
+      source: { kind: "env-local", envKey: "GOOGLE_CLIENT_SECRET" },
+    },
+    {
+      key: "KOOM_ADMIN_EMAILS",
+      source: { kind: "env-local", envKey: "KOOM_ADMIN_EMAILS" },
+    },
+    {
+      key: "KOOM_SESSION_SECRET",
+      source: { kind: "blueprint", description: "render.yaml generateValue" },
     },
     {
       key: "R2_ACCESS_KEY_ID",

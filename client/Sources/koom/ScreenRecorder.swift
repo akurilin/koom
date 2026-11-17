@@ -91,7 +91,9 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         self.currentSegmentURL = configuration.outputURL
     }
 
-    func start() async throws {
+    /// `captureNotBefore` holds the microphone closed until a start cue
+    /// has died away, while the rest of the setup overlaps with it.
+    func start(captureNotBefore: ContinuousClock.Instant? = nil) async throws {
         AppLog.info(
             "Recorder starting. Display ID: \(configuration.displayID), microphone: \(configuration.microphoneID ?? "none"), dimensions: \(configuration.outputDimensions.width)x\(configuration.outputDimensions.height), frame rate: \(Self.framesPerSecond) fps, output: \(configuration.outputURL.path)"
         )
@@ -184,6 +186,9 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         )
 
         do {
+            if let captureNotBefore {
+                try await Task.sleep(until: captureNotBefore)
+            }
             try await stream.startCapture()
             AppLog.info("Recorder capture started.")
         } catch {

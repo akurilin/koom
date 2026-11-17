@@ -115,6 +115,7 @@ final class AppModel: ObservableObject {
     private let uploader: Uploader
     private let sessionStore = RecordingSessionStore()
     private let assembler = RecordingAssembler()
+    private let sounds = RecordingSounds()
     /// Recordings roll onto a fresh segment file after this much media
     /// time, so a crash loses at most one segment and the writer never
     /// runs in fragmented mode (macOS's fragment flush intermittently
@@ -136,6 +137,8 @@ final class AppModel: ObservableObject {
     /// The soak driver compares this across runs to attribute failures.
     private var recorderRuntimeIssueCount = 0
     private var elapsedTimerTask: Task<Void, Never>?
+    /// Resume waits out its cue before the recorder takes samples again.
+    private var pendingResumeTask: Task<Void, Never>?
 
     init(settingsStore: AppSettingsStore = AppSettingsStore()) {
         self.settingsStore = settingsStore
@@ -575,7 +578,12 @@ final class AppModel: ObservableObject {
         switch recordingState {
         case .recording:
             AppLog.info("Pause recording requested.")
+            pendingResumeTask?.cancel()
+            pendingResumeTask = nil
             recorder.pause()
+            // The pause is queued on the sample queue ahead of any
+            // sample captured from here on, so the cue is dropped.
+            sounds.play(.pause)
             try? sessionStore.updateState(.paused, in: &currentSession)
             self.currentSession = currentSession
             recordingState = .paused
@@ -584,13 +592,19 @@ final class AppModel: ObservableObject {
 
         case .paused:
             AppLog.info("Resume recording requested.")
-            setControlWindowCaptureSuppressed(true)
-            recorder.resume()
+            // .recording excludes the control window from capture
+            // before the recorder takes frames again.
             try? sessionStore.updateState(.recording, in: &currentSession)
             self.currentSession = currentSession
             recordingState = .recording
-            setControlWindowCaptureSuppressed(false)
             statusMessage = "Recording resumed."
+
+            let captureOpensAt = sounds.play(.resume)
+            pendingResumeTask = Task {
+                try? await Task.sleep(until: captureOpensAt)
+                guard !Task.isCancelled else { return }
+                recorder.resume()
+            }
 
         case .idle:
             break
@@ -701,7 +715,8 @@ final class AppModel: ObservableObject {
 
     private func startRecordingTask(
         resuming recoverableSession: RecordingSessionStore.SessionHandle? = nil,
-        recovered: Bool = false
+        recovered: Bool = false,
+        cue: RecordingSounds.Cue = .start
     ) async {
         guard displays.contains(where: { $0.id == selectedDisplayID }) else {
             statusMessage = "Choose a display before recording."
@@ -782,7 +797,7 @@ final class AppModel: ObservableObject {
             )
 
             setControlWindowCaptureSuppressed(true)
-            try await recorder.start()
+            try await recorder.start(captureNotBefore: sounds.play(cue))
 
             self.currentSession = workingSession
             self.currentSessionWasRecovered = recovered
@@ -857,9 +872,22 @@ final class AppModel: ObservableObject {
             ? "Restarting..."
             : (discardOutput ? "Discarding..." : "Stopping recording...")
         defer { isBusy = false }
+        pendingResumeTask?.cancel()
+        pendingResumeTask = nil
 
         do {
-            let segmentURL = try await recorder.stop(discardOutput: discardOutput)
+            // Cues play only once capture is down. A restart plays its
+            // own cue ahead of the next capture instead.
+            let segmentURL: URL
+            do {
+                segmentURL = try await recorder.stop(discardOutput: discardOutput)
+            } catch {
+                sounds.play(.stop)
+                throw error
+            }
+            if !restartAfterStop {
+                sounds.play(.stop)
+            }
             self.recorder = nil
             recordingState = .idle
             setControlWindowCaptureSuppressed(false)
@@ -947,7 +975,7 @@ final class AppModel: ObservableObject {
             }
 
             if restartAfterStop {
-                await startRecordingTask()
+                await startRecordingTask(cue: .restart)
             }
             return true
         } catch {

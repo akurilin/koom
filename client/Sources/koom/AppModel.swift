@@ -110,6 +110,7 @@ final class AppModel: ObservableObject {
     private let drawingOverlayWindowController = DrawingOverlayWindowController()
     private let settingsStore: AppSettingsStore
     let localTitleModelManager: LocalTitleModelManager
+    let noiseRemovalManager = NoiseRemovalManager()
     private let uploader: Uploader
     private let sessionStore = RecordingSessionStore()
     private let assembler = RecordingAssembler()
@@ -225,10 +226,12 @@ final class AppModel: ObservableObject {
 
     func warmBackgroundServices() {
         localTitleModelManager.prepareSelectedModel()
+        noiseRemovalManager.prepareSelectedOption()
     }
 
     func stopBackgroundServices() {
         localTitleModelManager.stop()
+        noiseRemovalManager.stop()
     }
 
     // MARK: - Catch-up
@@ -1075,15 +1078,16 @@ final class AppModel: ObservableObject {
     }
 
     private func postProcessFinalRecording(at finalURL: URL) async {
-        // Normalize loudness before any size optimization so the audio is
-        // only ever re-encoded once, by the normalizer; the optimizer's
-        // video re-encode copies the audio stream through.
-        statusMessage = "Normalizing audio in \(finalURL.lastPathComponent)..."
-        let normalized = await LoudnessNormalizer.normalizeRecording(
-            at: finalURL
+        // Clean the audio before any size optimization so it is only ever
+        // re-encoded once, here; the optimizer's video re-encode copies the
+        // audio stream through.
+        statusMessage = "Cleaning up audio in \(finalURL.lastPathComponent)..."
+        let cleaned = await AudioCleanup.cleanRecording(
+            at: finalURL,
+            noiseRemoval: noiseRemovalManager.planForRecording()
         )
         AppLog.info(
-            "Loudness normalization finished: result=\(normalized ? "replaced local file" : "kept original local file"); file=\(finalURL.path)"
+            "Audio cleanup finished: result=\(cleaned ? "replaced local file" : "kept original local file"); file=\(finalURL.path)"
         )
 
         let optimizeRecordings =

@@ -98,6 +98,10 @@ enum KoomRuntimeProfile {
         rootDirectoryURL?.appendingPathComponent("models", isDirectory: true)
     }
 
+    static var denoisersDirectoryURL: URL? {
+        rootDirectoryURL?.appendingPathComponent("denoisers", isDirectory: true)
+    }
+
     static var transcriptionModelsDirectoryURL: URL? {
         rootDirectoryURL?.appendingPathComponent(
             "transcription-models",

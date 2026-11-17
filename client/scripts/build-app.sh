@@ -14,6 +14,8 @@ DEFAULT_CODESIGN_IDENTITY="koom Local Dev"
 KOOM_CODESIGN_IDENTITY="${KOOM_CODESIGN_IDENTITY:-}"
 LLAMA_CPP_RELEASE="b10194"
 LLAMA_CPP_RUNTIME_DIR=""
+UV_RELEASE="0.12.0"
+UV_EXECUTABLE_PATH=""
 
 usage() {
     cat >&2 <<'EOF'
@@ -196,6 +198,67 @@ prepare_llama_runtime() {
     LLAMA_CPP_RUNTIME_DIR="$extracted_runtime"
 }
 
+# uv installs the noise removal helpers (Python environments pinned by each
+# helper's uv.lock) on demand at runtime; see NoiseRemovalManager.swift.
+prepare_uv_runtime() {
+    local architecture uv_target archive_name archive_sha256 archive_url
+    local vendor_dir archive_path extraction_dir
+
+    architecture=$(uname -m)
+    case "$architecture" in
+        arm64)
+            uv_target="aarch64-apple-darwin"
+            archive_sha256="2b9e582af54f84fa50c115427451a6c13e80f43b52f8282b8af5791077317bbf"
+            ;;
+        x86_64)
+            uv_target="x86_64-apple-darwin"
+            archive_sha256="d41593beaefc54bab7d062af0ef6ca093bfb81d001d58ebbef39e44423f9c496"
+            ;;
+        *)
+            echo "Unsupported macOS architecture for uv: $architecture" >&2
+            exit 1
+            ;;
+    esac
+
+    archive_name="uv-$uv_target.tar.gz"
+    archive_url="https://github.com/astral-sh/uv/releases/download/$UV_RELEASE/$archive_name"
+    vendor_dir="$BUILD_DIR/vendor/uv/$UV_RELEASE/$architecture"
+    archive_path="$vendor_dir/$archive_name"
+
+    mkdir -p "$vendor_dir"
+    if [[ ! -f "$archive_path" ]] || \
+        ! printf '%s  %s\n' "$archive_sha256" "$archive_path" | shasum -a 256 -c - >/dev/null 2>&1; then
+        echo "Downloading pinned uv ($UV_RELEASE, $architecture)." >&2
+        curl --fail --location --retry 3 --output "$archive_path.part" "$archive_url"
+        printf '%s  %s\n' "$archive_sha256" "$archive_path.part" | shasum -a 256 -c - >/dev/null
+        mv "$archive_path.part" "$archive_path"
+    fi
+
+    if [[ ! -x "$vendor_dir/uv" ]]; then
+        extraction_dir=$(mktemp -d "$vendor_dir/extract.XXXXXX")
+        tar -xzf "$archive_path" -C "$extraction_dir"
+        mv "$extraction_dir/uv-$uv_target/uv" "$vendor_dir/uv"
+        rm -rf -- "$extraction_dir"
+    fi
+
+    UV_EXECUTABLE_PATH="$vendor_dir/uv"
+}
+
+copy_noise_removal_runtime() {
+    mkdir -p "$APP_PATH/Contents/Helpers/uv"
+    cp "$UV_EXECUTABLE_PATH" "$APP_PATH/Contents/Helpers/uv/uv"
+
+    # Only the helper sources and lockfiles; never local caches or venvs.
+    local helper
+    for helper in "$ROOT_DIR"/Resources/denoisers/*/; do
+        local destination
+        destination="$APP_PATH/Contents/Resources/denoisers/$(basename "$helper")"
+        mkdir -p "$destination"
+        cp "$helper/enhance.py" "$helper/pyproject.toml" "$helper/uv.lock" \
+            "$destination/"
+    done
+}
+
 copy_llama_runtime() {
     local destination
     destination="$APP_PATH/Contents/Helpers/llama-runtime"
@@ -236,6 +299,7 @@ fi
 
 swift build -c "$BUILD_CONFIGURATION" --product koom >&2
 prepare_llama_runtime
+prepare_uv_runtime
 reset_app_bundle
 
 mkdir -p \
@@ -248,6 +312,7 @@ cp "$ROOT_DIR/App/Info.plist" "$APP_PATH/Contents/Info.plist"
 cp "$ROOT_DIR/Resources/local-title-models.json" \
     "$APP_PATH/Contents/Resources/local-title-models.json"
 copy_llama_runtime
+copy_noise_removal_runtime
 generate_app_icon
 
 sign_app_bundle >/dev/null

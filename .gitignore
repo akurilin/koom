@@ -43,3 +43,6 @@ node_modules/
 # Operator script state — production (.r2-state.json) and test
 # (.r2-state.test.json) each track their own bucket separately.
 scripts/.r2-state*.json
+
+# Audio lab clips, renders, ratings, and downloaded tools/datasets.
+scripts/audio-lab/.data/

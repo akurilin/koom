@@ -1,0 +1,1373 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>koom audio lab</title>
+    <style>
+      :root {
+        --bg: #f6f6f4;
+        --panel: #ffffff;
+        --text: #1d1d1b;
+        --muted: #6b6b66;
+        --line: #e2e2dd;
+        --accent: #2f6fde;
+        --accent-soft: #e6eefc;
+        --good: #1f8a4c;
+        --warn: #b26a00;
+        --bad: #c23b31;
+        --wave: #9db8ea;
+        --wave-active: #2f6fde;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #151514;
+          --panel: #1e1e1c;
+          --text: #ecece8;
+          --muted: #9a9a93;
+          --line: #33332f;
+          --accent: #7aa7ff;
+          --accent-soft: #24304a;
+          --good: #4cc282;
+          --warn: #e0a440;
+          --bad: #ff7a70;
+          --wave: #3d5585;
+          --wave-active: #7aa7ff;
+          color-scheme: dark;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          14px/1.45 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+      }
+      header h1 {
+        font-size: 15px;
+        margin: 0 8px 0 0;
+      }
+      header .spacer {
+        flex: 1;
+      }
+      button,
+      .button {
+        font: inherit;
+        color: var(--text);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 5px 10px;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--muted);
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: white;
+      }
+      button.on {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+      }
+      main {
+        display: grid;
+        grid-template-columns: 290px 1fr;
+        min-height: 0;
+      }
+      #sidebar {
+        border-right: 1px solid var(--line);
+        overflow-y: auto;
+        background: var(--panel);
+      }
+      .clip-item {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        padding: 9px 14px;
+        border-bottom: 1px solid var(--line);
+        cursor: pointer;
+      }
+      .clip-item:hover {
+        background: var(--bg);
+      }
+      .clip-item.selected {
+        background: var(--accent-soft);
+      }
+      .clip-item .dot {
+        flex: none;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        margin-top: 5px;
+        border: 1.5px solid var(--muted);
+      }
+      .clip-item .dot.rated {
+        background: var(--good);
+        border-color: var(--good);
+      }
+      .clip-item .dot.processing {
+        border-color: var(--warn);
+        border-top-color: transparent;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .clip-item .name {
+        font-weight: 500;
+      }
+      .clip-item .sub {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .section-label {
+        padding: 10px 14px 4px;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      #drop {
+        margin: 12px;
+        padding: 18px 12px;
+        border: 1.5px dashed var(--line);
+        border-radius: 8px;
+        color: var(--muted);
+        text-align: center;
+        font-size: 13px;
+      }
+      body.dragging #drop {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: var(--accent-soft);
+      }
+      #content {
+        overflow-y: auto;
+        padding: 18px 24px 40px;
+      }
+      .title-input {
+        font: inherit;
+        font-size: 20px;
+        font-weight: 600;
+        color: var(--text);
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        padding: 2px 6px;
+        margin-left: -7px;
+        width: 100%;
+      }
+      .desc-input {
+        font: inherit;
+        color: var(--muted);
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        padding: 2px 6px;
+        margin-left: -7px;
+        width: 100%;
+        resize: vertical;
+      }
+      .title-input:hover,
+      .desc-input:hover,
+      .title-input:focus,
+      .desc-input:focus {
+        border-color: var(--line);
+        outline: none;
+      }
+      .source {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 2px 0 14px;
+      }
+      .transport {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 10px 0;
+      }
+      #play {
+        width: 64px;
+      }
+      #time {
+        font-variant-numeric: tabular-nums;
+        color: var(--muted);
+        min-width: 100px;
+      }
+      #wave {
+        width: 100%;
+        height: 96px;
+        display: block;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        cursor: text;
+        touch-action: none;
+        user-select: none;
+      }
+      .wave-caption {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 4px 0 14px;
+      }
+      table.variants {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      table.variants td {
+        padding: 7px 10px;
+        border-top: 1px solid var(--line);
+        vertical-align: middle;
+      }
+      table.variants tr:first-child td {
+        border-top: none;
+      }
+      table.variants tr.variant {
+        cursor: pointer;
+      }
+      table.variants tr.variant:hover {
+        background: var(--bg);
+      }
+      table.variants tr.current {
+        background: var(--accent-soft) !important;
+      }
+      .key {
+        display: inline-block;
+        min-width: 22px;
+        text-align: center;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        font-size: 12px;
+        padding: 0 4px;
+        color: var(--muted);
+        background: var(--bg);
+      }
+      tr.current .key {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .vlabel {
+        font-weight: 500;
+      }
+      .metrics {
+        color: var(--muted);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+      }
+      .scores {
+        white-space: nowrap;
+      }
+      .scores button {
+        padding: 1px 7px;
+        margin-right: 2px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .scores button.on {
+        color: var(--text);
+      }
+      .best {
+        white-space: nowrap;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .best input {
+        vertical-align: -2px;
+      }
+      .status-note {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .status-note.failed {
+        color: var(--bad);
+      }
+      textarea#notes {
+        width: 100%;
+        min-height: 70px;
+        margin-top: 14px;
+        font: inherit;
+        color: var(--text);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 10px;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-top: 12px;
+        flex-wrap: wrap;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .help {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 18px;
+        line-height: 1.8;
+      }
+      .banner {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 8px;
+        padding: 8px 12px;
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 14px;
+      }
+      table.summary {
+        border-collapse: collapse;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        margin-top: 10px;
+        font-variant-numeric: tabular-nums;
+      }
+      table.summary th,
+      table.summary td {
+        padding: 6px 12px;
+        border-top: 1px solid var(--line);
+        text-align: right;
+      }
+      table.summary th:first-child,
+      table.summary td:first-child {
+        text-align: left;
+      }
+      table.summary th {
+        color: var(--muted);
+        font-weight: 500;
+        font-size: 12px;
+      }
+      .bar {
+        display: inline-block;
+        height: 8px;
+        background: var(--accent);
+        border-radius: 2px;
+        vertical-align: middle;
+      }
+      @media (max-width: 760px) {
+        main {
+          grid-template-columns: 1fr;
+          grid-template-rows: 200px 1fr;
+        }
+        #sidebar {
+          border-right: none;
+          border-bottom: 1px solid var(--line);
+        }
+        #content {
+          padding: 14px 16px 40px;
+        }
+        .metrics {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>koom audio lab</h1>
+      <button id="blind" title="Hide which chain is which (R)">Blind</button>
+      <button
+        id="retiredBtn"
+        title="Show chains that clearly lost in listening tests"
+      >
+        Show retired
+      </button>
+      <button id="summaryBtn">Summary</button>
+      <span class="spacer"></span>
+      <label class="button" for="file">Add clips…</label>
+      <input id="file" type="file" accept="audio/*,video/*" multiple hidden />
+    </header>
+    <main>
+      <nav id="sidebar"></nav>
+      <section id="content"></section>
+    </main>
+
+    <script>
+      "use strict";
+
+      // ---------------------------------------------------------------
+      // State
+
+      let state = null; // from /api/state
+      let selectedClipId = null;
+      let showSummary = false;
+      let blind = localGet("blind") !== "0";
+      let showRetired = localGet("retired") === "1";
+      let currentChain = null;
+      const engine = createEngine();
+
+      function localGet(key) {
+        try {
+          return localStorage.getItem("audio-lab:" + key);
+        } catch {
+          return null;
+        }
+      }
+      function localSet(key, value) {
+        try {
+          localStorage.setItem("audio-lab:" + key, value);
+        } catch {}
+      }
+
+      const $ = (selector) => document.querySelector(selector);
+      const esc = (value) =>
+        String(value ?? "").replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c],
+        );
+
+      function chainLabel(chainId) {
+        return state.chains.find((c) => c.id === chainId)?.label ?? chainId;
+      }
+
+      function isVisibleChain(chainId) {
+        return (
+          showRetired || !state.chains.find((c) => c.id === chainId)?.retired
+        );
+      }
+
+      // The variants on screen and loaded for playback.
+      function visibleVariants(c) {
+        return c.variants.filter((v) => isVisibleChain(v.chainId));
+      }
+
+      function clip() {
+        return state?.clips.find((c) => c.id === selectedClipId) ?? null;
+      }
+
+      function ratingFor(clipId) {
+        return state.ratings[clipId] ?? { scores: {}, best: null, notes: "" };
+      }
+
+      // Stable per-clip shuffle so "variant C" means the same thing on
+      // every reload and with names revealed (so a blind score can be
+      // checked against its method); the original is pinned first.
+      function orderedVariants(c) {
+        const ready = visibleVariants(c).filter(
+          (v) => v.status !== "unavailable",
+        );
+        const original = ready.filter((v) => v.chainId === "original");
+        const rest = ready.filter((v) => v.chainId !== "original");
+        let seed = 0;
+        for (const ch of c.id) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+        const random = () => {
+          seed = (seed + 0x6d2b79f5) >>> 0;
+          let t = seed;
+          t = Math.imul(t ^ (t >>> 15), t | 1);
+          t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+        const shuffled = rest
+          .map((v) => [random(), v])
+          .sort((a, b) => a[0] - b[0])
+          .map(([, v]) => v);
+        return [...original, ...shuffled];
+      }
+
+      const SHORTCUTS = [..."1234567890qwertyuiop"];
+      const LETTERS = "ABCDEFGHIJKLMNOPQRST".split("");
+
+      function displayName(c, variant, index) {
+        if (variant.chainId === "original") return "Original (reference)";
+        const letter = "Variant " + LETTERS[index - 1];
+        return blind ? letter : `${letter} · ${chainLabel(variant.chainId)}`;
+      }
+
+      // ---------------------------------------------------------------
+      // Playback: every variant plays at once through its own gain node;
+      // switching variants only moves the gains, so playback never jumps.
+
+      function createEngine() {
+        let ctx = null;
+        let buffers = new Map(); // chainId -> AudioBuffer
+        let nodes = new Map(); // chainId -> { source, gain }
+        let loadToken = 0;
+        let startedAt = 0; // context time when the current run started
+        let startOffset = 0; // clip time the current run started from
+        let offset = 0; // clip time while paused
+        let playing = false;
+        let active = null;
+        let region = null; // { start, end } in seconds, or null = whole clip
+
+        const duration = () =>
+          Math.max(0, ...[...buffers.values()].map((b) => b.duration));
+        const loopStart = () => (region ? region.start : 0);
+        const loopEnd = () => (region ? region.end : duration());
+
+        function audio() {
+          if (!ctx) ctx = new AudioContext({ sampleRate: 48000 });
+          return ctx;
+        }
+
+        // Every source loops the same span natively, so all variants wrap
+        // on the same sample and stay in sync indefinitely.
+        function startNode(chainId, at, from) {
+          const buffer = buffers.get(chainId);
+          if (!buffer) return;
+          const source = audio().createBufferSource();
+          source.buffer = buffer;
+          source.loop = true;
+          source.loopStart = loopStart();
+          source.loopEnd = Math.min(loopEnd(), buffer.duration);
+          const gain = audio().createGain();
+          gain.gain.value = chainId === active ? 1 : 0;
+          source.connect(gain).connect(audio().destination);
+          source.start(at, Math.min(from, buffer.duration));
+          nodes.set(chainId, { source, gain });
+        }
+
+        function stopAll() {
+          for (const { source } of nodes.values()) {
+            try {
+              source.stop();
+            } catch {}
+          }
+          nodes.clear();
+        }
+
+        function clampToLoop(time) {
+          return time >= loopStart() && time < loopEnd() ? time : loopStart();
+        }
+
+        function position() {
+          if (!playing) return offset;
+          const raw =
+            startOffset + Math.max(0, audio().currentTime - startedAt);
+          if (raw < loopEnd()) return raw;
+          const span = loopEnd() - loopStart();
+          return span > 0
+            ? loopStart() + ((raw - loopStart()) % span)
+            : loopStart();
+        }
+
+        function play() {
+          if (playing || buffers.size === 0) return;
+          audio().resume();
+          offset = clampToLoop(offset);
+          const at = audio().currentTime + 0.05;
+          startedAt = at;
+          startOffset = offset;
+          for (const chainId of buffers.keys()) startNode(chainId, at, offset);
+          playing = true;
+        }
+
+        function pause() {
+          if (!playing) return;
+          offset = position();
+          stopAll();
+          playing = false;
+        }
+
+        function restartAt(time) {
+          const wasPlaying = playing;
+          pause();
+          offset = clampToLoop(Math.max(0, Math.min(time, duration())));
+          if (wasPlaying) play();
+        }
+
+        /** Click-to-seek; a click outside the loop section clears it. */
+        function seek(time) {
+          if (region && (time < region.start || time >= region.end)) {
+            region = null;
+          }
+          restartAt(time);
+        }
+
+        /** Loops [start, end); spans under 0.1 s clear the section. */
+        function setRegion(start, end) {
+          const a = Math.max(0, Math.min(start, end));
+          const b = Math.min(duration(), Math.max(start, end));
+          region = b - a >= 0.1 ? { start: a, end: b } : null;
+          restartAt(region ? region.start : position());
+        }
+
+        function clearRegion() {
+          if (!region) return;
+          const at = position();
+          region = null;
+          restartAt(at);
+        }
+
+        function select(chainId) {
+          active = chainId;
+          if (!ctx) return;
+          const now = ctx.currentTime;
+          for (const [id, { gain }] of nodes) {
+            gain.gain.cancelScheduledValues(now);
+            gain.gain.setTargetAtTime(id === chainId ? 1 : 0, now, 0.006);
+          }
+        }
+
+        async function load(clipId, variants) {
+          const token = ++loadToken;
+          pause();
+          offset = 0;
+          region = null;
+          buffers = new Map();
+          await addVariants(variants, token);
+        }
+
+        // Adds newly rendered variants without interrupting playback.
+        async function addVariants(variants, token = loadToken) {
+          const wanted = variants.filter(
+            (v) => v.status === "ready" && !buffers.has(v.chainId),
+          );
+          await Promise.all(
+            wanted.map(async (v) => {
+              const response = await fetch(v.url);
+              const data = await response.arrayBuffer();
+              const buffer = await audio().decodeAudioData(data);
+              if (token !== loadToken) return;
+              buffers.set(v.chainId, buffer);
+              if (playing) {
+                // Start it mid-run, aligned with the others.
+                startNode(v.chainId, audio().currentTime, position());
+              }
+            }),
+          );
+        }
+
+        return {
+          play,
+          pause,
+          seek,
+          setRegion,
+          clearRegion,
+          select,
+          load,
+          addVariants,
+          position,
+          duration,
+          get region() {
+            return region;
+          },
+          get playing() {
+            return playing;
+          },
+          buffer: (chainId) => buffers.get(chainId),
+        };
+      }
+
+      // ---------------------------------------------------------------
+      // Data
+
+      async function refresh() {
+        const previous = clip();
+        state = await (await fetch("/api/state")).json();
+        if (!selectedClipId || !clip()) {
+          selectedClipId = localGet("clip") ?? state.clips[0]?.id ?? null;
+          if (!clip()) selectedClipId = state.clips[0]?.id ?? null;
+        }
+        renderSidebar();
+        const c = clip();
+        if (!showSummary && c && previous?.id === c.id) {
+          const before = previous.variants.map((v) => v.status).join();
+          const after = c.variants.map((v) => v.status).join();
+          if (before !== after) {
+            await engine.addVariants(visibleVariants(c));
+            renderClip();
+          }
+        }
+        return state;
+      }
+
+      let saveTimer = null;
+      function saveRating(clipId, rating) {
+        state.ratings[clipId] = rating;
+        renderSidebar();
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => {
+          fetch("/api/ratings/" + clipId, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(rating),
+          });
+        }, 300);
+      }
+
+      async function patchClip(clipId, fields) {
+        await fetch("/api/clips/" + clipId, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(fields),
+        });
+        Object.assign(
+          state.clips.find((c) => c.id === clipId),
+          fields,
+        );
+        renderSidebar();
+      }
+
+      async function upload(files) {
+        let lastId = null;
+        for (const file of files) {
+          const response = await fetch(
+            "/api/clips?filename=" + encodeURIComponent(file.name),
+            { method: "POST", body: file },
+          );
+          if (response.ok) lastId = (await response.json()).id;
+        }
+        await refresh();
+        if (lastId) selectClip(lastId);
+      }
+
+      // ---------------------------------------------------------------
+      // Rendering
+
+      function isRated(clipId) {
+        const r = state.ratings[clipId];
+        return !!r && (r.best || Object.keys(r.scores ?? {}).length > 0);
+      }
+
+      function renderSidebar() {
+        const yours = state.clips.filter((c) => !c.source);
+        const seeded = state.clips.filter((c) => c.source);
+        const item = (c) => {
+          const dot = c.processing
+            ? "processing"
+            : isRated(c.id)
+              ? "rated"
+              : "";
+          const ready = c.variants.filter((v) => v.status === "ready").length;
+          const total = c.variants.filter(
+            (v) => v.status !== "unavailable",
+          ).length;
+          const sub = c.processing
+            ? `rendering ${ready}/${total}`
+            : isRated(c.id)
+              ? "rated"
+              : "not rated";
+          const selected =
+            !showSummary && c.id === selectedClipId ? " selected" : "";
+          return `<div class="clip-item${selected}" data-clip="${esc(c.id)}">
+            <span class="dot ${dot}"></span>
+            <div><div class="name">${esc(c.title)}</div><div class="sub">${sub}</div></div>
+          </div>`;
+        };
+        const rated = state.clips.filter((c) => isRated(c.id)).length;
+        $("#sidebar").innerHTML = `
+          <div id="drop">Drop audio or video files here<br/>to add your own clips</div>
+          ${yours.length ? `<div class="section-label">Your clips</div>${yours.map(item).join("")}` : ""}
+          <div class="section-label">Starter clips · ${rated}/${state.clips.length} rated</div>
+          ${seeded.map(item).join("")}`;
+        for (const el of document.querySelectorAll(".clip-item")) {
+          el.onclick = () => selectClip(el.dataset.clip);
+        }
+      }
+
+      function fmtTime(seconds, tenths = false) {
+        const m = Math.floor(seconds / 60);
+        const s = tenths
+          ? (seconds % 60).toFixed(1).padStart(4, "0")
+          : String(Math.floor(seconds % 60)).padStart(2, "0");
+        return `${m}:${s}`;
+      }
+
+      function fmtMetrics(v) {
+        if (!v.metrics) return "";
+        const m = v.metrics;
+        const i = Number.isFinite(m.integrated)
+          ? m.integrated.toFixed(1) + " LUFS"
+          : "silent";
+        const tp = Number.isFinite(m.truePeak)
+          ? m.truePeak.toFixed(1) + " dBTP"
+          : "";
+        const gain =
+          m.gainDB === null || m.gainDB === undefined
+            ? ""
+            : ` · gain ${m.gainDB >= 0 ? "+" : ""}${m.gainDB.toFixed(1)} dB`;
+        return `${i} · ${tp} · LRA ${m.range.toFixed(1)}${gain}${fmtSpeed(v.speed)}`;
+      }
+
+      // Denoiser speed relative to the clip's length (model load excluded).
+      function realtimeFactor(speed) {
+        return speed && speed.processSeconds > 0
+          ? speed.audioSeconds / speed.processSeconds
+          : null;
+      }
+      function fmtSpeed(speed) {
+        const factor = realtimeFactor(speed);
+        return factor === null ? "" : ` · ${factor.toFixed(1)}× real time`;
+      }
+
+      function renderClip() {
+        const c = clip();
+        const content = $("#content");
+        if (!c) {
+          content.innerHTML = `<div class="banner">No clips yet. Run <code>npm run audio-lab:seed</code>, or drop audio or video files on the left.</div>`;
+          return;
+        }
+        const variants = orderedVariants(c);
+        if (!variants.some((v) => v.chainId === currentChain)) {
+          currentChain = variants[0]?.chainId ?? null;
+        }
+        engine.select(currentChain);
+        const rating = ratingFor(c.id);
+        const unavailable = c.variants
+          .filter((v) => v.status === "unavailable")
+          .map((v) => chainLabel(v.chainId));
+
+        const rows = variants
+          .map((v, index) => {
+            const isCurrent = v.chainId === currentChain;
+            const isOriginal = v.chainId === "original";
+            let right = "";
+            if (isOriginal) {
+              right = `<td colspan="2" class="status-note">reference, not rated</td>`;
+            } else if (v.status === "ready") {
+              const scores = [1, 2, 3, 4, 5]
+                .map(
+                  (n) =>
+                    `<button data-score="${n}" data-chain="${v.chainId}" class="${rating.scores[v.chainId] === n ? "on" : ""}">${n}</button>`,
+                )
+                .join("");
+              right = `<td class="scores">${scores}</td>
+                <td class="best"><label><input type="radio" name="best" data-best="${v.chainId}" ${rating.best === v.chainId ? "checked" : ""}/> best</label></td>`;
+            } else {
+              const note =
+                v.status === "failed"
+                  ? `<span class="status-note failed" title="${esc(v.error)}">failed (hover for error)</span>`
+                  : `<span class="status-note">rendering…</span>`;
+              right = `<td colspan="2">${note}</td>`;
+            }
+            const file = v.url ? v.url.split("/").pop() : "";
+            const metrics =
+              blind && !isOriginal
+                ? ""
+                : [
+                    fmtMetrics(v),
+                    file && `<span class="muted">${esc(file)}</span>`,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
+            return `<tr class="variant${isCurrent ? " current" : ""}" data-select="${v.chainId}">
+              <td style="width:34px"><span class="key">${SHORTCUTS[index] ?? ""}</span></td>
+              <td><div class="vlabel">${esc(displayName(c, v, index))}</div>
+                <div class="metrics">${metrics}</div></td>
+              ${right}
+            </tr>`;
+          })
+          .join("");
+
+        content.innerHTML = `
+          <input class="title-input" id="title" value="${esc(c.title)}" />
+          <textarea class="desc-input" id="desc" rows="2" placeholder="Describe the scenario (mic, room, noise)…">${esc(c.description ?? "")}</textarea>
+          ${c.source ? `<div class="source">Source: ${esc(c.source)}</div>` : `<div class="source">Uploaded ${new Date(c.createdAt).toLocaleString()}</div>`}
+          ${
+            unavailable.length
+              ? `<div class="banner">Not installed, so skipped: ${unavailable.map(esc).join(", ")}. See scripts/audio-lab/README.md.</div>`
+              : ""
+          }
+          <div class="transport">
+            <button id="play" class="primary">${engine.playing ? "Pause" : "Play"}</button>
+            <span id="time">0:00 / 0:00</span>
+            <span class="muted" id="loopInfo"></span>
+            <button id="clearLoop" hidden>Loop whole clip</button>
+          </div>
+          <canvas id="wave"></canvas>
+          <div class="wave-caption">Waveform of the selected variant at a fixed scale (full height = 0 dBFS), so loudness differences are visible. Playback loops. Drag across the waveform to loop just that section; click to seek; double-click or Esc to loop the whole clip again.</div>
+          <table class="variants">${rows}</table>
+          <textarea id="notes" placeholder="Notes on this clip: what sounded wrong, artifacts, what you'd want…">${esc(rating.notes)}</textarea>
+          <div class="row">
+            <button id="reveal">${blind ? "Reveal names" : "Hide names (blind)"}</button>
+            ${c.variants.some((v) => v.status === "failed") ? `<button id="retry">Retry failed renders</button>` : ""}
+            ${c.source ? "" : `<button id="delete">Delete clip</button>`}
+          </div>
+          <div class="help">
+            <span class="key">Space</span> play/pause ·
+            <span class="key">1</span>–<span class="key">0</span>, <span class="key">q</span>… switch variant without stopping ·
+            <span class="key">↑</span><span class="key">↓</span> previous/next variant ·
+            <span class="key">←</span><span class="key">→</span> back/forward 3 s ·
+            <span class="key">b</span> mark current as best ·
+            <span class="key">[</span><span class="key">]</span> previous/next clip ·
+            <span class="key">r</span> reveal names ·
+            drag the waveform to loop a section, <span class="key">Esc</span> to loop the whole clip<br/>
+            Every variant except the original is normalized to ${state.targetLUFS} LUFS (koom today may fall short, as it does in the app), so loudness alone shouldn't decide.
+            Blind mode shuffles variant letters per clip (stable across reloads).
+          </div>`;
+
+        $("#play").onclick = togglePlay;
+        $("#reveal").onclick = toggleBlind;
+        $("#title").onchange = (e) =>
+          patchClip(c.id, { title: e.target.value });
+        $("#desc").onchange = (e) =>
+          patchClip(c.id, { description: e.target.value });
+        $("#notes").oninput = (e) =>
+          saveRating(c.id, { ...ratingFor(c.id), notes: e.target.value });
+        $("#retry") &&
+          ($("#retry").onclick = async () => {
+            await fetch(`/api/clips/${c.id}/retry`, { method: "POST" });
+            refresh();
+          });
+        $("#delete") &&
+          ($("#delete").onclick = async () => {
+            if (!confirm(`Delete "${c.title}" and its ratings?`)) return;
+            engine.pause();
+            await fetch(`/api/clips/${c.id}`, { method: "DELETE" });
+            selectedClipId = null;
+            await refresh();
+            selectClip(state.clips[0]?.id);
+          });
+        for (const row of document.querySelectorAll("tr[data-select]")) {
+          row.onclick = (e) => {
+            if (e.target.closest("button, input, label")) return;
+            selectVariant(row.dataset.select);
+          };
+        }
+        for (const button of document.querySelectorAll("button[data-score]")) {
+          button.onclick = () => {
+            const r = ratingFor(c.id);
+            const chainId = button.dataset.chain;
+            const score = Number(button.dataset.score);
+            const scores = { ...r.scores };
+            if (scores[chainId] === score) delete scores[chainId];
+            else scores[chainId] = score;
+            saveRating(c.id, { ...r, scores });
+            renderClip();
+          };
+        }
+        for (const input of document.querySelectorAll("input[data-best]")) {
+          input.onchange = () =>
+            saveRating(c.id, { ...ratingFor(c.id), best: input.dataset.best });
+        }
+        attachWaveInput($("#wave"));
+        $("#clearLoop").onclick = () => {
+          engine.clearRegion();
+          drawFrame();
+        };
+        waveCache = null;
+        drawFrame();
+      }
+
+      function renderSummary() {
+        const rated = state.chains.filter(
+          (chain) => chain.id !== "original" && isVisibleChain(chain.id),
+        );
+        const rows = rated.map((chain) => {
+          let total = 0;
+          let count = 0;
+          let wins = 0;
+          for (const c of state.clips) {
+            const r = state.ratings[c.id];
+            if (!r) continue;
+            if (r.scores?.[chain.id]) {
+              total += r.scores[chain.id];
+              count += 1;
+            }
+            if (r.best === chain.id) wins += 1;
+          }
+          const factors = state.clips
+            .map((c) =>
+              realtimeFactor(
+                c.variants.find((v) => v.chainId === chain.id)?.speed,
+              ),
+            )
+            .filter((f) => f !== null)
+            .sort((a, b) => a - b);
+          const speed = factors.length
+            ? factors[Math.floor(factors.length / 2)]
+            : null;
+          return {
+            chain,
+            avg: count ? total / count : null,
+            count,
+            wins,
+            speed,
+          };
+        });
+        rows.sort((a, b) => (b.avg ?? -1) - (a.avg ?? -1) || b.wins - a.wins);
+        const ratedClips = state.clips.filter((c) => isRated(c.id));
+        $("#content").innerHTML = `
+          <h2 style="margin-top:0">Summary</h2>
+          <div class="muted">${ratedClips.length} of ${state.clips.length} clips rated. Names are always shown here. Denoise speed is the median across clips on this Mac, excluding model loading.</div>
+          <table class="summary">
+            <tr><th>Chain</th><th>Avg score</th><th></th><th>Scored on</th><th>Picked best</th><th>Denoise speed</th></tr>
+            ${rows
+              .map(
+                (r) => `<tr>
+                  <td>${esc(r.chain.label)}</td>
+                  <td>${r.avg === null ? "–" : r.avg.toFixed(2)}</td>
+                  <td style="width:110px"><span class="bar" style="width:${r.avg ? (r.avg / 5) * 100 : 0}px"></span></td>
+                  <td>${r.count}</td>
+                  <td>${r.wins}</td>
+                  <td>${r.speed === null ? "–" : r.speed.toFixed(1) + "× real time"}</td>
+                </tr>`,
+              )
+              .join("")}
+          </table>
+          <h3>Picks per clip</h3>
+          <table class="summary">
+            <tr><th>Clip</th><th>Best</th><th>Notes</th></tr>
+            ${ratedClips
+              .map((c) => {
+                const r = state.ratings[c.id];
+                return `<tr><td>${esc(c.title)}</td><td>${esc(r.best ? chainLabel(r.best) : "–")}</td>
+                  <td style="text-align:left;max-width:420px">${esc(r.notes)}</td></tr>`;
+              })
+              .join("")}
+          </table>`;
+      }
+
+      function render() {
+        renderSidebar();
+        $("#blind").classList.toggle("on", blind);
+        $("#retiredBtn").classList.toggle("on", showRetired);
+        $("#summaryBtn").classList.toggle("on", showSummary);
+        if (showSummary) renderSummary();
+        else renderClip();
+      }
+
+      // ---------------------------------------------------------------
+      // Waveform + transport
+
+      let waveCache = null; // { chainId, width, peaks }
+
+      function peaksFor(buffer, width) {
+        const data = buffer.getChannelData(0);
+        const per = Math.max(1, Math.floor(data.length / width));
+        const peaks = new Float32Array(width);
+        for (let x = 0; x < width; x += 1) {
+          let max = 0;
+          const start = x * per;
+          const end = Math.min(data.length, start + per);
+          for (let i = start; i < end; i += 4) {
+            const v = Math.abs(data[i]);
+            if (v > max) max = v;
+          }
+          peaks[x] = max;
+        }
+        return peaks;
+      }
+
+      // Drag on the waveform selects a loop section; a plain click seeks.
+      let dragSelection = null; // { start, end } while dragging
+
+      function attachWaveInput(canvas) {
+        const timeAt = (e) => {
+          const rect = canvas.getBoundingClientRect();
+          const fraction = Math.min(
+            1,
+            Math.max(0, (e.clientX - rect.left) / rect.width),
+          );
+          return fraction * engine.duration();
+        };
+        let downX = null;
+        canvas.onpointerdown = (e) => {
+          if (!engine.duration()) return;
+          canvas.setPointerCapture(e.pointerId);
+          downX = e.clientX;
+          dragSelection = { start: timeAt(e), end: timeAt(e) };
+        };
+        canvas.onpointermove = (e) => {
+          if (downX === null) return;
+          dragSelection.end = timeAt(e);
+          if (Math.abs(e.clientX - downX) > 4) drawFrame();
+        };
+        canvas.onpointerup = (e) => {
+          if (downX === null) return;
+          const dragged = Math.abs(e.clientX - downX) > 4;
+          const selection = dragSelection;
+          downX = null;
+          dragSelection = null;
+          if (dragged) engine.setRegion(selection.start, selection.end);
+          else engine.seek(selection.start);
+          drawFrame();
+        };
+        canvas.onpointercancel = () => {
+          downX = null;
+          dragSelection = null;
+          drawFrame();
+        };
+        canvas.ondblclick = () => {
+          engine.clearRegion();
+          drawFrame();
+        };
+      }
+
+      function drawFrame() {
+        const canvas = $("#wave");
+        const time = $("#time");
+        if (!canvas || showSummary) return;
+        const dpr = window.devicePixelRatio || 1;
+        const width = Math.floor(canvas.clientWidth * dpr);
+        const height = Math.floor(canvas.clientHeight * dpr);
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+          waveCache = null;
+        }
+        const g = canvas.getContext("2d");
+        const css = getComputedStyle(document.documentElement);
+        g.clearRect(0, 0, width, height);
+        const buffer = engine.buffer(currentChain);
+        const duration = engine.duration();
+        const progress = duration ? engine.position() / duration : 0;
+        if (buffer) {
+          if (
+            !waveCache ||
+            waveCache.chainId !== currentChain ||
+            waveCache.width !== width
+          ) {
+            waveCache = {
+              chainId: currentChain,
+              width,
+              peaks: peaksFor(buffer, width),
+            };
+          }
+          const mid = height / 2;
+          const scale = buffer.duration / duration;
+          for (let x = 0; x < width; x += 1) {
+            const peak = waveCache.peaks[x];
+            const px = x * scale;
+            g.fillStyle =
+              px / width <= progress
+                ? css.getPropertyValue("--wave-active")
+                : css.getPropertyValue("--wave");
+            const h = Math.max(1, peak * mid);
+            g.fillRect(px, mid - h, Math.max(1, scale), h * 2);
+          }
+          // -1.5 dBTP ceiling guides
+          g.fillStyle = css.getPropertyValue("--line");
+          const ceiling = mid * 10 ** (-1.5 / 20);
+          g.fillRect(0, mid - ceiling, width, 1);
+          g.fillRect(0, mid + ceiling, width, 1);
+        } else {
+          g.fillStyle = css.getPropertyValue("--muted");
+          g.font = `${12 * dpr}px sans-serif`;
+          g.fillText("loading…", 12 * dpr, height / 2);
+        }
+
+        // Loop section (or the one being dragged): dim everything outside
+        // it and mark its edges.
+        const section = dragSelection
+          ? {
+              start: Math.min(dragSelection.start, dragSelection.end),
+              end: Math.max(dragSelection.start, dragSelection.end),
+            }
+          : engine.region;
+        if (section && duration) {
+          const x0 = (section.start / duration) * width;
+          const x1 = (section.end / duration) * width;
+          g.fillStyle = css.getPropertyValue("--panel");
+          g.globalAlpha = 0.65;
+          g.fillRect(0, 0, x0, height);
+          g.fillRect(x1, 0, width - x1, height);
+          g.globalAlpha = 1;
+          g.fillStyle = css.getPropertyValue("--accent");
+          g.fillRect(x0, 0, Math.max(1, dpr), height);
+          g.fillRect(x1 - Math.max(1, dpr), 0, Math.max(1, dpr), height);
+        }
+
+        g.fillStyle = css.getPropertyValue("--text");
+        g.fillRect(progress * width, 0, Math.max(1, dpr), height);
+        if (time) {
+          time.textContent = `${fmtTime(engine.position())} / ${fmtTime(duration)}`;
+        }
+        const loopInfo = $("#loopInfo");
+        const clearLoop = $("#clearLoop");
+        if (loopInfo && clearLoop) {
+          const region = engine.region;
+          loopInfo.textContent = region
+            ? `Looping ${fmtTime(region.start, true)}–${fmtTime(region.end, true)}`
+            : "Looping whole clip";
+          clearLoop.hidden = !region;
+        }
+      }
+
+      function loop() {
+        if (engine.playing) drawFrame();
+        requestAnimationFrame(loop);
+      }
+
+      function togglePlay() {
+        if (engine.playing) engine.pause();
+        else engine.play();
+        const button = $("#play");
+        if (button) button.textContent = engine.playing ? "Pause" : "Play";
+        drawFrame();
+      }
+
+      function selectVariant(chainId) {
+        currentChain = chainId;
+        engine.select(chainId);
+        for (const row of document.querySelectorAll("tr[data-select]")) {
+          row.classList.toggle("current", row.dataset.select === chainId);
+        }
+        drawFrame();
+      }
+
+      async function selectClip(clipId) {
+        if (!clipId) return;
+        showSummary = false;
+        selectedClipId = clipId;
+        localSet("clip", clipId);
+        currentChain = "original";
+        // Stop before rendering so the new clip's button reads "Play".
+        engine.pause();
+        render();
+        const c = clip();
+        await engine.load(c.id, visibleVariants(c));
+        drawFrame();
+      }
+
+      async function toggleRetired() {
+        showRetired = !showRetired;
+        localSet("retired", showRetired ? "1" : "0");
+        render();
+        const c = clip();
+        if (c && !showSummary) await engine.addVariants(visibleVariants(c));
+      }
+
+      function toggleBlind() {
+        blind = !blind;
+        localSet("blind", blind ? "1" : "0");
+        render();
+      }
+
+      // ---------------------------------------------------------------
+      // Input
+
+      document.addEventListener("keydown", (e) => {
+        if (e.target.matches?.("input, textarea") || e.metaKey || e.ctrlKey)
+          return;
+        const c = clip();
+        if (e.key === " ") {
+          e.preventDefault();
+          togglePlay();
+          return;
+        }
+        if (e.key === "[" || e.key === "]") {
+          const index = state.clips.findIndex((x) => x.id === selectedClipId);
+          const next =
+            state.clips[index + (e.key === "]" ? 1 : -1)] ?? state.clips[index];
+          selectClip(next?.id);
+          return;
+        }
+        if (e.key === "Escape") {
+          engine.clearRegion();
+          drawFrame();
+          return;
+        }
+        if (e.key === "r") {
+          toggleBlind();
+          return;
+        }
+        if (!c || showSummary) return;
+        const variants = orderedVariants(c).filter((v) => v.status === "ready");
+        const all = orderedVariants(c);
+        const keyIndex = SHORTCUTS.indexOf(e.key.toLowerCase());
+        if (keyIndex >= 0 && all[keyIndex]?.status === "ready") {
+          selectVariant(all[keyIndex].chainId);
+          return;
+        }
+        if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+          e.preventDefault();
+          const index = variants.findIndex((v) => v.chainId === currentChain);
+          const next =
+            variants[
+              (index + (e.key === "ArrowDown" ? 1 : -1) + variants.length) %
+                variants.length
+            ];
+          if (next) selectVariant(next.chainId);
+          return;
+        }
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+          e.preventDefault();
+          engine.seek(engine.position() + (e.key === "ArrowRight" ? 3 : -3));
+          drawFrame();
+          return;
+        }
+        if (e.key === "b" && currentChain && currentChain !== "original") {
+          saveRating(c.id, { ...ratingFor(c.id), best: currentChain });
+          renderClip();
+        }
+      });
+
+      $("#blind").onclick = toggleBlind;
+      $("#retiredBtn").onclick = toggleRetired;
+      $("#summaryBtn").onclick = () => {
+        showSummary = !showSummary;
+        if (showSummary) engine.pause();
+        render();
+      };
+      $("#file").onchange = (e) => upload([...e.target.files]);
+
+      let dragDepth = 0;
+      document.addEventListener("dragenter", (e) => {
+        e.preventDefault();
+        dragDepth += 1;
+        document.body.classList.add("dragging");
+      });
+      document.addEventListener("dragleave", () => {
+        dragDepth -= 1;
+        if (dragDepth <= 0) document.body.classList.remove("dragging");
+      });
+      document.addEventListener("dragover", (e) => e.preventDefault());
+      document.addEventListener("drop", (e) => {
+        e.preventDefault();
+        dragDepth = 0;
+        document.body.classList.remove("dragging");
+        const files = [...e.dataTransfer.files].filter(
+          (f) =>
+            /^(audio|video)\//.test(f.type) ||
+            /\.(wav|mp3|m4a|aac|flac|ogg|opus|mp4|mov|webm|caf|aiff?)$/i.test(
+              f.name,
+            ),
+        );
+        if (files.length) upload(files);
+      });
+      window.addEventListener("resize", () => {
+        waveCache = null;
+        drawFrame();
+      });
+
+      // While anything is rendering, poll so new variants appear.
+      setInterval(() => {
+        if (state?.clips.some((c) => c.processing)) refresh();
+      }, 2000);
+
+      refresh().then(() => {
+        render();
+        if (selectedClipId) selectClip(selectedClipId);
+        requestAnimationFrame(loop);
+      });
+    </script>
+  </body>
+</html>

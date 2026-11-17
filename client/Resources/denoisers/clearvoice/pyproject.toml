@@ -1,0 +1,16 @@
+[project]
+name = "audio-lab-clearvoice"
+version = "0.0.0"
+description = "Audio lab helper: ClearerVoice-Studio MossFormer2_SE_48K (Alibaba, Apache-2.0)."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "clearvoice==0.1.2",
+  "torch==2.7.1",
+  "torchaudio==2.7.1",
+  "torchvision==0.22.1",
+  "numpy>=1.24.3,<2.0",
+  "soundfile==0.12.1",
+]
+
+[tool.uv]
+package = false

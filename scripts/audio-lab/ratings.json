@@ -1,0 +1,312 @@
+{
+  "real-copy-machine": {
+    "scores": {
+      "apple-hq": 3,
+      "fft": 1,
+      "apple-standard": 4,
+      "limiter": 2,
+      "rnnoise": 2,
+      "leveler": 2,
+      "koom-today": 2,
+      "apple-hq-leveler": 4,
+      "apple-hq-blend": 2,
+      "sidon": 5,
+      "dpdfnet": 4,
+      "clearvoice": 4
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:36:45.700Z"
+  },
+  "real-dishes-clatter": {
+    "scores": {
+      "apple-hq": 5,
+      "apple-standard": 4,
+      "apple-hq-leveler": 4
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T20:50:09.649Z"
+  },
+  "synth-cafeteria-48k": {
+    "scores": {
+      "leveler": 1,
+      "apple-hq-leveler": 3,
+      "apple-standard": 3,
+      "apple-hq": 3,
+      "limiter": 1,
+      "apple-hq-blend": 1,
+      "koom-today": 1,
+      "rnnoise": 1,
+      "clearvoice": 4,
+      "sidon": 5,
+      "dpdfnet": 3,
+      "fft": 1
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:40:05.985Z"
+  },
+  "synth-fan-48k": {
+    "scores": {
+      "apple-standard": 4,
+      "fft": 2,
+      "apple-hq-blend": 2,
+      "limiter": 1,
+      "leveler": 1,
+      "apple-hq-leveler": 4,
+      "apple-hq": 5,
+      "koom-today": 1,
+      "rnnoise": 2,
+      "sidon": 5,
+      "clearvoice": 5,
+      "dpdfnet": 5
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:40:31.099Z"
+  },
+  "synth-street-cafe-48k": {
+    "scores": {
+      "fft": 1,
+      "apple-standard": 1,
+      "apple-hq-leveler": 2,
+      "rnnoise": 2,
+      "koom-today": 1,
+      "limiter": 1,
+      "leveler": 1,
+      "apple-hq": 3,
+      "apple-hq-blend": 2,
+      "sidon": 5,
+      "dpdfnet": 5,
+      "clearvoice": 5
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:51:20.370Z"
+  },
+  "real-air-conditioner": {
+    "scores": {
+      "limiter": 1,
+      "fft": 1,
+      "apple-hq-blend": 1,
+      "leveler": 1,
+      "apple-hq-leveler": 3,
+      "koom-today": 1,
+      "apple-hq": 3,
+      "rnnoise": 1,
+      "apple-standard": 1,
+      "sidon": 5,
+      "dpdfnet": 4,
+      "clearvoice": 5
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:33:55.576Z"
+  },
+  "real-cafe-laptop": {
+    "scores": {
+      "clearvoice": 5,
+      "apple-hq-leveler": 3,
+      "fft": 1,
+      "koom-today": 1,
+      "rnnoise": 1,
+      "leveler": 1,
+      "apple-hq-blend": 1,
+      "limiter": 1,
+      "sidon": 4,
+      "dpdfnet": 4,
+      "apple-standard": 3,
+      "apple-hq": 3
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:34:45.114Z"
+  },
+  "real-cafeteria-headset": {
+    "scores": {
+      "clearvoice": 4,
+      "apple-hq": 4,
+      "sidon": 5,
+      "apple-standard": 3,
+      "limiter": 1,
+      "apple-hq-leveler": 4,
+      "dpdfnet": 4,
+      "rnnoise": 1,
+      "fft": 1,
+      "koom-today": 1,
+      "leveler": 1,
+      "apple-hq-blend": 1
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:35:36.286Z"
+  },
+  "real-clean-laptop": {
+    "scores": {
+      "sidon": 5,
+      "koom-today": 3,
+      "apple-standard": 5,
+      "clearvoice": 5,
+      "rnnoise": 5,
+      "limiter": 5,
+      "dpdfnet": 5,
+      "fft": 5,
+      "leveler": 5,
+      "apple-hq-leveler": 5,
+      "apple-hq-blend": 5,
+      "apple-hq": 5
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:36:23.349Z"
+  },
+  "real-door-slams": {
+    "scores": {
+      "apple-hq-blend": 1,
+      "apple-hq-leveler": 4,
+      "koom-today": 1,
+      "fft": 1,
+      "apple-standard": 2,
+      "apple-hq": 4,
+      "dpdfnet": 5,
+      "rnnoise": 4,
+      "leveler": 1,
+      "sidon": 5,
+      "limiter": 1,
+      "clearvoice": 4
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:37:49.032Z"
+  },
+  "real-hallway-laptop": {
+    "scores": {
+      "apple-hq-leveler": 3,
+      "clearvoice": 3,
+      "koom-today": 3,
+      "fft": 2,
+      "sidon": 5,
+      "limiter": 1,
+      "leveler": 2,
+      "apple-standard": 4,
+      "apple-hq-blend": 3,
+      "apple-hq": 3,
+      "rnnoise": 2,
+      "dpdfnet": 2
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:38:48.467Z"
+  },
+  "real-kitchen-laptop": {
+    "scores": {
+      "sidon": 4,
+      "apple-hq": 3,
+      "rnnoise": 1,
+      "apple-standard": 1,
+      "koom-today": 1,
+      "clearvoice": 1,
+      "fft": 1,
+      "apple-hq-blend": 1,
+      "limiter": 1,
+      "dpdfnet": 1,
+      "apple-hq-leveler": 1,
+      "leveler": 1
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:39:16.716Z"
+  },
+  "real-cafe-laptop-2": {
+    "scores": {
+      "dpdfnet": 3,
+      "apple-standard": 2,
+      "sidon": 5,
+      "apple-hq": 2,
+      "apple-hq-leveler": 2,
+      "clearvoice": 3
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:45:45.246Z"
+  },
+  "real-munching-laptop": {
+    "scores": {
+      "apple-standard": 3,
+      "clearvoice": 3,
+      "apple-hq-leveler": 3,
+      "dpdfnet": 3,
+      "sidon": 5,
+      "apple-hq": 3
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:46:19.324Z"
+  },
+  "real-open-office-webcam": {
+    "scores": {
+      "dpdfnet": 4,
+      "apple-hq-leveler": 4,
+      "apple-hq": 3,
+      "sidon": 5,
+      "apple-standard": 2,
+      "clearvoice": 3
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:46:44.565Z"
+  },
+  "real-typing-headset": {
+    "scores": {
+      "clearvoice": 3,
+      "apple-standard": 3,
+      "apple-hq-leveler": 3,
+      "apple-hq": 3,
+      "dpdfnet": 4,
+      "sidon": 5
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:47:03.514Z"
+  },
+  "real-typing-laptop": {
+    "scores": {
+      "apple-hq-leveler": 3,
+      "apple-hq": 3,
+      "clearvoice": 3,
+      "dpdfnet": 3,
+      "apple-standard": 3,
+      "sidon": 5
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:47:26.457Z"
+  },
+  "studio-clean-48k": {
+    "scores": {
+      "apple-hq": 5,
+      "dpdfnet": 5,
+      "clearvoice": 5,
+      "sidon": 1,
+      "apple-hq-leveler": 5,
+      "apple-standard": 5
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:49:02.331Z"
+  },
+  "synth-call-dynamics-48k": {
+    "scores": {
+      "apple-standard": 5,
+      "dpdfnet": 5,
+      "clearvoice": 5,
+      "sidon": 5,
+      "apple-hq-leveler": 5,
+      "apple-hq": 5
+    },
+    "best": null,
+    "notes": "",
+    "updatedAt": "2026-11-16T23:50:04.521Z"
+  }
+}

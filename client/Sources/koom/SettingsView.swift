@@ -108,6 +108,10 @@ struct SettingsView: View {
                     )
                 }
 
+                NoiseRemovalSettingsView(
+                    manager: model.noiseRemovalManager
+                )
+
                 LocalTitleModelsSettingsView(
                     manager: model.localTitleModelManager
                 )

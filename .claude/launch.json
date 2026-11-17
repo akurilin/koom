@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "audio-lab",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "audio-lab"],
+      "port": 5174
+    }
+  ]
+}

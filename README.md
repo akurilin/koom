@@ -21,8 +21,9 @@ Features koom is particularly proud of:
 - **Timestamped comments.** Viewers drop comments anchored to the exact second in the timeline. Anonymous viewers get a stable `koom-commenter` UUID cookie so they can delete their own comments without signing up; admins can reply under the same thread and moderate.
 - **Word-level transcripts.** Every recording gets a Loom-style clickable transcript alongside the video. Words highlight and auto-scroll as the video plays; clicking any word seeks the player. Transcription happens on-device via WhisperKit — the audio never leaves the machine.
 - **Private auto-titles.** The same WhisperKit pass feeds the transcript to a model running through the bundled llama.cpp runtime, which generates a short, descriptive title. No cloud API, provider install, or subscription.
+- **Clean, consistent audio.** After each recording, koom removes background noise on the Mac (Sidon by default, picked by blind listening tests in [`scripts/audio-lab`](scripts/audio-lab/README.md)) and brings narration to a steady -16 LUFS, with a true-peak limiter at -1.5 dBTP so nothing clips or blares. Settings offers Sidon, ClearerVoice, DPDFNet, Apple Voice Isolation, or no noise removal; the loudness step always runs.
 - **Local thumbnails.** Each recording gets a JPEG still generated on-device and uploaded alongside the video, so list views are lightweight instead of seeking into the MP4.
-- **Predictable recording output.** Capture is H.264 MP4 at a fixed 30 fps, with aspect-preserving 720p, 1080p (default), and 4K bounds. Optional local ffmpeg processing normalizes narration and keeps an optimized re-encode only when it saves at least 10%.
+- **Predictable recording output.** Capture is H.264 MP4 at a fixed 30 fps, with aspect-preserving 720p, 1080p (default), and 4K bounds. Optional ffmpeg size optimization keeps a re-encode only when it saves at least 10%.
 - **Crash recovery.** Force-quit, crash, or lose power mid-recording and the next app launch offers to resume, finish, or discard the in-progress session. Recordings are written as a chain of complete ~30-second segment files while capture runs, so a crash loses at most the segment being written.
 - **Inline admin rename.** Admins can click the title on the watch page to rename a recording inline — no separate admin form.
 - **Light/dark/system theme.** The watch page and admin UI respect `prefers-color-scheme` and offer a manual toggle that persists to `localStorage` with no flash of the wrong theme on first paint.
@@ -30,8 +31,6 @@ Features koom is particularly proud of:
 - **One-click hosting via a Render Blueprint.** `render.yaml` declares the web service and its Postgres database; migrations run automatically before each deploy goes live.
 - **Guided self-hosting via `npm run doctor`.** The default doctor validates operator prerequisites and external services: R2 with Range-request checks, the Render Postgres schema, the Render web service and its environment, and the desktop runtime. Contributors use `npm run doctor:dev` for the local Docker Postgres and development configuration, while `npm run doctor:all` runs the complete diagnostic sweep.
 - **Deliberately narrow scope.** Single-tenant, a short allowlist of Google admins, no teams, no server-side transcoding. The whole stack fits in your head.
-
-Some of these features have longer write-ups — see [Deeper reading](#deeper-reading) at the bottom.
 
 ## Architecture
 
@@ -54,7 +53,7 @@ Deployment targets:
 
 ### How a recording flows end to end
 
-1. The macOS client records at a fixed 30 fps and the selected resolution to `~/Movies/koom/prod/koom_YYYY-MM-DD_HH-mm-ss.mp4`. It keeps the local copy permanently and, when ffmpeg is available, applies best-effort narration normalization plus optional size optimization before upload.
+1. The macOS client records at a fixed 30 fps and the selected resolution to `~/Movies/koom/prod/koom_YYYY-MM-DD_HH-mm-ss.mp4`. It keeps the local copy permanently and, before upload, cleans the audio (noise removal with the selected model, then loudness normalization to -16 LUFS, all on the Mac) and optionally re-encodes the video to save space. Audio cleanup is best-effort: if it fails, the original file is uploaded as-is.
 2. On completion, the client asks `POST /api/admin/uploads/init` for a presigned R2 `PUT` URL and writes a `pending` row to Postgres.
 3. The client `PUT`s the file straight to R2 — bytes never flow through the web service.
 4. In parallel, on-device post-upload processing kicks off: WhisperKit produces a word-level transcript, a model hosted by the bundled llama.cpp runtime turns that transcript into a short title, and `AVAssetImageGenerator` grabs a JPEG thumbnail. Nothing leaves the machine except the derived artifacts you choose to upload back into your own stack.
@@ -72,12 +71,13 @@ The Next.js app holds all R2 and Postgres credentials. The desktop client only k
 - **A [Render](https://render.com) account** — hosts both the Next.js web app (watch pages, admin UI, backend API routes) and the Postgres database for the `recordings`, `comments`, and `commenters` tables, from the Blueprint in [`render.yaml`](render.yaml). The Blueprint uses Render's smallest _paid_ instance types: free Render Postgres is deleted 30 days after creation plus a 14-day grace period, and free web services sleep after 15 idle minutes and can't run the pre-deploy migration step. See [Render pricing](https://render.com/pricing).
 - **A GitHub repository** holding your copy of koom — Render deploys from it.
 - **Node.js 24.14.1+ and npm 11.11.0+** — pinned in `.nvmrc` and `package.json` engines. Needed for the web app and the operator scripts.
+- **`brew install ffmpeg`** — koom uses it for the audio cleanup that runs after every recording (noise removal and loudness normalization) and for optional size optimization. Without it, recordings upload with their raw audio: no noise removal, and quiet or uneven narration stays that way.
 - **Screen Recording, Camera, and Microphone permissions** on macOS — granted at first launch. Camera is only needed if you use the face overlay; microphone is only needed if you want narration + transcripts + auto-titles.
 
 ### Nice-to-haves
 
 - **A local title model** — koom downloads the recommended ~563 MB Qwen model in the background on first launch. Local title generation is optional: recording and transcription keep working while it downloads or when it is disabled. Settings lets you enable, choose, redownload, or remove any model in the curated list.
-- **`brew install ffmpeg`** — enables best-effort narration loudness normalization and optional recording optimization. Without it, koom keeps and uploads the original H.264 MP4.
+- **A local noise removal model** — koom installs the selected model in the background on first launch: Sidon by default (~1.5 GB), into its own pinned Python environment under `~/Library/Application Support/koom/denoisers/` using the `uv` bundled in the app. Recordings made before it's ready use Apple Voice Isolation, which is built into macOS. Settings lets you switch models, reinstall, delete, or turn noise removal off.
 - **Docker Desktop** — runs the local Postgres container via `npm run db:start`. It is required for local development and `npm run doctor:dev`, but not for the default self-host/operator doctor.
 - **`brew install gitleaks shellcheck`** — so the pre-commit hook can run locally with the same checks CI runs.
 
@@ -196,7 +196,7 @@ The doctor has one implementation with three focused entry points:
 | `npm run doctor:dev` | Local development readiness; does not require Render access |
 | `npm run doctor:all` | Complete diagnostic sweep across both paths                 |
 
-R2 connectivity, the Google sign-in configuration, the local-title packaging recipe, and desktop code signing are shared checks. The dev mode adds localhost configuration plus local Postgres schema and round-trip checks. The operator mode adds Render Postgres connectivity and schema checks (read-only), plus the Render web service's reachability, environment drift, and public URL.
+R2 connectivity, the Google sign-in configuration, the local-title packaging recipe, desktop code signing, and ffmpeg (needed for audio cleanup) are shared checks. The dev mode adds localhost configuration plus local Postgres schema and round-trip checks. The operator mode adds Render Postgres connectivity and schema checks (read-only), plus the Render web service's reachability, environment drift, and public URL.
 
 Each mode executes only its relevant sections and derives its exit code from those checks. A stopped local Docker stack therefore cannot fail `npm run doctor`, and missing Render credentials cannot fail `npm run doctor:dev`. All modes are safe to rerun: R2 test objects and local Postgres test rows are cleaned up.
 

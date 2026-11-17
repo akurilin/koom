@@ -529,6 +529,7 @@ async function main(): Promise<void> {
   // ── Section: Desktop client (macOS) ───────────────────────────────
   logSection("Desktop client (macOS)");
   await runDesktopClientChecks();
+  runFfmpegCheck();
 
   if (runOperatorChecks) {
     logSection("Render web service");
@@ -1111,6 +1112,42 @@ async function runLocalTitleChecks(): Promise<void> {
     "Bundled llama.cpp recipe",
     track,
     "(downloaded and checksummed by the app build; no provider install required)",
+  );
+}
+
+/**
+ * ffmpeg runs the audio cleanup after every recording (noise removal and
+ * loudness normalization) and the optional size optimization. Without it
+ * the client uploads raw audio, so it's a must-have. Searches the same
+ * places as RecordingOptimizer.findFFmpegExecutable in the client.
+ */
+function runFfmpegCheck(): void {
+  const track: Track = "both";
+  const name = "ffmpeg for audio cleanup";
+  if (process.platform !== "darwin") {
+    skip(name, track, "macOS-only check; skipped on non-macOS hosts");
+    return;
+  }
+  const directories = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/opt/local/bin",
+    ...(process.env.PATH ?? "").split(":").filter(Boolean),
+  ];
+  const found = directories
+    .map((directory) => join(directory, "ffmpeg"))
+    .find((candidate) => existsSync(candidate));
+  if (found) {
+    pass(name, track, `(${found})`);
+    return;
+  }
+  fail(
+    name,
+    track,
+    "ffmpeg was not found. Without it, recordings upload with their raw\n" +
+      "audio: no noise removal or loudness normalization. Fix with:\n" +
+      "    brew install ffmpeg",
   );
 }
 

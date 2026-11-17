@@ -228,14 +228,3 @@ final class DrawingOverlayWindowController: NSWindowController {
 extension Notification.Name {
     static let koomToggleDrawingMode = Notification.Name("com.koom.local.toggleDrawingMode")
 }
-
-private extension NSScreen {
-    static func screen(displayID: CGDirectDisplayID) -> NSScreen? {
-        screens.first { screen in
-            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
-                return false
-            }
-            return CGDirectDisplayID(number.uint32Value) == displayID
-        }
-    }
-}

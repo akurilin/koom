@@ -351,7 +351,7 @@ private final class CameraPreviewHostView: NSView {
     }
 }
 
-private extension NSScreen {
+extension NSScreen {
     static func screen(displayID: CGDirectDisplayID) -> NSScreen? {
         screens.first { screen in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {

@@ -108,6 +108,7 @@ final class AppModel: ObservableObject {
         self?.setCameraBubbleSize(size)
     }
     private let drawingOverlayWindowController = DrawingOverlayWindowController()
+    private let displayFlashController = DisplayFlashController()
     private let settingsStore: AppSettingsStore
     let localTitleModelManager: LocalTitleModelManager
     let noiseRemovalManager = NoiseRemovalManager()
@@ -325,6 +326,14 @@ final class AppModel: ObservableObject {
     func displaySelectionDidChange() {
         AppLog.info("Selected display: \(selectedDisplayID)")
         updateOverlay()
+    }
+
+    /// A pick from the display menu. Flashes the chosen screen's edge so
+    /// it's obvious which physical display that menu entry is.
+    func selectDisplay(_ displayID: CGDirectDisplayID) {
+        selectedDisplayID = displayID
+        displaySelectionDidChange()
+        displayFlashController.flash(displayID: displayID)
     }
 
     func cameraSelectionDidChange() {

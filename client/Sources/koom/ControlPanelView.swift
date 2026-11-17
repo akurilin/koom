@@ -180,8 +180,7 @@ struct ControlPanelView: View {
                     stroke: rowStroke,
                     isEnabled: canEditSources
                 ) { selection in
-                    model.selectedDisplayID = selection
-                    model.displaySelectionDidChange()
+                    model.selectDisplay(selection)
                 }
 
                 SourceMenuRow(

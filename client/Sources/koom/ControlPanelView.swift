@@ -328,9 +328,13 @@ struct ControlPanelView: View {
                     .foregroundStyle(Color.primary.opacity(0.7))
             }
 
-            LocalTitleSetupNotice(
-                manager: model.localTitleModelManager
-            )
+            // Auto-titles apply only to uploaded recordings.
+            if model.uploadRecordingsEnabled {
+                LocalTitleFailureNotice(
+                    manager: model.localTitleModelManager,
+                    openSettings: model.showSettingsTab
+                )
+            }
         }
         .frame(maxWidth: .infinity)
     }
@@ -392,84 +396,25 @@ struct ControlPanelView: View {
     }
 }
 
-private struct LocalTitleSetupNotice: View {
+private struct LocalTitleFailureNotice: View {
     @ObservedObject var manager: LocalTitleModelManager
+    let openSettings: () -> Void
 
-    private var presentation: (title: String, detail: String, showsProgress: Bool)? {
-        guard
-            manager.isEnabled,
-            let selectedModel = manager.selectedModel
-        else {
-            return nil
-        }
-
-        switch manager.state(for: selectedModel) {
-        case .notDownloaded, .downloading:
-            return (
-                "Downloading auto-title model…",
-                "You can record now. Auto-titling isn’t available until the download finishes.",
-                true
-            )
-        case .verifying:
-            return (
-                "Verifying auto-title model…",
-                "You can record now. Auto-titling isn’t available until setup finishes.",
-                true
-            )
-        case .downloaded, .starting:
-            return (
-                "Starting auto-title model…",
-                "You can record now. Auto-titling isn’t available until setup finishes.",
-                true
-            )
-        case .failed:
-            return (
-                "Auto-titling is unavailable",
-                "The local model could not be prepared. Manage it in Settings.",
-                false
-            )
-        case .ready:
-            return nil
-        }
-    }
-
-    @ViewBuilder
     var body: some View {
-        if let presentation {
-            HStack(alignment: .top, spacing: 10) {
-                if presentation.showsProgress {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 16, height: 16)
-                } else {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.orange)
-                        .frame(width: 16, height: 16)
-                }
+        if manager.isEnabled,
+            let selectedModel = manager.selectedModel,
+            case .failed = manager.state(for: selectedModel)
+        {
+            VStack(spacing: 4) {
+                Text("Auto-titles are unavailable. Uploads use a date-based title.")
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(presentation.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color.primary.opacity(0.82))
-
-                    Text(presentation.detail)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Button("Open Settings", action: openSettings)
+                    .buttonStyle(.link)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.white.opacity(0.55))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.black.opacity(0.05))
-            }
+            .font(.footnote)
         }
     }
 }

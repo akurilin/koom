@@ -694,6 +694,8 @@ private struct LocalTitleModelsSettingsView: View {
         switch manager.state(for: titleModel) {
         case .downloaded, .ready:
             return "Use"
+        case .failed:
+            return "Retry"
         default:
             return "Download"
         }

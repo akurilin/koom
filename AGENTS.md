@@ -4,6 +4,7 @@
 
 - Do not commit unless the user explicitly asks for a commit.
 - Do not push unless the user explicitly asks to push.
+- After every successful commit to `main`, run `npm run app:install` and verify that it succeeds. This updates `/Applications/koom.app`.
 - Prefer terminal-only workflows. Do not introduce an Xcode project unless the user explicitly asks for one.
 - `npm run doctor` verifies self-host/operator readiness without requiring the local Docker stack. `npm run doctor:dev` verifies local-development readiness without requiring access to the Render deployment, and `npm run doctor:all` runs both paths. These are **not** per-change checks and should not be run after routine code edits — use `npm test` and `npm run lint` / `npm run format:check` for that. Run a doctor only when validating a fresh setup, after env-var or infra changes, or when debugging end-to-end infrastructure issues.
 - **When running the koom app agentically (no human at the keyboard), always launch with `KOOM_DEVICE_CREDENTIALS_FILE=~/.config/koom/device-credentials.json`.** Without it, the app reads its sign-in from the Keychain, and because each rebuild re-signs the binary, macOS shows a password prompt that silently blocks the run until a human answers it. Signing in normally needs a human at Google's consent screen, so if that file has no token for the environment you need, mint one with `npm run device:token` (dev, local Docker Postgres) or `npm run device:token -- --env prod` (Render).

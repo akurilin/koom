@@ -71,7 +71,7 @@ final class AudioCleanupTests: XCTestCase {
     /// often do). The cleaned file must keep the click at the same moment
     /// on the video timeline and reach the loudness target, which the
     /// click's peak would block without the limiter.
-    func testCleaningKeepsSyncAndReachesTargetDespitePeaks() async throws {
+    func testCleaningSavesStagesAndKeepsAudioInSync() async throws {
         guard let ffmpegURL = RecordingOptimizer.findFFmpegExecutable() else {
             throw XCTSkip("ffmpeg is not installed.")
         }
@@ -101,16 +101,44 @@ final class AudioCleanupTests: XCTestCase {
             ]
         )
 
-        let replaced = await AudioCleanup.cleanRecording(
-            at: recordingURL,
-            noiseRemoval: .off
+        // Use a known level change to distinguish the two saved inputs.
+        let helper = directory.appendingPathComponent("test-denoiser.sh")
+        try """
+        exec "$KOOM_TEST_FFMPEG" -nostdin -v error -i "$1" -af volume=-3dB -c:a pcm_f32le "$2"
+        """.write(to: helper, atomically: true, encoding: .utf8)
+        let noiseRemoval = NoiseRemovalPlan.helper(
+            NoiseRemovalHelperRuntime(
+                displayName: "Test denoiser",
+                pythonURL: URL(fileURLWithPath: "/bin/sh"),
+                scriptURL: helper,
+                workingDirectoryURL: directory,
+                environment: ["KOOM_TEST_FFMPEG": ffmpegURL.path]
+            )
         )
+        let replaced = await AudioCleanup.cleanRecording(at: recordingURL, noiseRemoval: noiseRemoval)
         XCTAssertTrue(replaced)
+
+        let stages = directory.appendingPathComponent("recording-audio", isDirectory: true)
+        let extracted = try await AudioCleanup.measureLoudness(
+            of: stages.appendingPathComponent("01-extracted.wav"),
+            ffmpegURL: ffmpegURL
+        )
+        let denoised = try await AudioCleanup.measureLoudness(
+            of: stages.appendingPathComponent("02-denoised.wav"),
+            ffmpegURL: ffmpegURL
+        )
+        let leveled = try await AudioCleanup.measureLoudness(
+            of: stages.appendingPathComponent("03-leveled.wav"),
+            ffmpegURL: ffmpegURL
+        )
+        XCTAssertEqual(extracted.integratedLoudness - denoised.integratedLoudness, 3, accuracy: 0.15)
+        XCTAssertGreaterThan(leveled.integratedLoudness - denoised.integratedLoudness, 5)
 
         let loudness = try await AudioCleanup.measureLoudness(
             of: recordingURL,
             ffmpegURL: ffmpegURL
         )
+        XCTAssertEqual(loudness.integratedLoudness, leveled.integratedLoudness, accuracy: 0.3)
         XCTAssertEqual(
             loudness.integratedLoudness,
             AudioCleanup.targetIntegratedLoudness,
@@ -138,5 +166,18 @@ final class AudioCleanupTests: XCTestCase {
             abs(samples[$0]) < abs(samples[$1])
         }!
         XCTAssertEqual(Double(clickIndex) / 48_000, 1.2, accuracy: 0.01)
+
+        // Rerun from the extracted WAV and verify the original video stays intact.
+        let originalVideo = try Data(contentsOf: recordingURL)
+        let rerun = try await AudioCleanup.reprocessRecording(at: recordingURL, noiseRemoval: noiseRemoval)
+        let rerunStages = rerun.deletingPathExtension().path + "-audio"
+        let rerunDenoised = URL(fileURLWithPath: rerunStages).appendingPathComponent("02-denoised.wav")
+        XCTAssertEqual(try Data(contentsOf: recordingURL), originalVideo)
+        XCTAssertEqual(
+            try Data(contentsOf: rerunDenoised),
+            try Data(contentsOf: stages.appendingPathComponent("02-denoised.wav"))
+        )
+        let rerunLoudness = try await AudioCleanup.measureLoudness(of: rerun, ffmpegURL: ffmpegURL)
+        XCTAssertEqual(rerunLoudness.integratedLoudness, loudness.integratedLoudness, accuracy: 0.05)
     }
 }

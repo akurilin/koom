@@ -10,9 +10,8 @@ import Foundation
 ///    often start their audio a little after the video).
 /// 2. Remove noise with the selected model. If it fails, fall back to Apple
 ///    Voice Isolation, then to the unprocessed audio.
-/// 3. Apply one fixed gain to -16 LUFS and catch the peaks with a true-peak
-///    limiter at -1.5 dBTP, measuring once more to make up what the
-///    limiter took off.
+/// 3. Apply fixed gain toward the loudness target. Limit peaks at -1.5 dBTP
+///    and measure again to see if the limiter reduced overall loudness.
 /// 4. Encode AAC and mux it with the original video stream.
 ///
 /// The limiter is what lets the gain actually reach the target: the old
@@ -20,8 +19,9 @@ import Foundation
 /// loud transient used up all the headroom (13 of 20 test clips in the
 /// audio lab).
 enum AudioCleanup {
-    static let targetIntegratedLoudness = -16.0
+    static let targetIntegratedLoudness = -20.5
     static let targetTruePeak = -1.5
+    private static let extractedAudioFilename = "01-extracted.wav"
     /// Limiting speech takes some loudness off; make it up when the result
     /// lands more than this far below the target.
     private static let makeupThresholdLU = 0.3
@@ -40,80 +40,114 @@ enum AudioCleanup {
         noiseRemoval: NoiseRemovalPlan
     ) async -> Bool {
         let name = originalFileURL.lastPathComponent
-        guard let ffmpegURL = RecordingOptimizer.findFFmpegExecutable() else {
-            AppLog.info("Audio cleanup skipped for \(name): ffmpeg was not found.")
+        do {
+            try await processRecording(
+                videoURL: originalFileURL,
+                outputURL: originalFileURL,
+                extractedAudioURL: nil,
+                noiseRemoval: noiseRemoval
+            )
+            AppLog.info("Audio cleanup replaced \(name).")
+            return true
+        } catch {
+            AppLog.error("Audio cleanup failed for \(name): \(error.localizedDescription)")
             return false
         }
+    }
 
-        let workDirectory = originalFileURL.deletingLastPathComponent()
+    static func reprocessRecording(
+        at videoURL: URL,
+        noiseRemoval: NoiseRemovalPlan
+    ) async throws -> URL {
+        let archiveURL = stageArchiveURL(for: videoURL)
+        let extractedAudioURL = archiveURL.appendingPathComponent(extractedAudioFilename)
+        guard FileManager.default.isReadableFile(atPath: extractedAudioURL.path) else {
+            throw CleanupError("This recording has no saved microphone WAV.")
+        }
+
+        // Keep test copies below the archive so catch-up uploads skip them.
+        let outputDirectory = archiveURL.appendingPathComponent("reprocessed", isDirectory: true)
+        let filename = RecordingSessionStore.makeOutputFilename()
+        let stem = (filename as NSString).deletingPathExtension
+        let runID = UUID().uuidString.prefix(8)
+        let outputURL = outputDirectory.appendingPathComponent("\(stem)-\(runID).mp4")
+        try await processRecording(
+            videoURL: videoURL,
+            outputURL: outputURL,
+            extractedAudioURL: extractedAudioURL,
+            noiseRemoval: noiseRemoval
+        )
+        return outputURL
+    }
+
+    private static func processRecording(
+        videoURL: URL,
+        outputURL: URL,
+        extractedAudioURL: URL?,
+        noiseRemoval: NoiseRemovalPlan
+    ) async throws {
+        let name = videoURL.lastPathComponent
+        guard let ffmpegURL = RecordingOptimizer.findFFmpegExecutable() else {
+            throw CleanupError("Could not find FFmpeg.")
+        }
+
+        let runID = UUID().uuidString
+        let workDirectory = outputURL.deletingLastPathComponent()
             .appendingPathComponent(
-                ".koom-audio-\(UUID().uuidString)",
+                ".koom-audio-\(runID)",
                 isDirectory: true
             )
-        defer { try? FileManager.default.removeItem(at: workDirectory) }
-
-        do {
-            try FileManager.default.createDirectory(
-                at: workDirectory,
-                withIntermediateDirectories: true
-            )
-            let extractedURL = workDirectory.appendingPathComponent("audio.wav")
-            do {
-                try await extractAudio(
-                    from: originalFileURL,
-                    to: extractedURL,
-                    ffmpegURL: ffmpegURL
-                )
-            } catch {
-                // Expected for recordings without a microphone track.
-                AppLog.info(
-                    "Audio cleanup skipped for \(name): no audio could be extracted: \(error.localizedDescription)"
-                )
-                return false
-            }
-
-            let started = Date()
-            let (denoisedURL, appliedPlan) = await removeNoise(
-                from: extractedURL,
-                plan: noiseRemoval,
-                workDirectory: workDirectory,
-                recordingName: name
-            )
-            AppLog.info(
-                "Noise removal for \(name): requested=\(noiseRemoval.logDescription); applied=\(appliedPlan); seconds=\(String(format: "%.1f", Date().timeIntervalSince(started)))"
-            )
-
-            let leveledURL = workDirectory.appendingPathComponent("leveled.wav")
-            try await normalizeLoudness(
-                of: denoisedURL,
-                to: leveledURL,
-                ffmpegURL: ffmpegURL,
-                recordingName: name
-            )
-
-            let outputURL = workDirectory.appendingPathComponent(
-                originalFileURL.deletingPathExtension().lastPathComponent
-                    + "-clean.mp4"
-            )
-            try await mux(
-                video: originalFileURL,
-                audio: leveledURL,
-                to: outputURL,
-                ffmpegURL: ffmpegURL
-            )
-            _ = try FileManager.default.replaceItemAt(
-                originalFileURL,
-                withItemAt: outputURL
-            )
-        } catch {
-            AppLog.error(
-                "Audio cleanup failed for \(name): \(error.localizedDescription)"
-            )
-            return false
+        var completedStages: [URL] = []
+        defer {
+            // Keep finished stages even if a later step fails.
+            saveStages(completedStages, for: outputURL, in: workDirectory, runID: runID)
+            try? FileManager.default.removeItem(at: workDirectory)
         }
 
-        AppLog.info("Audio cleanup replaced \(name).")
-        return true
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
+
+        let extractedURL: URL
+        if let extractedAudioURL {
+            extractedURL = extractedAudioURL
+        } else {
+            extractedURL = workDirectory.appendingPathComponent(extractedAudioFilename)
+            try await extractAudio(from: videoURL, to: extractedURL, ffmpegURL: ffmpegURL)
+            completedStages.append(extractedURL)
+        }
+
+        let started = Date()
+        let (denoisedURL, appliedPlan) = await removeNoise(
+            from: extractedURL,
+            plan: noiseRemoval,
+            workDirectory: workDirectory,
+            recordingName: name
+        )
+        if denoisedURL != extractedURL {
+            completedStages.append(denoisedURL)
+        }
+        AppLog.info(
+            "Noise removal for \(name): requested=\(noiseRemoval.logDescription); applied=\(appliedPlan); seconds=\(String(format: "%.1f", Date().timeIntervalSince(started)))"
+        )
+
+        let leveledURL = workDirectory.appendingPathComponent("03-leveled.wav")
+        try await normalizeLoudness(
+            of: denoisedURL,
+            to: leveledURL,
+            ffmpegURL: ffmpegURL,
+            recordingName: name
+        )
+        completedStages.append(leveledURL)
+
+        let muxedURL = workDirectory.appendingPathComponent("clean.mp4")
+        try await mux(video: videoURL, audio: leveledURL, to: muxedURL, ffmpegURL: ffmpegURL)
+        if outputURL == videoURL {
+            _ = try FileManager.default.replaceItemAt(
+                videoURL,
+                withItemAt: muxedURL
+            )
+        } else {
+            try FileManager.default.moveItem(at: muxedURL, to: outputURL)
+        }
     }
 
     // MARK: - Steps
@@ -146,7 +180,7 @@ enum AudioCleanup {
         workDirectory: URL,
         recordingName: String
     ) async -> (URL, String) {
-        let outputURL = workDirectory.appendingPathComponent("denoised.wav")
+        let outputURL = workDirectory.appendingPathComponent("02-denoised.wav")
 
         if case .helper(let runtime) = plan {
             do {
@@ -339,6 +373,45 @@ enum AudioCleanup {
     }
 
     // MARK: - Helpers
+
+    private static func stageArchiveURL(for recordingURL: URL) -> URL {
+        let folderName = recordingURL.deletingPathExtension().lastPathComponent + "-audio"
+        return recordingURL.deletingLastPathComponent().appendingPathComponent(folderName, isDirectory: true)
+    }
+
+    private static func saveStages(
+        _ stages: [URL],
+        for recordingURL: URL,
+        in workDirectory: URL,
+        runID: String
+    ) {
+        guard !stages.isEmpty else { return }
+
+        let fileManager = FileManager.default
+        let archiveURL = stageArchiveURL(for: recordingURL)
+        // Keep earlier runs separate when the same file is processed again.
+        let destination =
+            fileManager.fileExists(atPath: archiveURL.path)
+            ? archiveURL.deletingLastPathComponent().appendingPathComponent(
+                "\(archiveURL.lastPathComponent)-\(runID)", isDirectory: true
+            )
+            : archiveURL
+        let stagingURL = workDirectory.appendingPathComponent("stages", isDirectory: true)
+
+        do {
+            try fileManager.createDirectory(at: stagingURL, withIntermediateDirectories: false)
+            for stage in stages {
+                try fileManager.moveItem(
+                    at: stage,
+                    to: stagingURL.appendingPathComponent(stage.lastPathComponent)
+                )
+            }
+            try fileManager.moveItem(at: stagingURL, to: destination)
+            AppLog.info("Saved audio stages at \(destination.path).")
+        } catch {
+            AppLog.error("Could not save audio stages for \(recordingURL.lastPathComponent): \(error.localizedDescription)")
+        }
+    }
 
     private struct CleanupError: LocalizedError {
         let errorDescription: String?

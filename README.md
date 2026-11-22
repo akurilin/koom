@@ -21,7 +21,7 @@ Features koom is particularly proud of:
 - **Timestamped comments.** Viewers drop comments anchored to the exact second in the timeline. Anonymous viewers get a stable `koom-commenter` UUID cookie so they can delete their own comments without signing up; admins can reply under the same thread and moderate.
 - **Word-level transcripts.** Every recording gets a Loom-style clickable transcript alongside the video. Words highlight and auto-scroll as the video plays; clicking any word seeks the player. Transcription happens on-device via WhisperKit — the audio never leaves the machine.
 - **Private auto-titles.** New recordings and catch-up uploads start with a date-based title. When narration and the local model are available, the bundled llama.cpp runtime uses the transcript to generate a short, descriptive title.
-- **Clean, consistent audio.** After each recording, koom removes background noise on the Mac (Sidon by default, picked by blind listening tests in [`scripts/audio-lab`](scripts/audio-lab/README.md)) and brings narration to a steady -16 LUFS, with a true-peak limiter at -1.5 dBTP so nothing clips or blares. Settings offers Sidon, ClearerVoice, DPDFNet, Apple Voice Isolation, or no noise removal; the loudness step always runs.
+- **Clean, consistent audio.** After each recording, koom removes background noise on the Mac (Sidon by default, picked by blind listening tests in [`scripts/audio-lab`](scripts/audio-lab/README.md)) and targets -20.5 LUFS for narration, with a true-peak limiter at -1.5 dBTP. Settings offers Sidon, ClearerVoice, DPDFNet, Apple Voice Isolation, or no noise removal; the loudness step always runs.
 - **Local thumbnails.** Each recording gets a JPEG still generated on-device and uploaded alongside the video, so list views are lightweight instead of seeking into the MP4.
 - **Predictable recording output.** Capture is H.264 MP4 at a fixed 30 fps, with aspect-preserving 720p, 1080p (default), and 4K bounds. Optional ffmpeg size optimization keeps a re-encode only when it saves at least 10%.
 - **Crash recovery.** Force-quit, crash, or lose power mid-recording and the next app launch offers to resume, finish, or discard the in-progress session. Recordings are written as a chain of complete ~30-second segment files while capture runs, so a crash loses at most the segment being written.
@@ -53,7 +53,7 @@ Deployment targets:
 
 ### How a recording flows end to end
 
-1. The macOS client records at a fixed 30 fps and the selected resolution to `~/Movies/koom/prod/koom_YYYY-MM-DD_HH-mm-ss.mp4`. It keeps the local copy permanently and, before upload, cleans the audio (noise removal with the selected model, then loudness normalization to -16 LUFS, all on the Mac) and optionally re-encodes the video to save space. Audio cleanup is best-effort: if it fails, the original file is uploaded as-is.
+1. The macOS client records at a fixed 30 fps and the selected resolution to `~/Movies/koom/prod/koom_YYYY-MM-DD_HH-mm-ss.mp4`. It keeps the local copy permanently and, before upload, removes noise and normalizes loudness on the Mac. It can also re-encode the video to save space. If audio cleanup fails, Koom uploads the original file.
 2. On completion, the client asks `POST /api/admin/uploads/init` for a presigned R2 `PUT` URL and writes a `pending` row to Postgres.
 3. The client `PUT`s the file straight to R2 — bytes never flow through the web service.
 4. In parallel, on-device post-upload processing kicks off: WhisperKit produces a word-level transcript, a model hosted by the bundled llama.cpp runtime turns that transcript into a short title, and `AVAssetImageGenerator` grabs a JPEG thumbnail. Nothing leaves the machine except the derived artifacts you choose to upload back into your own stack.
@@ -220,3 +220,7 @@ On Render, `db:migrate` runs as koom-web's pre-deploy command, so a merged migra
 A pre-commit hook (husky + lint-staged) runs ESLint, Prettier, `swift format`, ShellCheck, and gitleaks against staged changes before any commit lands. The same checks run in GitHub Actions on push and pull requests, plus a full-history gitleaks scan.
 
 The desktop app writes persistent logs to `~/Library/Logs/koom/koom.log` (with one rotated `koom.previous.log`). From the app itself, **Troubleshooting → Reveal Logs in Finder** jumps straight to that directory.
+
+Koom keeps the completed audio stages in a `<recording-name>-audio` folder next to each new MP4. `01-extracted.wav` contains the microphone audio before noise removal. `02-denoised.wav` is available when noise removal succeeds. `03-leveled.wav` contains the audio after loudness processing, before AAC encoding. The WAVs stay on the Mac and use about 12 MB per minute each.
+
+To test the current audio settings on a saved take, choose **Recordings → Reprocess Audio…** and select the original MP4. Koom starts from its saved microphone WAV and opens a new MP4. The new MP4 and its audio stages stay in the archive's `reprocessed` folder on the Mac.

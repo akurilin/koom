@@ -1,6 +1,7 @@
 @preconcurrency import AVFoundation
 @preconcurrency import AppKit
 import CoreGraphics
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -169,6 +170,16 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             Task { @MainActor in
                 self.catchUpRecordings()
+            }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .koomReprocessAudioRequested,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.reprocessAudio()
             }
         }
 
@@ -374,6 +385,35 @@ final class AppModel: ObservableObject {
         guard let url = lastRecordingURL, FileManager.default.fileExists(atPath: url.path) else { return }
         AppLog.info("Revealing recording at \(url.path)")
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    private func reprocessAudio() async {
+        guard recordingState == .idle, !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+
+        let picker = NSOpenPanel()
+        picker.message = "Choose a Koom recording with a saved microphone WAV."
+        picker.prompt = "Reprocess"
+        picker.allowedContentTypes = [.mpeg4Movie]
+        picker.directoryURL =
+            lastRecordingURL?.deletingLastPathComponent()
+            ?? RecordingSessionStore.recordingsDirectoryURL(for: KoomConfig.activeEnvironment)
+        guard await picker.begin() == .OK, let videoURL = picker.url else { return }
+
+        clearFinishedTransferStatus()
+        statusMessage = "Reprocessing audio for \(videoURL.lastPathComponent)…"
+        do {
+            let outputURL = try await AudioCleanup.reprocessRecording(
+                at: videoURL,
+                noiseRemoval: noiseRemovalManager.planForRecording()
+            )
+            statusMessage = "Saved reprocessed audio to \(outputURL.lastPathComponent)."
+            NSWorkspace.shared.open(outputURL)
+        } catch {
+            statusMessage = "Could not reprocess audio. \(error.localizedDescription)"
+            NSApp.presentError(error)
+        }
     }
 
     func toggleDrawingMode() {

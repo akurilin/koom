@@ -12,6 +12,9 @@ extension Notification.Name {
     static let koomCatchUpRequested = Notification.Name(
         "com.koom.local.catchUpRequested"
     )
+    static let koomReprocessAudioRequested = Notification.Name(
+        "com.koom.local.reprocessAudioRequested"
+    )
 
     /// Posted by the rewired Cmd+, / "koom → Settings…" menu item.
     /// `AppModel` observes this and switches the main panel to the
@@ -45,11 +48,6 @@ struct KoomApp: App {
                 .keyboardShortcut(",", modifiers: .command)
             }
 
-            // "Recordings" menu lives next to the default menus and
-            // is where recording-related commands live. For now
-            // there is just one, but this is where future items
-            // like "Reveal Recordings Folder" or "Clear Local
-            // Recordings" would go.
             CommandMenu("Recordings") {
                 Button("Sync Unsent Recordings…") {
                     NotificationCenter.default.post(
@@ -58,6 +56,13 @@ struct KoomApp: App {
                     )
                 }
                 .keyboardShortcut("u", modifiers: [.command, .shift])
+
+                Button("Reprocess Audio…") {
+                    NotificationCenter.default.post(
+                        name: .koomReprocessAudioRequested,
+                        object: nil
+                    )
+                }
             }
 
             CommandMenu("Troubleshooting") {

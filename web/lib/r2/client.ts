@@ -140,11 +140,23 @@ export async function generatePresignedPutUrl(
 export async function headRecordingObject(
   recordingId: string,
 ): Promise<{ size: number; contentType: string } | null> {
+  return headObject(recordingObjectKey(recordingId));
+}
+
+export async function headRecordingThumbnail(
+  recordingId: string,
+): Promise<{ size: number; contentType: string } | null> {
+  return headObject(recordingThumbnailObjectKey(recordingId));
+}
+
+async function headObject(
+  key: string,
+): Promise<{ size: number; contentType: string } | null> {
   try {
     const result = await getR2Client().send(
       new HeadObjectCommand({
         Bucket: requireBucket(),
-        Key: recordingObjectKey(recordingId),
+        Key: key,
       }),
     );
     return {

@@ -10,10 +10,11 @@
  * triggers the sibling not-found.tsx.
  */
 
+import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { cookies } from "next/headers";
-import type { ReactElement } from "react";
+import { cache, type ReactElement } from "react";
 
 import { isAdminSessionValid } from "@/lib/auth/session";
 import {
@@ -22,7 +23,10 @@ import {
 } from "@/lib/db/comments";
 import { getCompletedRecordingById } from "@/lib/db/queries";
 import {
+  headRecordingThumbnail,
   recordingPublicUrl,
+  recordingShareUrl,
+  recordingThumbnailPublicUrl,
   recordingTranscriptPublicUrl,
 } from "@/lib/r2/client";
 import { buildMePayload, serializeComment } from "@/lib/types";
@@ -37,12 +41,45 @@ interface PageProps {
 // Next.js caching stale metadata or stale share URLs.
 export const dynamic = "force-dynamic";
 
+const getWatchRecording = cache(getCompletedRecordingById);
+
+export async function generateMetadata({
+  params,
+}: PageProps): Promise<Metadata> {
+  const { id } = await params;
+  const recording = await getWatchRecording(id);
+  if (!recording) return {};
+
+  const title = recording.title ?? recording.originalFilename;
+  const description = "Watch this screen recording on koom.";
+
+  // Keep the site icon as the fallback when no thumbnail is available.
+  const thumbnail = await headRecordingThumbnail(id).catch((err: unknown) => {
+    console.warn("[watch] Could not check recording thumbnail:", err);
+    return null;
+  });
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "website",
+      siteName: "koom",
+      url: recordingShareUrl(id),
+      images: thumbnail ? [recordingThumbnailPublicUrl(id)] : [],
+    },
+    twitter: { card: thumbnail ? "summary_large_image" : "summary" },
+  };
+}
+
 export default async function WatchPage(
   props: PageProps,
 ): Promise<ReactElement> {
   const { id } = await props.params;
 
-  const recording = await getCompletedRecordingById(id);
+  const recording = await getWatchRecording(id);
   if (!recording) {
     notFound();
   }

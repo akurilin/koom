@@ -15,7 +15,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -109,6 +109,23 @@ export async function cleanupFixtures(): Promise<void> {
   if (existsSync(FIXTURES_DIR)) {
     await rm(FIXTURES_DIR, { recursive: true, force: true });
   }
+}
+
+export async function generateThumbnailFixture(
+  fixture: FixtureSpec,
+): Promise<Buffer> {
+  const output = `${fixture.localPath}.jpg`;
+  await runFFmpeg([
+    "-y",
+    "-i",
+    fixture.localPath,
+    "-frames:v",
+    "1",
+    "-update",
+    "1",
+    output,
+  ]);
+  return readFile(output);
 }
 
 async function ensureFFmpeg(): Promise<void> {

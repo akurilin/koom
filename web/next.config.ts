@@ -20,6 +20,8 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns: r2RemotePatterns,
   },
+  // Link previews can use browser user agents and only read the initial head.
+  htmlLimitedBots: /.*/,
   // The admin UI at / and /login gates itself on a session cookie and
   // must never be served from the browser's back/forward cache. A
   // cached 307 "redirect to /login" from the pre-login visit gets in

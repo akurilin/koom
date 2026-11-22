@@ -5,17 +5,15 @@ import UniformTypeIdentifiers
 
 /// Best-effort local thumbnail generator for finalized recordings.
 ///
-/// The output is a small JPEG sidecar that the web app can display in
-/// the recordings grid without poking the MP4 at all. Any failure is a
-/// quiet no-op: upload continues and the web UI falls back to the
-/// video's first-frame preview.
+/// The JPEG serves the recordings grid and chat previews.
 enum ThumbnailGenerator {
     private static let captureTimes: [CMTime] = [
         CMTime(seconds: 0.1, preferredTimescale: 600),
         .zero,
     ]
-    private static let maximumSize = CGSize(width: 640, height: 360)
-    private static let compressionQuality = 0.8
+    private static let previewSize = CGSize(width: 1200, height: 675)
+    private static let whatsappImageByteLimit = 600_000
+    private static let compressionQualities = [0.8, 0.6, 0.4]
 
     static func generateJPEGData(from fileURL: URL) async -> Data? {
         let filename = fileURL.lastPathComponent
@@ -23,7 +21,9 @@ enum ThumbnailGenerator {
         for time in captureTimes {
             do {
                 let image = try await generateCGImage(from: fileURL, at: time)
-                guard let jpegData = encodeJPEG(image: image) else {
+                guard let preview = makePreview(from: image),
+                    let jpegData = encodePreview(preview)
+                else {
                     AppLog.error("Thumbnail: failed to encode JPEG for \(filename).")
                     return nil
                 }
@@ -49,7 +49,7 @@ enum ThumbnailGenerator {
     ) async throws -> CGImage {
         let generator = AVAssetImageGenerator(asset: AVURLAsset(url: fileURL))
         generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = maximumSize
+        generator.maximumSize = previewSize
 
         return try await withCheckedThrowingContinuation { continuation in
             generator.generateCGImagesAsynchronously(
@@ -81,7 +81,57 @@ enum ThumbnailGenerator {
         }
     }
 
-    private static func encodeJPEG(image: CGImage) -> Data? {
+    private static func makePreview(from image: CGImage) -> CGImage? {
+        let width = CGFloat(image.width)
+        let height = CGFloat(image.height)
+        if width == previewSize.width, height == previewSize.height {
+            return image
+        }
+
+        guard
+            let context = CGContext(
+                data: nil,
+                width: Int(previewSize.width),
+                height: Int(previewSize.height),
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+            )
+        else {
+            return nil
+        }
+
+        // Fit the full frame so narrow and wide recordings meet the preview size.
+        let scale = min(previewSize.width / width, previewSize.height / height)
+        let fittedSize = CGSize(width: width * scale, height: height * scale)
+        context.setFillColor(CGColor(gray: 0, alpha: 1))
+        context.fill(CGRect(origin: .zero, size: previewSize))
+        context.interpolationQuality = .high
+        context.draw(
+            image,
+            in: CGRect(
+                x: (previewSize.width - fittedSize.width) / 2,
+                y: (previewSize.height - fittedSize.height) / 2,
+                width: fittedSize.width,
+                height: fittedSize.height
+            ))
+        return context.makeImage()
+    }
+
+    private static func encodePreview(_ image: CGImage) -> Data? {
+        // Lower JPEG quality only if the preview exceeds WhatsApp's size limit.
+        for quality in compressionQualities {
+            if let data = encodeJPEG(image: image, quality: quality),
+                data.count < whatsappImageByteLimit
+            {
+                return data
+            }
+        }
+        return nil
+    }
+
+    private static func encodeJPEG(image: CGImage, quality: Double) -> Data? {
         let data = NSMutableData()
         guard
             let destination = CGImageDestinationCreateWithData(
@@ -96,7 +146,7 @@ enum ThumbnailGenerator {
 
         let properties =
             [
-                kCGImageDestinationLossyCompressionQuality: compressionQuality
+                kCGImageDestinationLossyCompressionQuality: quality
             ] as CFDictionary
         CGImageDestinationAddImage(destination, image, properties)
         guard CGImageDestinationFinalize(destination) else {

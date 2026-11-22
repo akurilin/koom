@@ -3,6 +3,30 @@ import Foundation
 
 final class RecordingSessionStore: @unchecked Sendable {
     nonisolated static let sessionManifestFilename = "session.json"
+    private static let recordingFilenamePrefix = "koom_"
+    private static let recordingFilenameDateFormat = "yyyy-MM-dd_HH-mm-ss"
+
+    static func makeOutputFilename() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = recordingFilenameDateFormat
+        return "\(recordingFilenamePrefix)\(formatter.string(from: Date())).mp4"
+    }
+
+    static func fallbackTitle(for fileURL: URL) -> String {
+        // Audio cleanup can replace the file. Use the timestamp in its name.
+        let stem = fileURL.deletingPathExtension().lastPathComponent
+        let formatter = DateFormatter()
+        formatter.dateFormat = recordingFilenameDateFormat
+        let recordedAt =
+            stem.hasPrefix(recordingFilenamePrefix)
+            ? formatter.date(from: String(stem.dropFirst(recordingFilenamePrefix.count)))
+            : nil
+        guard
+            let date = recordedAt
+                ?? (try? fileURL.resourceValues(forKeys: [.creationDateKey]))?.creationDate
+        else { return "Screen recording" }
+        return "Recording on \(date.formatted(date: .abbreviated, time: .shortened))"
+    }
 
     struct SessionHandle: Identifiable {
         var session: RecordingSession

@@ -20,7 +20,7 @@ Features koom is particularly proud of:
 - **Share-link watch pages.** Anyone with the URL can watch at `/r/[id]` in the browser, no account needed. `?t=` deep-linking lands the viewer on an exact moment.
 - **Timestamped comments.** Viewers drop comments anchored to the exact second in the timeline. Anonymous viewers get a stable `koom-commenter` UUID cookie so they can delete their own comments without signing up; admins can reply under the same thread and moderate.
 - **Word-level transcripts.** Every recording gets a Loom-style clickable transcript alongside the video. Words highlight and auto-scroll as the video plays; clicking any word seeks the player. Transcription happens on-device via WhisperKit — the audio never leaves the machine.
-- **Private auto-titles.** The same WhisperKit pass feeds the transcript to a model running through the bundled llama.cpp runtime, which generates a short, descriptive title. No cloud API, provider install, or subscription.
+- **Private auto-titles.** New recordings and catch-up uploads start with a date-based title. When narration and the local model are available, the bundled llama.cpp runtime uses the transcript to generate a short, descriptive title.
 - **Clean, consistent audio.** After each recording, koom removes background noise on the Mac (Sidon by default, picked by blind listening tests in [`scripts/audio-lab`](scripts/audio-lab/README.md)) and brings narration to a steady -16 LUFS, with a true-peak limiter at -1.5 dBTP so nothing clips or blares. Settings offers Sidon, ClearerVoice, DPDFNet, Apple Voice Isolation, or no noise removal; the loudness step always runs.
 - **Local thumbnails.** Each recording gets a JPEG still generated on-device and uploaded alongside the video, so list views are lightweight instead of seeking into the MP4.
 - **Predictable recording output.** Capture is H.264 MP4 at a fixed 30 fps, with aspect-preserving 720p, 1080p (default), and 4K bounds. Optional ffmpeg size optimization keeps a re-encode only when it saves at least 10%.
@@ -76,7 +76,7 @@ The Next.js app holds all R2 and Postgres credentials. The desktop client only k
 
 ### Nice-to-haves
 
-- **A local title model** — koom downloads the recommended ~563 MB Qwen model in the background on first launch. Local title generation is optional: recording and transcription keep working while it downloads or when it is disabled. Settings lets you enable, choose, redownload, or remove any model in the curated list.
+- **A local title model** — koom downloads the recommended ~563 MB Qwen model in the background on first launch. Uploads use the date-based title while the model downloads or when local title generation is disabled. Settings lets you enable, choose, redownload, or remove any model in the curated list.
 - **A local noise removal model** — koom installs the selected model in the background on first launch: Sidon by default (~1.5 GB), into its own pinned Python environment under `~/Library/Application Support/koom/denoisers/` using the `uv` bundled in the app. Recordings made before it's ready use Apple Voice Isolation, which is built into macOS. Settings lets you switch models, reinstall, delete, or turn noise removal off.
 - **Docker Desktop** — runs the local Postgres container via `npm run db:start`. It is required for local development and `npm run doctor:dev`, but not for the default self-host/operator doctor.
 - **`brew install gitleaks shellcheck`** — so the pre-commit hook can run locally with the same checks CI runs.

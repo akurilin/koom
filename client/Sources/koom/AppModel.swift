@@ -765,7 +765,7 @@ final class AppModel: ObservableObject {
                 }
 
                 workingSession = try sessionStore.createSession(
-                    finalFilename: makeOutputFilename(),
+                    finalFilename: RecordingSessionStore.makeOutputFilename(),
                     environment: KoomConfig.activeEnvironment,
                     display: displaySnapshot,
                     captureConfiguration: captureConfiguration,
@@ -1370,11 +1370,5 @@ final class AppModel: ObservableObject {
         @unknown default:
             return false
         }
-    }
-
-    private func makeOutputFilename() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        return "koom_\(formatter.string(from: Date())).mp4"
     }
 }

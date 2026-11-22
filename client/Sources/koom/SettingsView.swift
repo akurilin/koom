@@ -595,7 +595,7 @@ private struct LocalTitleModelsSettingsView: View {
                 }
 
                 Text(
-                    "The selected model downloads from Hugging Face once, then title generation stays on this Mac and works offline. If a recording finishes before the model is ready, only that recording's title is skipped."
+                    "The model downloads once and runs on this Mac. Uploads use the recording date when the model is unavailable."
                 )
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)

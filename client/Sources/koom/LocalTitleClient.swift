@@ -3,6 +3,7 @@ import Foundation
 struct LocalTitleClient: Sendable {
     enum ClientError: LocalizedError {
         case badStatus(code: Int, body: String)
+        case contextExceeded
         case invalidResponse
         case emptyCompletion
         case network(String)
@@ -12,6 +13,8 @@ struct LocalTitleClient: Sendable {
             case .badStatus(let code, let body):
                 return
                     "Local title server returned HTTP \(code).\(body.isEmpty ? "" : " \(body)")"
+            case .contextExceeded:
+                return "The transcript exceeds the local title model's input limit."
             case .invalidResponse:
                 return "Local title server returned an unexpected response."
             case .emptyCompletion:
@@ -67,15 +70,44 @@ struct LocalTitleClient: Sendable {
         let choices: [Choice]
     }
 
+    private struct ErrorResponse: Decodable {
+        struct Detail: Decodable {
+            let type: String
+        }
+
+        let error: Detail
+    }
+
+    private static let transcriptByteLimit = 6_000
+    private static let retryTranscriptByteLimit = 1_200
+    private static let contextErrorType = "exceed_context_size_error"
+
     let baseURL: URL
     let apiKey: String
     let modelID: String
 
     func generateTitle(transcript: String) async throws -> String {
-        // The title model uses a deliberately small 2K context. English
-        // transcripts are capped before encoding so long recordings
-        // still leave room for the prompt and completion.
-        let titleInput = String(transcript.prefix(6_000))
+        let titleInput = String(
+            decoding: transcript.utf8.prefix(Self.transcriptByteLimit),
+            as: UTF8.self
+        )
+        do {
+            return try await requestTitle(for: titleInput)
+        } catch ClientError.contextExceeded {
+            // A byte limit only estimates the token count. Leave room for
+            // the prompt and completion when the server rejects the excerpt.
+            let shorterInput = String(
+                decoding: titleInput.utf8.prefix(Self.retryTranscriptByteLimit),
+                as: UTF8.self
+            )
+            guard shorterInput != titleInput else {
+                throw ClientError.contextExceeded
+            }
+            return try await requestTitle(for: shorterInput)
+        }
+    }
+
+    private func requestTitle(for titleInput: String) async throws -> String {
         let prompt = """
             Generate an English title for a screen recording transcript.
             Return only the title: 4–10 words, sentence case, no quotes, no "Title:" prefix, and no trailing period.
@@ -118,6 +150,10 @@ struct LocalTitleClient: Sendable {
             throw ClientError.invalidResponse
         }
         guard (200..<300).contains(http.statusCode) else {
+            let error = try? JSONDecoder().decode(ErrorResponse.self, from: data)
+            if error?.error.type == Self.contextErrorType {
+                throw ClientError.contextExceeded
+            }
             throw ClientError.badStatus(
                 code: http.statusCode,
                 body: String(data: data, encoding: .utf8) ?? ""

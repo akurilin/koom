@@ -12,10 +12,7 @@ struct AutotitleResult: Sendable {
 ///
 ///     mp4 → AudioExtractor → Transcriber → bundled llama.cpp → title
 ///
-/// Transcription is independent from local title generation. If the
-/// selected title model is not ready when transcription finishes, the
-/// recording keeps its transcript and simply skips its generated title.
-/// There is deliberately no pending-title queue or later retry state.
+/// Transcription still completes when the upload needs its fallback title.
 struct Autotitler: Sendable {
     let configuration: AutotitleConfiguration
     let transcriber: Transcriber
@@ -104,7 +101,7 @@ struct Autotitler: Sendable {
             await localTitleModelManager.state(for: model) == .ready
         else {
             AppLog.info(
-                "Autotitle: local title model is not ready for \(filename); preserving the transcript and skipping this recording's title."
+                "Autotitle: local title model unavailable for \(filename); keeping the fallback title."
             )
             return AutotitleResult(title: nil, transcript: transcript)
         }
@@ -122,7 +119,7 @@ struct Autotitler: Sendable {
                     .generateTitleIfReady(for: plainText)
             else {
                 AppLog.info(
-                    "Autotitle: the selected model stopped being ready; skipping the title for \(filename)."
+                    "Autotitle: local title model stopped for \(filename); keeping the fallback title."
                 )
                 return AutotitleResult(title: nil, transcript: transcript)
             }

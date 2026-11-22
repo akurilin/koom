@@ -113,12 +113,8 @@ private actor PostProcessingStatusRelay {
 ///     and uploads each one sequentially. Does NOT open browser
 ///     tabs per file (that would spam N tabs for a batch of N).
 ///
-/// Both entry points share a private `performUpload(at:)` method
-/// that handles the init → streaming PUT → complete sequence and emits
-/// `UploadState`
-/// progress updates along the way. The shared method returns a
-/// typed `Result` so each entry point can decide how to handle
-/// success/failure at the batch level.
+/// Both entry points upload the file and save its title, transcript,
+/// and thumbnail through the same path.
 ///
 /// Error handling contract: the local recording file is **never**
 /// deleted or mutated by this class. Any failure path leaves the
@@ -149,15 +145,34 @@ final class Uploader {
         at fileURL: URL,
         environment: KoomEnvironment = KoomConfig.activeEnvironment
     ) async -> Bool {
+        let result = await uploadWithPostProcessing(
+            at: fileURL,
+            environment: environment
+        )
+
+        switch result {
+        case .success(let outcome):
+            openAndPasteShareURL(outcome.shareURL)
+            emit(
+                .completed(
+                    shareURL: outcome.shareURL,
+                    summary: outcome.summary
+                )
+            )
+            return true
+        case .failure(let failure):
+            emit(.failed(message: failure.message))
+            return false
+        }
+    }
+
+    private func uploadWithPostProcessing(
+        at fileURL: URL,
+        environment: KoomEnvironment
+    ) async -> Result<UploadOutcome, UploadFailure> {
         emit(.preparing)
 
-        // Kick off the upload, local auto-title pipeline, and local
-        // thumbnail extraction in parallel. Whisper transcription is
-        // the long pole for short recordings, so running it alongside
-        // the upload gives us a chance at landing the generated title
-        // before the user sees the share URL. The thumbnail path is
-        // also best-effort and operates on the finalized MP4 in
-        // ~/Movies/koom/, which this uploader never deletes.
+        // Process the recording during upload to reduce the time before sharing.
         let autotitler = self.autotitler
         let postProcessingRelay = PostProcessingStatusRelay(
             onStateChange: onStateChange
@@ -208,20 +223,11 @@ final class Uploader {
                     environment: environment
                 )
             }
-            openAndPasteShareURL(outcome.shareURL)
-            emit(
-                .completed(
-                    shareURL: outcome.shareURL,
-                    summary: outcome.summary
-                )
-            )
-            return true
-        case .failure(let failure):
+        case .failure:
             _ = await processTask.value
             _ = await thumbnailData
-            emit(.failed(message: failure.message))
-            return false
         }
+        return result
     }
 
     private static func runProcess(
@@ -397,24 +403,14 @@ final class Uploader {
                 "Catch-up \(environment.displayName) \(humanIndex)/\(missingURLs.count): \(fileURL.lastPathComponent)"
             )
 
-            emit(.preparing)
-            let result = await performUpload(
+            let result = await uploadWithPostProcessing(
                 at: fileURL,
                 environment: environment
             )
 
             switch result {
-            case .success(let outcome):
+            case .success:
                 successCount += 1
-                emit(.postProcessing(stage: .generatingThumbnail))
-                if let thumbnailData = await Self.runThumbnail(fileURL: fileURL) {
-                    emit(.postProcessing(stage: .uploadingThumbnail))
-                    await uploadThumbnail(
-                        recordingId: outcome.recordingId,
-                        jpegData: thumbnailData,
-                        environment: environment
-                    )
-                }
                 // Drop the per-file progress UI between files so it
                 // re-animates from 0% on the next one.
                 emit(.idle)
@@ -505,7 +501,7 @@ final class Uploader {
                 contentType: "video/mp4",
                 sizeBytes: sizeBytes,
                 durationSeconds: durationSeconds,
-                title: nil
+                title: RecordingSessionStore.fallbackTitle(for: fileURL)
             )
         } catch {
             return .failure(UploadFailure(message: error.localizedDescription))

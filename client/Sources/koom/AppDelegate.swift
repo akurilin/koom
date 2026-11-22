@@ -53,7 +53,7 @@ enum ControlPanelLayout {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private enum TerminationDecision {
         case stopAndSave
         case discard
@@ -90,6 +90,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         model.stopBackgroundServices()
         AppLog.info("koom terminating.")
+    }
+
+    func applicationDidHide(_ notification: Notification) {
+        model.updateDisplayOutline()
+    }
+
+    func applicationDidUnhide(_ notification: Notification) {
+        model.updateDisplayOutline()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -150,6 +158,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppLog.info("Focusing control panel.")
         controlPanelWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        model.updateDisplayOutline()
     }
 
     private func makeControlPanelWindow() -> NSWindow {
@@ -221,6 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        window.delegate = self
         window.isReleasedWhenClosed = false
         return window
     }

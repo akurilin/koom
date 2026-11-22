@@ -75,6 +75,7 @@ final class AppModel: ObservableObject {
                 controlWindow?.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
             }
+            updateDisplayOutline()
         }
     }
     @Published var isBusy = false
@@ -88,7 +89,9 @@ final class AppModel: ObservableObject {
     @Published var catchUpState: CatchUpState = .idle
     @Published var isCatchingUp: Bool = false
     @Published var isDrawingModeActive = false
-    @Published var selectedTab: MainPanelTab = .record
+    @Published var selectedTab: MainPanelTab = .record {
+        didSet { updateDisplayOutline() }
+    }
     @Published var recoverableSessions: [RecordingSessionStore.SessionHandle] = []
     @Published private(set) var recordingElapsedSeconds = 0
 
@@ -108,7 +111,7 @@ final class AppModel: ObservableObject {
         self?.setCameraBubbleSize(size)
     }
     private let drawingOverlayWindowController = DrawingOverlayWindowController()
-    private let displayFlashController = DisplayFlashController()
+    private let displayOutlineController = DisplayOutlineController()
     private let settingsStore: AppSettingsStore
     let localTitleModelManager: LocalTitleModelManager
     let noiseRemovalManager = NoiseRemovalManager()
@@ -308,6 +311,7 @@ final class AppModel: ObservableObject {
 
     func refreshHardware() {
         refreshDisplays()
+        updateDisplayOutline()
         refreshCaptureDevices()
         updateOverlay()
         AppLog.info("Hardware refreshed. Displays: \(displays.count), cameras: \(cameras.count), microphones: \(microphones.count)")
@@ -324,19 +328,28 @@ final class AppModel: ObservableObject {
         window.backgroundColor = .clear
         window.hasShadow = true
         applyControlWindowCapturePolicy(window)
+        updateDisplayOutline()
+    }
+
+    func updateDisplayOutline() {
+        let showsRecordTab =
+            !NSApp.isHidden
+            && controlWindow?.occlusionState.contains(.visible) == true
+            && selectedTab == .record
+            && recordingState == .idle
+            && !isControlWindowCaptureSuppressed
+        displayOutlineController.update(displayID: showsRecordTab ? selectedDisplayID : nil)
     }
 
     func displaySelectionDidChange() {
         AppLog.info("Selected display: \(selectedDisplayID)")
+        updateDisplayOutline()
         updateOverlay()
     }
 
-    /// A pick from the display menu. Flashes the chosen screen's edge so
-    /// it's obvious which physical display that menu entry is.
     func selectDisplay(_ displayID: CGDirectDisplayID) {
         selectedDisplayID = displayID
         displaySelectionDidChange()
-        displayFlashController.flash(displayID: displayID)
     }
 
     func cameraSelectionDidChange() {
@@ -1300,6 +1313,8 @@ final class AppModel: ObservableObject {
 
     private func setControlWindowCaptureSuppressed(_ suppressed: Bool) {
         isControlWindowCaptureSuppressed = suppressed
+        // Remove the outline before ScreenCaptureKit starts.
+        updateDisplayOutline()
         if let controlWindow {
             applyControlWindowCapturePolicy(controlWindow)
         }

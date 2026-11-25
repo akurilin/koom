@@ -29,7 +29,7 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>koom uses your microphone to capture your narration during screen recordings.</string>
+    <string>Koom uses your microphone to show its level before recording and capture narration during recording.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

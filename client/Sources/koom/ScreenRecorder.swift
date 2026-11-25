@@ -54,6 +54,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
     private let onRuntimeIssue: RuntimeIssueHandler?
     private let onSegmentRolloverNeeded: SegmentRolloverHandler?
     private let sampleQueue = DispatchQueue(label: "koom.recording.samples")
+    let microphoneSpectrum: MicrophoneSpectrum?
 
     private var stream: SCStream?
     private var writer: AVAssetWriter?
@@ -82,6 +83,7 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     init(
         configuration: Configuration,
+        showsMicrophoneSpectrum: Bool = false,
         onRuntimeIssue: RuntimeIssueHandler? = nil,
         onSegmentRolloverNeeded: SegmentRolloverHandler? = nil
     ) {
@@ -89,6 +91,8 @@ final class ScreenRecorder: NSObject, @unchecked Sendable {
         self.onRuntimeIssue = onRuntimeIssue
         self.onSegmentRolloverNeeded = onSegmentRolloverNeeded
         self.currentSegmentURL = configuration.outputURL
+        self.microphoneSpectrum =
+            showsMicrophoneSpectrum && configuration.microphoneID != nil ? MicrophoneSpectrum() : nil
     }
 
     /// `captureNotBefore` holds the microphone closed until a start cue
@@ -1023,6 +1027,7 @@ extension ScreenRecorder: SCStreamOutput {
             }
             append(sampleBuffer: sampleBuffer, mediaType: .video)
         case .microphone:
+            microphoneSpectrum?.consume(sampleBuffer)
             append(sampleBuffer: sampleBuffer, mediaType: .audio)
         default:
             return

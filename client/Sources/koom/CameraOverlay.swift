@@ -94,6 +94,7 @@ private final class CameraOverlayPanel: NSPanel {
 @MainActor
 private final class CameraOverlayState: ObservableObject {
     @Published private(set) var selectedSize: CameraBubbleSize
+    @Published var microphoneSpectrum: MicrophoneSpectrum?
 
     private let onSizeChange: (CameraBubbleSize) -> Void
 
@@ -213,6 +214,10 @@ final class CameraOverlayWindowController: NSWindowController {
         window.setFrame(targetFrame, display: true)
     }
 
+    func setMicrophoneSpectrum(_ spectrum: MicrophoneSpectrum?) {
+        state.microphoneSpectrum = spectrum
+    }
+
     private static func overlaySize(for size: CameraBubbleSize) -> CGSize {
         CGSize(
             width: size.diameter + (shadowInset * 2),
@@ -245,6 +250,11 @@ private struct CameraOverlayContent: View {
                         .stroke(.white.opacity(0.9), lineWidth: 3)
                 }
                 .shadow(color: .black.opacity(0.2), radius: 7, x: 0, y: 4)
+                .overlay {
+                    if let spectrum = state.microphoneSpectrum {
+                        microphoneIndicator(spectrum)
+                    }
+                }
                 .padding(shadowInset)
 
             if isHovering {
@@ -259,11 +269,22 @@ private struct CameraOverlayContent: View {
         )
         .contentShape(Rectangle())
         .onHover { isHovering in
-            withAnimation(.easeOut(duration: 0.16)) {
+            withAnimation(.easeInOut(duration: 0.22)) {
                 self.isHovering = isHovering
             }
         }
         .background(.clear)
+    }
+
+    private func microphoneIndicator(_ spectrum: MicrophoneSpectrum) -> some View {
+        let height = min(30, max(18, previewDiameter * 0.08))
+        // Use the same inset from both edges so the capsule stays inside the circle.
+        let travel = previewDiameter * 0.41 - height / 2
+        return MicrophoneSpectrumView(spectrum: spectrum)
+            .frame(width: previewDiameter * 0.46, height: height)
+            .offset(y: isHovering ? -travel : travel)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     private var sizeControls: some View {
@@ -304,6 +325,37 @@ private struct CameraOverlayContent: View {
         .help("Use a \(size.title.lowercased()) camera bubble")
         .accessibilityLabel("\(size.title) camera bubble")
         .accessibilityValue(isSelected ? "Selected" : "")
+    }
+}
+
+private struct MicrophoneSpectrumView: View {
+    let spectrum: MicrophoneSpectrum
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { _ in
+            let levels = spectrum.currentLevels
+            Canvas { context, size in
+                let step = size.width / CGFloat(levels.count)
+                let width = step * 0.55
+                let restingHeight: CGFloat = 2
+                for (index, level) in levels.enumerated() {
+                    let height = restingHeight + (size.height - restingHeight) * CGFloat(level)
+                    let bar = CGRect(
+                        x: (CGFloat(index) + 0.5) * step - width / 2,
+                        y: (size.height - height) / 2,
+                        width: width,
+                        height: height
+                    )
+                    context.fill(
+                        Path(roundedRect: bar, cornerRadius: min(width, height) / 2),
+                        with: .color(.white.opacity(0.35 + Double(level) * 0.6))
+                    )
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.black.opacity(0.6), in: Capsule())
     }
 }
 

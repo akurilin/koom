@@ -65,6 +65,7 @@ final class AppModel: ObservableObject {
                 applyControlWindowCapturePolicy(controlWindow)
             }
             updateElapsedTimer(oldState: oldValue)
+            updateMicrophoneSpectrum()
 
             // The main panel is only relevant between recordings: hide
             // it while a recording is live and bring it back on stop.
@@ -105,6 +106,7 @@ final class AppModel: ObservableObject {
     }
 
     private let cameraPreviewManager = CameraPreviewManager()
+    private let microphonePreview = MicrophonePreview()
     private lazy var overlayWindowController = CameraOverlayWindowController(
         session: cameraPreviewManager.session,
         initialSize: cameraBubbleSize
@@ -131,6 +133,7 @@ final class AppModel: ObservableObject {
         .flatMap(TimeInterval.init) ?? 30
 
     private var recorder: ScreenRecorder?
+    private var isStartingRecorder = false
     private weak var controlWindow: NSWindow?
     private var isControlWindowCaptureSuppressed = false
     private var currentSession: RecordingSessionStore.SessionHandle?
@@ -371,6 +374,7 @@ final class AppModel: ObservableObject {
 
     func microphoneSelectionDidChange() {
         AppLog.info("Selected microphone: \(selectedMicrophoneID.isEmpty ? "none" : selectedMicrophoneID)")
+        updateMicrophoneSpectrum()
     }
 
     private func setCameraBubbleSize(_ size: CameraBubbleSize) {
@@ -764,6 +768,17 @@ final class AppModel: ObservableObject {
             isVisible: !selectedCameraID.isEmpty,
             size: cameraBubbleSize
         )
+        updateMicrophoneSpectrum()
+    }
+
+    private func updateMicrophoneSpectrum() {
+        let showsSpectrum = !selectedCameraID.isEmpty && !selectedMicrophoneID.isEmpty
+        let usesPreview = recorder == nil
+        microphonePreview.setMicrophone(
+            uniqueID: showsSpectrum && usesPreview && !isStartingRecorder ? selectedMicrophoneID : nil
+        )
+        let spectrum = usesPreview ? microphonePreview.spectrum : recorder?.microphoneSpectrum
+        overlayWindowController.setMicrophoneSpectrum(showsSpectrum ? spectrum : nil)
     }
 
     private func startRecordingTask(
@@ -837,6 +852,7 @@ final class AppModel: ObservableObject {
                         : nil,
                     outputDimensions: captureConfiguration.dimensions
                 ),
+                showsMicrophoneSpectrum: !selectedCameraID.isEmpty,
                 onRuntimeIssue: { [weak self] message in
                     Task { [weak self] in
                         await self?.handleRecorderRuntimeIssue(message)
@@ -849,6 +865,12 @@ final class AppModel: ObservableObject {
                 }
             )
 
+            isStartingRecorder = true
+            defer {
+                isStartingRecorder = false
+                updateMicrophoneSpectrum()
+            }
+            await microphonePreview.stop()
             setControlWindowCaptureSuppressed(true)
             try await recorder.start(captureNotBefore: sounds.play(cue))
 

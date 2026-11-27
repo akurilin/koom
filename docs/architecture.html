@@ -1,0 +1,3078 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>koom — Interactive Architecture Map</title>
+    <meta
+      name="description"
+      content="Interactive Google Maps-style system architecture explorer for koom — self-hosted macOS screen recorder with direct-to-R2 uploads, on-device AI, and zero-egress playback."
+    />
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23c5dada'/%3E%3Ccircle cx='32' cy='32' r='23' fill='%233b5ccc'/%3E%3Ccircle cx='32' cy='32' r='16' fill='%23253e73'/%3E%3Ccircle cx='25' cy='25' r='6' fill='%23ffffff'/%3E%3Ccircle cx='36' cy='36' r='3' fill='%23ffffff'/%3E%3C/svg%3E"
+    />
+    <script>
+      (() => {
+        try {
+          const saved = localStorage.getItem("koom-arch-theme");
+          const prefersDark =
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+          const theme =
+            saved === "dark" || saved === "light"
+              ? saved
+              : prefersDark
+                ? "dark"
+                : "light";
+          document.documentElement.setAttribute("data-theme", theme);
+        } catch {
+          // Ignore storage errors in restricted environments.
+        }
+      })();
+    </script>
+    <style>
+      :root {
+        --bg: #f3f6fb;
+        --card: #ffffff;
+        --card-glass: rgba(255, 255, 255, 0.92);
+        --fg: #0f172a;
+        --muted: #475569;
+        --border: #cbd5e1;
+        --border-subtle: rgba(148, 163, 184, 0.32);
+        --code-bg: rgba(148, 163, 184, 0.14);
+        --code-fg: #1e293b;
+        --primary: #2563eb;
+        --primary-fg: #ffffff;
+        --shadow-sm: 0 4px 14px rgba(15, 23, 42, 0.06);
+        --shadow-md: 0 10px 30px rgba(15, 23, 42, 0.12);
+        --shadow-lg: 0 14px 36px rgba(15, 23, 42, 0.16);
+      }
+
+      html[data-theme="dark"] {
+        --bg: #0b1120;
+        --card: #111827;
+        --card-glass: rgba(17, 24, 39, 0.9);
+        --fg: #f1f5f9;
+        --muted: #94a3b8;
+        --border: #334155;
+        --border-subtle: rgba(148, 163, 184, 0.22);
+        --code-bg: rgba(148, 163, 184, 0.16);
+        --code-fg: #e2e8f0;
+        --primary: #3b82f6;
+        --primary-fg: #ffffff;
+        --shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.28);
+        --shadow-md: 0 10px 32px rgba(0, 0, 0, 0.42);
+        --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.55);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: var(--bg);
+        color: var(--fg);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI",
+          system-ui, sans-serif;
+        user-select: none;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      #viewport {
+        position: fixed;
+        inset: 0;
+        overflow: hidden;
+        cursor: grab;
+        background-color: var(--bg);
+        touch-action: none;
+      }
+      #viewport.dragging {
+        cursor: grabbing;
+      }
+
+      #grid-canvas {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      #world-layer {
+        position: absolute;
+        top: 0;
+        left: 0;
+        transform-origin: 0 0;
+        will-change: transform;
+      }
+
+      #edges-svg {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 3020px;
+        height: 1740px;
+        overflow: visible;
+        pointer-events: none;
+      }
+
+      .edge-hit {
+        fill: none;
+        stroke: transparent;
+        stroke-width: 22;
+        pointer-events: stroke;
+        cursor: pointer;
+      }
+      .edge-path {
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        transition:
+          opacity 0.25s ease,
+          stroke-width 0.25s ease;
+      }
+      .edge-flow {
+        fill: none;
+        stroke-linecap: round;
+        pointer-events: none;
+        stroke-dasharray: 10 14;
+        animation: flowDash 1.1s linear infinite;
+      }
+      @keyframes flowDash {
+        from {
+          stroke-dashoffset: 24;
+        }
+        to {
+          stroke-dashoffset: 0;
+        }
+      }
+
+      .district {
+        position: absolute;
+        border-radius: 24px;
+        border: 2px solid;
+        transition:
+          opacity 0.25s ease,
+          box-shadow 0.25s ease;
+        box-shadow: var(--shadow-sm);
+      }
+      .district-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px 22px 12px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+        cursor: pointer;
+      }
+      .district-title-group {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .district-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #ffffff;
+        font-size: 17px;
+        font-weight: 700;
+        flex-shrink: 0;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+      }
+      .district-title {
+        font-size: 20px;
+        font-weight: 750;
+        letter-spacing: -0.02em;
+        line-height: 1.15;
+      }
+      .district-sub {
+        font-size: 12.5px;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .district-badge {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 12px;
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 999px;
+        white-space: nowrap;
+      }
+
+      .district-macro {
+        position: absolute;
+        inset: 72px 24px 24px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 12px;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.22s ease;
+      }
+      .zoom-world .district-macro {
+        opacity: 1;
+      }
+      .zoom-world .module-card {
+        opacity: 0.14;
+        pointer-events: none;
+      }
+      .zoom-world .edge-label-pill {
+        opacity: 0.92;
+      }
+
+      .module-card {
+        position: absolute;
+        border-radius: 16px;
+        background: var(--card);
+        border: 1.5px solid var(--border);
+        padding: 14px 16px;
+        cursor: pointer;
+        transition:
+          transform 0.18s ease,
+          box-shadow 0.2s ease,
+          border-color 0.2s ease,
+          opacity 0.25s ease;
+        box-shadow: var(--shadow-sm);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .module-card:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-md);
+      }
+      .module-card.selected {
+        box-shadow:
+          0 0 0 3px var(--ring-color, #2563eb),
+          var(--shadow-lg);
+        border-color: var(--ring-color, #2563eb);
+      }
+      .module-card.dimmed,
+      .district.dimmed {
+        opacity: 0.22;
+      }
+      .module-card.highlighted {
+        box-shadow:
+          0 0 0 2.5px var(--ring-color, #2563eb),
+          var(--shadow-md);
+      }
+
+      .module-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+      .module-title {
+        font-size: 14.5px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        line-height: 1.25;
+        color: var(--fg);
+      }
+      .module-tag {
+        font-size: 10.5px;
+        font-weight: 650;
+        padding: 2px 8px;
+        border-radius: 999px;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .module-summary {
+        font-size: 12.2px;
+        line-height: 1.42;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+
+      .street-details {
+        margin-top: auto;
+        padding-top: 8px;
+        border-top: 1px dashed rgba(148, 163, 184, 0.35);
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        transition: opacity 0.2s ease;
+      }
+      .zoom-district .street-details {
+        opacity: 0.88;
+      }
+      .zoom-street .street-details {
+        opacity: 1;
+      }
+
+      .code-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .code-chip {
+        font-family:
+          ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 10.8px;
+        line-height: 1.25;
+        padding: 2px 6px;
+        border-radius: 6px;
+        background: var(--code-bg);
+        color: var(--code-fg);
+        border: 1px solid var(--border-subtle);
+        text-decoration: none;
+      }
+      a.code-chip:hover {
+        border-color: var(--primary);
+        color: var(--primary);
+      }
+      .street-only {
+        display: none;
+        font-size: 11px;
+        line-height: 1.38;
+        color: var(--muted);
+        margin-top: 2px;
+      }
+      .zoom-street .street-only {
+        display: block;
+      }
+
+      .edge-label-pill {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        background: var(--card);
+        border: 1.5px solid var(--border);
+        color: var(--fg);
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 11.5px;
+        font-weight: 600;
+        white-space: nowrap;
+        box-shadow: var(--shadow-sm);
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        transition:
+          opacity 0.22s ease,
+          transform 0.16s ease,
+          border-color 0.2s ease;
+        z-index: 6;
+      }
+      .edge-label-pill:hover {
+        transform: translate(-50%, -50%) scale(1.06);
+        z-index: 15;
+      }
+      .edge-label-pill.dimmed {
+        opacity: 0.15;
+        pointer-events: none;
+      }
+      .edge-step-num {
+        width: 19px;
+        height: 19px;
+        border-radius: 50%;
+        color: #ffffff;
+        font-size: 11px;
+        font-weight: 750;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+      }
+
+      .hud-glass {
+        background: var(--card-glass);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border: 1px solid var(--border-subtle);
+        box-shadow: var(--shadow-md);
+      }
+
+      #top-bar {
+        position: fixed;
+        top: 14px;
+        left: 14px;
+        right: 14px;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+        pointer-events: none;
+        z-index: 40;
+        flex-wrap: wrap;
+      }
+      #top-left {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        flex-wrap: wrap;
+        pointer-events: none;
+      }
+      #top-left > *,
+      #top-right > * {
+        pointer-events: auto;
+      }
+      #top-right {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding-top: 3px;
+        pointer-events: none;
+      }
+
+      #search-wrap {
+        position: relative;
+        width: 310px;
+        max-width: calc(100vw - 28px);
+      }
+      #search-box {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 44px;
+        padding: 0 12px;
+        border-radius: 999px;
+      }
+      .brand-lens {
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: radial-gradient(
+          circle at 38% 35%,
+          #ffffff 0 16%,
+          #1e3a6e 17% 46%,
+          #3b5ccc 47% 74%,
+          #c5dada 75% 100%
+        );
+        flex-shrink: 0;
+        box-shadow: 0 1px 4px rgba(30, 58, 110, 0.28);
+      }
+      #search-input {
+        flex: 1;
+        border: none;
+        outline: none;
+        background: transparent;
+        color: var(--fg);
+        font-size: 13.5px;
+        min-width: 0;
+      }
+      #search-input::placeholder {
+        color: var(--muted);
+      }
+      #search-clear {
+        display: none;
+        border: none;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 15px;
+        padding: 2px 4px;
+      }
+      #search-results {
+        display: none;
+        position: absolute;
+        top: 50px;
+        left: 0;
+        right: 0;
+        border-radius: 16px;
+        max-height: 330px;
+        overflow-y: auto;
+        padding: 6px;
+      }
+      #search-results.open {
+        display: block;
+      }
+      .search-item {
+        padding: 8px 10px;
+        border-radius: 10px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .search-item:hover,
+      .search-item.active {
+        background: rgba(59, 130, 246, 0.14);
+      }
+
+      #journey-chips {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+        padding-top: 3px;
+      }
+      .journey-chip,
+      .nav-pill {
+        height: 38px;
+        padding: 0 14px;
+        border-radius: 999px;
+        font-size: 12.5px;
+        font-weight: 600;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--fg);
+        text-decoration: none;
+        transition: all 0.16s ease;
+      }
+      .journey-chip:hover,
+      .nav-pill:hover {
+        transform: translateY(-1px);
+      }
+      .journey-chip.active {
+        background: var(--primary);
+        color: var(--primary-fg);
+        border-color: transparent;
+        box-shadow: 0 6px 18px rgba(37, 99, 235, 0.28);
+      }
+      .chip-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+      }
+      .journey-chip.active .chip-dot {
+        background: #ffffff !important;
+      }
+
+      #journey-banner {
+        display: none;
+        position: fixed;
+        bottom: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 40;
+        border-radius: 16px;
+        padding: 10px 14px;
+        max-width: min(760px, calc(100vw - 440px));
+      }
+      #journey-banner.open {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .step-pills {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .step-pill {
+        font-size: 12px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--fg);
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        transition: all 0.15s ease;
+      }
+      .step-pill:hover,
+      .step-pill.active {
+        border-color: var(--primary);
+        background: rgba(37, 99, 235, 0.14);
+      }
+
+      #inspector {
+        position: fixed;
+        top: 68px;
+        right: 14px;
+        width: 350px;
+        max-width: calc(100vw - 28px);
+        max-height: calc(100vh - 154px);
+        border-radius: 18px;
+        z-index: 45;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        transform: translateX(390px);
+        opacity: 0;
+        pointer-events: none;
+        transition:
+          transform 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+          opacity 0.2s ease;
+      }
+      #inspector.open {
+        transform: translateX(0);
+        opacity: 1;
+        pointer-events: auto;
+      }
+      #inspector-body {
+        padding: 16px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        user-select: text;
+      }
+
+      #minimap-card {
+        position: fixed;
+        left: 14px;
+        bottom: 14px;
+        width: 212px;
+        border-radius: 14px;
+        padding: 8px;
+        z-index: 40;
+      }
+      #minimap-canvas {
+        width: 196px;
+        height: 114px;
+        display: block;
+        border-radius: 8px;
+        cursor: crosshair;
+        background: rgba(148, 163, 184, 0.1);
+      }
+      .minimap-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 6px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      #map-controls {
+        position: fixed;
+        right: 14px;
+        bottom: 14px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
+        z-index: 40;
+      }
+      .ctrl-stack {
+        display: flex;
+        flex-direction: column;
+        border-radius: 14px;
+        overflow: hidden;
+      }
+      .ctrl-btn {
+        width: 38px;
+        height: 36px;
+        border: none;
+        background: transparent;
+        color: var(--fg);
+        font-size: 17px;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.14s ease;
+      }
+      .ctrl-btn:hover {
+        background: rgba(148, 163, 184, 0.18);
+      }
+      .ctrl-btn + .ctrl-btn {
+        border-top: 1px solid var(--border-subtle);
+      }
+
+      #lod-pill {
+        padding: 5px 11px;
+        border-radius: 999px;
+        font-size: 11.5px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--fg);
+      }
+
+      #legend-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 5px 12px;
+        border-radius: 999px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .legend-line {
+        width: 16px;
+        height: 3px;
+        border-radius: 2px;
+        display: inline-block;
+      }
+
+      @media (max-width: 820px) {
+        #minimap-card,
+        #legend-bar {
+          display: none;
+        }
+        #journey-banner {
+          max-width: calc(100vw - 80px);
+          left: 14px;
+          transform: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="viewport" class="zoom-district">
+      <canvas id="grid-canvas"></canvas>
+      <div id="world-layer">
+        <svg id="edges-svg" viewBox="0 0 3020 1740"></svg>
+        <div id="districts-layer"></div>
+        <div id="modules-layer"></div>
+        <div id="edge-labels-layer"></div>
+      </div>
+    </div>
+
+    <div id="top-bar">
+      <div id="top-left">
+        <div id="search-wrap">
+          <div id="search-box" class="hud-glass">
+            <div class="brand-lens" title="koom"></div>
+            <input
+              id="search-input"
+              type="text"
+              placeholder="Search koom modules, routes, files, tables…"
+              autocomplete="off"
+            />
+            <button id="search-clear" title="Clear">✕</button>
+          </div>
+          <div id="search-results" class="hud-glass"></div>
+        </div>
+
+        <div id="journey-chips">
+          <button class="journey-chip hud-glass active" data-journey="all">
+            <span class="chip-dot" style="background: #3b82f6"></span>
+            All Flows
+          </button>
+          <button class="journey-chip hud-glass" data-journey="upload">
+            <span class="chip-dot" style="background: #ea580c"></span>
+            Record &amp; Upload
+          </button>
+          <button class="journey-chip hud-glass" data-journey="watch">
+            <span class="chip-dot" style="background: #7c3aed"></span>
+            Watch &amp; Comment
+          </button>
+          <button class="journey-chip hud-glass" data-journey="auth">
+            <span class="chip-dot" style="background: #db2777"></span>
+            Auth &amp; Pairing
+          </button>
+          <button class="journey-chip hud-glass" data-journey="ops">
+            <span class="chip-dot" style="background: #475569"></span>
+            Deploy &amp; Ops
+          </button>
+        </div>
+      </div>
+
+      <div id="top-right">
+        <button
+          id="theme-toggle"
+          class="nav-pill hud-glass"
+          title="Toggle light/dark theme"
+          aria-label="Toggle light/dark theme"
+        >
+          <span id="theme-icon">☾</span>
+        </button>
+        <a
+          class="nav-pill hud-glass"
+          href="https://github.com/akurilin/koom"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="View koom repository on GitHub"
+        >
+          GitHub ↗
+        </a>
+      </div>
+    </div>
+
+    <aside id="inspector" class="hud-glass">
+      <div
+        id="inspector-header"
+        style="
+          padding: 14px 16px;
+          border-bottom: 1px solid var(--border-subtle);
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 10px;
+        "
+      >
+        <div>
+          <div
+            id="insp-kicker"
+            style="
+              font-size: 11px;
+              font-weight: 700;
+              text-transform: uppercase;
+              letter-spacing: 0.05em;
+            "
+          ></div>
+          <h2
+            id="insp-title"
+            style="
+              margin: 2px 0 0;
+              font-size: 16.5px;
+              font-weight: 750;
+              line-height: 1.25;
+            "
+          ></h2>
+        </div>
+        <button
+          id="insp-close"
+          style="
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            font-size: 18px;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 8px;
+          "
+          title="Close (Esc)"
+        >
+          ✕
+        </button>
+      </div>
+      <div id="inspector-body"></div>
+    </aside>
+
+    <div id="journey-banner" class="hud-glass">
+      <div
+        style="
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+        "
+      >
+        <div
+          id="journey-title"
+          style="font-size: 12.5px; font-weight: 700"
+        ></div>
+        <button
+          id="journey-reset"
+          style="
+            border: none;
+            background: transparent;
+            color: var(--primary);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+          "
+        >
+          Show All
+        </button>
+      </div>
+      <div id="journey-steps" class="step-pills"></div>
+    </div>
+
+    <div id="minimap-card" class="hud-glass">
+      <canvas id="minimap-canvas" width="392" height="228"></canvas>
+      <div class="minimap-footer">
+        <span>Minimap · drag to pan</span>
+        <span style="font-family: monospace">1–7 keys</span>
+      </div>
+    </div>
+
+    <div id="map-controls">
+      <div id="legend-bar" class="hud-glass">
+        <span class="legend-item">
+          <span
+            class="legend-line"
+            style="background: #ea580c; height: 4px"
+          ></span>
+          Direct Media
+        </span>
+        <span class="legend-item">
+          <span class="legend-line" style="background: #0d9488"></span>
+          HTTPS / S3 / SQL
+        </span>
+        <span class="legend-item">
+          <span
+            class="legend-line"
+            style="border-top: 2.5px dashed #db2777; height: 0"
+          ></span>
+          Auth
+        </span>
+        <span class="legend-item">
+          <span
+            class="legend-line"
+            style="border-top: 2px dotted #3b82f6; height: 0"
+          ></span>
+          Local Pipeline
+        </span>
+      </div>
+      <div style="display: flex; align-items: flex-end; gap: 8px">
+        <div id="lod-pill" class="hud-glass">
+          <span id="lod-label">District View</span>
+          <span
+            id="zoom-pct"
+            style="font-family: monospace; opacity: 0.75"
+          ></span>
+        </div>
+        <div class="ctrl-stack hud-glass">
+          <button class="ctrl-btn" id="btn-zoom-in" title="Zoom in (+)">
+            +
+          </button>
+          <button class="ctrl-btn" id="btn-zoom-out" title="Zoom out (−)">
+            −
+          </button>
+          <button
+            class="ctrl-btn"
+            id="btn-fit"
+            title="Fit entire map (0)"
+            style="font-size: 15px"
+          >
+            ⌖
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      (() => {
+        const REPO_BLOB = "https://github.com/akurilin/koom/blob/main/";
+        const WORLD_W = 3020;
+        const WORLD_H = 1740;
+
+        const DISTRICTS = [
+          {
+            id: "client",
+            key: "1",
+            name: "macOS Desktop Client",
+            subtitle:
+              "Native screen recorder, audio cleanup, on-device AI & uploader",
+            badge: "client/ · Swift 6 · macOS 26+",
+            icon: "⌘",
+            accent: "#2563eb",
+            lightBg: "rgba(59, 130, 246, 0.075)",
+            darkBg: "rgba(59, 130, 246, 0.14)",
+            border: "rgba(59, 130, 246, 0.45)",
+            x: 70,
+            y: 185,
+            w: 790,
+            h: 1125,
+            macroPoints: [
+              "30 fps H.264 crash-safe ~30s segmented capture",
+              "On-device noise removal (Sidon / Voice Isolation) + -20.5 LUFS loudness",
+              "Private AI: WhisperKit CoreML transcript + llama.cpp Qwen auto-title",
+              "Direct streaming PUT to Cloudflare R2 + Keychain Bearer device token",
+            ],
+          },
+          {
+            id: "web",
+            key: "2",
+            name: "Web App & Control Plane",
+            subtitle: "Single gatekeeper holding all R2 & Postgres credentials",
+            badge: "web/ · Next.js 16 · Render koom-web",
+            icon: "◈",
+            accent: "#0d9488",
+            lightBg: "rgba(13, 148, 136, 0.075)",
+            darkBg: "rgba(13, 148, 136, 0.14)",
+            border: "rgba(13, 148, 136, 0.45)",
+            x: 1030,
+            y: 185,
+            w: 760,
+            h: 895,
+            macroPoints: [
+              "Mints 15-min presigned R2 PUT URLs & verifies uploads via HEAD",
+              "Stores transcript.json & thumbnail-v1.jpg sidecars to R2",
+              "Serves SSR watch pages /r/[id], Admin UI /app & device pairing /connect",
+              "Only component allowed to talk to PostgreSQL 17",
+            ],
+          },
+          {
+            id: "r2",
+            key: "3",
+            name: "Cloudflare R2 + Built-in CDN",
+            subtitle:
+              "Zero-egress object storage for videos, transcripts & thumbnails",
+            badge: "S3 API · R2_PUBLIC_BASE_URL",
+            icon: "☁",
+            accent: "#ea580c",
+            lightBg: "rgba(234, 88, 12, 0.08)",
+            darkBg: "rgba(234, 88, 12, 0.15)",
+            border: "rgba(234, 88, 12, 0.48)",
+            x: 1965,
+            y: 185,
+            w: 750,
+            h: 335,
+            macroPoints: [
+              "recordings/{id}/video.mp4 (direct PUT from Mac)",
+              "recordings/{id}/transcript.json & thumbnail-v1.jpg (immutable cached)",
+              "Streams directly to browser viewers with Range requests & $0 egress",
+            ],
+          },
+          {
+            id: "db",
+            key: "4",
+            name: "PostgreSQL 17",
+            subtitle:
+              "Hand-migrated metadata store over Render private network",
+            badge: "db/ · Render koom-db · no ORM",
+            icon: "⛁",
+            accent: "#4f46e5",
+            lightBg: "rgba(79, 70, 229, 0.08)",
+            darkBg: "rgba(79, 70, 229, 0.15)",
+            border: "rgba(79, 70, 229, 0.45)",
+            x: 1965,
+            y: 560,
+            w: 750,
+            h: 365,
+            macroPoints: [
+              "Tables: recordings, comments, commenters, device_tokens",
+              "Parameterized pg pool queries only — no public REST/GraphQL layer",
+              "Versioned SQL migrations in db/migrations/ applied pre-deploy",
+            ],
+          },
+          {
+            id: "browser",
+            key: "5",
+            name: "Web Browser (Viewers & Admin)",
+            subtitle:
+              "Share-link playback, timestamped comments & library management",
+            badge: "/r/[id] · /app · /connect",
+            icon: "◎",
+            accent: "#7c3aed",
+            lightBg: "rgba(124, 58, 237, 0.075)",
+            darkBg: "rgba(124, 58, 237, 0.15)",
+            border: "rgba(124, 58, 237, 0.45)",
+            x: 1965,
+            y: 965,
+            w: 750,
+            h: 345,
+            macroPoints: [
+              "Anyone with link: video playback, ?t= deep-links, clickable word transcript",
+              "Anonymous viewers get HttpOnly koom-commenter UUID cookie",
+              "Admins sign in via Google OAuth for inline rename, moderation & /connect",
+            ],
+          },
+          {
+            id: "oauth",
+            key: "6",
+            name: "Google OAuth 2.0",
+            subtitle:
+              "Single-tenant allowlist authentication (KOOM_ADMIN_EMAILS)",
+            badge: "Identity Provider",
+            icon: "🔑",
+            accent: "#db2777",
+            lightBg: "rgba(219, 39, 119, 0.075)",
+            darkBg: "rgba(219, 39, 119, 0.15)",
+            border: "rgba(219, 39, 119, 0.45)",
+            x: 1130,
+            y: 1125,
+            w: 560,
+            h: 185,
+            macroPoints: [
+              "Verifies Google account email against KOOM_ADMIN_EMAILS",
+              "Removing an email revokes all browser sessions & Mac device tokens immediately",
+            ],
+          },
+          {
+            id: "ops",
+            key: "7",
+            name: "Deployment, Local Dev & Operator Tooling",
+            subtitle:
+              "Render Blueprint, pre-deploy migrations, diagnostics & audio benchmarking",
+            badge: "render.yaml · scripts/ · docker-compose.yml",
+            icon: "▸_",
+            accent: "#475569",
+            lightBg: "rgba(71, 85, 105, 0.075)",
+            darkBg: "rgba(100, 116, 139, 0.16)",
+            border: "rgba(100, 116, 139, 0.45)",
+            x: 70,
+            y: 1365,
+            w: 2645,
+            h: 300,
+            macroPoints: [
+              "Render Blueprint deploys koom-web + koom-db and runs db:migrate before traffic cutover",
+              "CLI ops (tsx): doctor, r2:setup, r2:orphans, render:sync, device:token, audio-lab",
+              "Local Postgres 17 container via Docker Compose on 127.0.0.1:54322",
+            ],
+          },
+        ];
+
+        const MODULES = [
+          {
+            id: "capture",
+            district: "client",
+            title: "Capture & Crash-Safe Segments",
+            tag: "ScreenCaptureKit",
+            x: 102,
+            y: 270,
+            w: 350,
+            h: 225,
+            summary:
+              "Records display + mic at fixed 30 fps H.264 (720p/1080p/4K) as ~30s rolling segments so a crash loses at most one chunk.",
+            chips: [
+              "ScreenRecorder.swift",
+              "RecordingSessionStore.swift",
+              "RecordingAssembler.swift",
+            ],
+            streetNote:
+              "Supports face bubble (CameraOverlay.swift), live screen annotations (DrawingOverlay.swift), and permanent local archive in ~/Movies/koom/<env>/.",
+            journeys: ["upload"],
+            invariants: [
+              "Crash recovery stitches completed ~30s segment files on next app launch",
+              "Local MP4 copy is never deleted or mutated by upload failures",
+            ],
+            files: [
+              "client/Sources/koom/ScreenRecorder.swift",
+              "client/Sources/koom/RecordingSessionStore.swift",
+              "client/Sources/koom/RecordingAssembler.swift",
+              "client/Sources/koom/CameraOverlay.swift",
+              "client/Sources/koom/DrawingOverlay.swift",
+            ],
+          },
+          {
+            id: "audio",
+            district: "client",
+            title: "Audio Cleanup Pipeline",
+            tag: "ffmpeg + Denoisers",
+            x: 102,
+            y: 525,
+            w: 350,
+            h: 225,
+            summary:
+              "Extracts 48 kHz mono WAV, removes background noise on-device, normalizes to -20.5 LUFS with -1.5 dBTP limiter, then remuxes AAC.",
+            chips: [
+              "AudioCleanup.swift",
+              "NoiseRemovalManager.swift",
+              "AppleVoiceIsolation.swift",
+            ],
+            streetNote:
+              "Models: Sidon (default, ~1.5 GB via bundled uv), ClearerVoice, DPDFNet, or Apple Voice Isolation fallback. Archives 01-extracted / 02-denoised / 03-leveled WAVs.",
+            journeys: ["upload"],
+            invariants: [
+              "Video stream passes through untouched during audio cleanup",
+              "Best-effort: any cleanup failure falls back to raw audio so uploads never block",
+            ],
+            files: [
+              "client/Sources/koom/AudioCleanup.swift",
+              "client/Sources/koom/NoiseRemovalManager.swift",
+              "client/Sources/koom/AppleVoiceIsolation.swift",
+              "client/Sources/koom/NoiseRemovalSettingsView.swift",
+            ],
+          },
+          {
+            id: "optimizer",
+            district: "client",
+            title: "Optional Video Optimizer",
+            tag: "ffmpeg",
+            x: 102,
+            y: 780,
+            w: 350,
+            h: 195,
+            summary:
+              "Optional H.264 size optimization pass that keeps the re-encoded MP4 only when it shrinks file size by at least 10%.",
+            chips: [
+              "RecordingOptimizer.swift",
+              "CompressionSettings.swift",
+              "ProcessRunner.swift",
+            ],
+            streetNote:
+              "Runs locally before upload init so smaller bytes travel to R2 while preserving predictable playback compatibility.",
+            journeys: ["upload"],
+            invariants: [
+              "Re-encode is discarded automatically unless savings ≥ 10%",
+            ],
+            files: [
+              "client/Sources/koom/RecordingOptimizer.swift",
+              "client/Sources/koom/CompressionSettings.swift",
+              "client/Sources/koom/ProcessRunner.swift",
+            ],
+          },
+          {
+            id: "local-ai",
+            district: "client",
+            title: "On-Device AI & Thumbnail",
+            tag: "100% Private",
+            x: 484,
+            y: 270,
+            w: 344,
+            h: 275,
+            summary:
+              "Runs in parallel with video upload: WhisperKit transcribes speech, bundled llama.cpp generates a title, AVFoundation grabs a JPEG still.",
+            chips: [
+              "Autotitler.swift",
+              "Transcriber.swift",
+              "LocalTitleClient.swift",
+              "ThumbnailGenerator.swift",
+            ],
+            streetNote:
+              "WhisperKit runs via CoreML/Neural Engine → TimedTranscript JSON. Qwen (~563 MB) runs on bundled llama.cpp. Audio never leaves the Mac.",
+            journeys: ["upload"],
+            invariants: [
+              "Starts concurrently with MP4 upload to minimize time-to-share",
+              "Each stage (title, transcript, thumbnail) degrades independently if unavailable",
+            ],
+            files: [
+              "client/Sources/koom/Autotitler.swift",
+              "client/Sources/koom/Transcriber.swift",
+              "client/Sources/koom/AudioExtractor.swift",
+              "client/Sources/koom/LocalTitleClient.swift",
+              "client/Sources/koom/LocalTitleModelManager.swift",
+              "client/Sources/koom/ThumbnailGenerator.swift",
+            ],
+          },
+          {
+            id: "uploader",
+            district: "client",
+            title: "Uploader & Batch Catch-Up",
+            tag: "URLSession",
+            x: 484,
+            y: 575,
+            w: 344,
+            h: 240,
+            summary:
+              "Drives init → direct R2 PUT (with live byte progress) → complete → sidecar PATCH/PUT. Also scans ~/Movies/koom for unsent files.",
+            chips: [
+              "Uploader.swift",
+              "KoomAPI.swift",
+              "UploadState",
+              "CatchUpState",
+            ],
+            streetNote:
+              "Single upload copies share URL to NSPasteboard & opens default browser. Batch catch-up calls /uploads/diff and uploads missing files sequentially.",
+            journeys: ["upload"],
+            invariants: [
+              "Presigned R2 PUT intentionally omits Authorization Bearer header",
+              "Pending rows count as missing in /diff so interrupted uploads self-heal",
+            ],
+            files: [
+              "client/Sources/koom/Uploader.swift",
+              "client/Sources/koom/KoomAPI.swift",
+            ],
+          },
+          {
+            id: "client-auth",
+            district: "client",
+            title: "Device Sign-In & Keychain",
+            tag: "Bearer Token",
+            x: 484,
+            y: 845,
+            w: 344,
+            h: 185,
+            summary:
+              "Pairs this Mac via ASWebAuthenticationSession (/connect) and stores the per-device revocable token in macOS Keychain.",
+            chips: ["DeviceSignIn.swift", "Keychain.swift", "KoomConfig.swift"],
+            streetNote:
+              "Dev & Prod environments store separate tokens. Supports KOOM_DEVICE_CREDENTIALS_FILE for unattended agentic/CI launches.",
+            journeys: ["auth"],
+            invariants: [
+              "Desktop app never sees R2 keys, Postgres URL, or shared admin secret",
+              "Sign out calls DELETE /api/admin/device-tokens/current",
+            ],
+            files: [
+              "client/Sources/koom/DeviceSignIn.swift",
+              "client/Sources/koom/Keychain.swift",
+              "client/Sources/koom/KoomConfig.swift",
+              "client/Sources/koom/KoomRuntimeProfile.swift",
+            ],
+          },
+          {
+            id: "client-ui",
+            district: "client",
+            title: "SwiftUI Control Panel, Remote & Recovery UI",
+            tag: "AppKit + SwiftUI",
+            x: 102,
+            y: 1055,
+            w: 726,
+            h: 225,
+            summary:
+              "Main orchestrator (AppModel) managing display/mic/camera pickers, floating in-recording remote, live mic spectrum, settings & crash recovery tab.",
+            chips: [
+              "AppModel.swift",
+              "KoomApp.swift",
+              "ControlPanelView.swift",
+              "RecorderRemoteView.swift",
+              "SettingsView.swift",
+              "RecoveryView.swift",
+            ],
+            streetNote:
+              "Hides main panel while recording and shows floating remote + DisplayOutline border. Writes rotating logs to ~/Library/Logs/koom/koom.log.",
+            journeys: ["upload", "auth"],
+            invariants: [
+              "Reprocess Audio… lets you re-test denoiser settings against saved 01-extracted.wav",
+            ],
+            files: [
+              "client/Sources/koom/AppModel.swift",
+              "client/Sources/koom/KoomApp.swift",
+              "client/Sources/koom/ControlPanelView.swift",
+              "client/Sources/koom/RecorderRemoteView.swift",
+              "client/Sources/koom/SettingsView.swift",
+              "client/Sources/koom/RecoveryView.swift",
+            ],
+          },
+          {
+            id: "admin-api",
+            district: "web",
+            title: "Admin Upload & Media API",
+            tag: "requireAdmin()",
+            x: 1062,
+            y: 270,
+            w: 340,
+            h: 315,
+            summary:
+              "Coordinates upload lifecycle, presigned R2 URLs, sidecar storage, inline title updates, recording deletion & catch-up diffing.",
+            chips: [
+              "POST /api/admin/uploads/init",
+              "POST /api/admin/uploads/complete",
+              "POST /api/admin/uploads/diff",
+              "PATCH /api/admin/recordings/[id]",
+              "PUT .../transcript",
+              "PUT .../thumbnail",
+            ],
+            streetNote:
+              "/init inserts status=pending & returns 15m presigned PUT. /complete runs R2 HEAD before flipping status=complete. DELETE removes R2 video+sidecars & DB row.",
+            journeys: ["upload"],
+            invariants: [
+              "Accepts either Bearer device token (Mac) or signed iron-session cookie (Browser)",
+              "Every request re-checks email against KOOM_ADMIN_EMAILS",
+            ],
+            files: [
+              "web/app/api/admin/uploads/init/route.ts",
+              "web/app/api/admin/uploads/complete/route.ts",
+              "web/app/api/admin/uploads/diff/route.ts",
+              "web/app/api/admin/recordings/[id]/route.ts",
+              "web/app/api/admin/recordings/[id]/transcript/route.ts",
+              "web/app/api/admin/recordings/[id]/thumbnail/route.ts",
+            ],
+          },
+          {
+            id: "auth-layer",
+            district: "web",
+            title: "Auth Gatekeeper & OAuth Routes",
+            tag: "iron-session + SHA-256",
+            x: 1424,
+            y: 270,
+            w: 334,
+            h: 315,
+            summary:
+              "Handles Google OAuth start/callback, sealed browser session cookies, per-Mac device token minting/revocation & anonymous commenter IDs.",
+            chips: [
+              "GET /api/auth/google/start",
+              "GET /api/auth/google/callback",
+              "POST /api/admin/device-tokens",
+              "DELETE .../device-tokens/current",
+              "lib/auth/admin.ts",
+            ],
+            streetNote:
+              "Device tokens are 256-bit random values stored only as SHA-256 hashes. Browser sessions sealed with KOOM_SESSION_SECRET via iron-session.",
+            journeys: ["auth"],
+            invariants: [
+              "KOOM_ADMIN_EMAILS allowlist enforced on every admin request",
+              "Anonymous commenters get an HttpOnly koom-commenter UUID cookie",
+            ],
+            files: [
+              "web/lib/auth/admin.ts",
+              "web/lib/auth/session.ts",
+              "web/lib/auth/device-tokens.ts",
+              "web/lib/auth/google.ts",
+              "web/lib/auth/commenter.ts",
+              "web/app/api/auth/google/callback/route.ts",
+            ],
+          },
+          {
+            id: "watch-ui",
+            district: "web",
+            title: "Public Watch Page & Comments API",
+            tag: "SSR + React 19",
+            x: 1062,
+            y: 615,
+            w: 340,
+            h: 255,
+            summary:
+              "Dynamic SSR watch page at /r/[id] with OpenGraph thumbnail metadata, timeline markers, clickable transcript & timestamped comments.",
+            chips: [
+              "app/r/[id]/page.tsx",
+              "watch-experience.tsx",
+              "transcript-pane.tsx",
+              "comments-pane.tsx",
+              "/api/public/recordings/[id]/comments",
+            ],
+            streetNote:
+              "Supports ?t= deep-links, inline admin title rename, light/dark/system theme with zero paint flash, and self-delete for own anonymous comments.",
+            journeys: ["watch"],
+            invariants: [
+              'Only status="complete" recordings are served; pending rows 404',
+              "force-dynamic SSR prevents stale metadata or share URLs",
+            ],
+            files: [
+              "web/app/r/[id]/page.tsx",
+              "web/app/r/[id]/watch-experience.tsx",
+              "web/app/r/[id]/video-player.tsx",
+              "web/app/r/[id]/transcript-pane.tsx",
+              "web/app/r/[id]/comments-pane.tsx",
+              "web/app/api/public/recordings/[id]/comments/route.ts",
+            ],
+          },
+          {
+            id: "admin-ui",
+            district: "web",
+            title: "Admin Library & Device Connect UI",
+            tag: "App Router",
+            x: 1424,
+            y: 615,
+            w: 334,
+            h: 255,
+            summary:
+              "Authenticated recording library (/app/recordings), login screen (/login — also Render healthcheck), and Mac pairing confirmation (/connect).",
+            chips: [
+              "app/app/recordings/page.tsx",
+              "app/connect/page.tsx",
+              "app/login/page.tsx",
+              "recordings-list.tsx",
+            ],
+            streetNote:
+              "/connect verifies browser admin session, shows the Mac hostname label, mints a device token, and redirects back to the macOS app custom URL scheme.",
+            journeys: ["watch", "auth"],
+            invariants: [
+              "/login renders without touching Postgres or R2 so Render health checks stay fast",
+            ],
+            files: [
+              "web/app/app/recordings/page.tsx",
+              "web/app/connect/page.tsx",
+              "web/app/login/page.tsx",
+              "web/app/recordings-list.tsx",
+            ],
+          },
+          {
+            id: "server-clients",
+            district: "web",
+            title: "R2 S3 Client & PostgreSQL Pool",
+            tag: "Data Access Layer",
+            x: 1062,
+            y: 900,
+            w: 696,
+            h: 150,
+            summary:
+              "Single server-side adapter layer for R2 presigning/HEAD/PUT/DELETE (@aws-sdk/client-s3) and typed parameterized pg queries (no ORM).",
+            chips: [
+              "lib/r2/client.ts",
+              "lib/db/client.ts",
+              "lib/db/queries.ts",
+              "lib/db/comments.ts",
+              "lib/startup/preflight.ts",
+            ],
+            streetNote:
+              "One single source of truth for R2 key paths (recordingObjectKey) and SQL hydration. Connects via DATABASE_URL over Render private network.",
+            journeys: ["upload", "watch", "auth"],
+            invariants: [
+              "Next.js server is the ONLY process that talks to Postgres",
+              "Runtime R2 client uses scoped S3 keys, never Cloudflare account API token",
+            ],
+            files: [
+              "web/lib/r2/client.ts",
+              "web/lib/db/client.ts",
+              "web/lib/db/queries.ts",
+              "web/lib/db/comments.ts",
+              "web/lib/startup/preflight.ts",
+            ],
+          },
+          {
+            id: "r2-bucket",
+            district: "r2",
+            title: "R2 Object Bucket",
+            tag: "S3-Compatible",
+            x: 1997,
+            y: 270,
+            w: 336,
+            h: 220,
+            summary:
+              "Deterministic per-recording key layout storing the raw MP4 video and immutable sidecar artifacts.",
+            chips: [
+              "recordings/{id}/video.mp4",
+              "recordings/{id}/transcript.json",
+              "recordings/{id}/thumbnail-v1.jpg",
+            ],
+            streetNote:
+              "Sidecars written with Cache-Control: public, max-age=31536000, immutable. Bucket + CORS provisioned automatically by npm run r2:setup.",
+            journeys: ["upload", "watch"],
+            invariants: [
+              "Video bytes PUT directly from Mac via 15-min Content-Type-locked presigned URL",
+            ],
+            files: [
+              "web/lib/r2/client.ts",
+              "scripts/r2-setup.ts",
+              "scripts/r2-orphans.ts",
+            ],
+          },
+          {
+            id: "r2-cdn",
+            district: "r2",
+            title: "Public CDN Edge",
+            tag: "$0 Egress",
+            x: 2355,
+            y: 270,
+            w: 328,
+            h: 220,
+            summary:
+              "Serves video bytes (with HTTP Range seeking), transcript JSON, and JPEG thumbnails directly to browsers via R2_PUBLIC_BASE_URL.",
+            chips: ["R2_PUBLIC_BASE_URL", "HTTP Range 206", "CORS Enabled"],
+            streetNote:
+              "Doctor checks live HTTP Range support on R2 so scrubbing and ?t= deep-links seek instantaneously in every browser.",
+            journeys: ["watch"],
+            invariants: ["Zero bandwidth fees regardless of share-link views"],
+            files: ["web/lib/r2/client.ts", "scripts/doctor.ts"],
+          },
+          {
+            id: "pg-recordings",
+            district: "db",
+            title: "recordings, comments & commenters",
+            tag: "Core Tables",
+            x: 1997,
+            y: 645,
+            w: 336,
+            h: 250,
+            summary:
+              "Source of truth for recording lifecycle (pending|complete), titles, durations, and timeline-anchored viewer/admin comments.",
+            chips: [
+              "recordings (status, created_at DESC)",
+              "comments (ON DELETE CASCADE)",
+              "commenters (anonymous UUID)",
+            ],
+            streetNote:
+              "CHECK constraint comments_identity_xor guarantees every comment is strictly admin (is_admin=true, commenter_id NULL) OR guest (commenter_id NOT NULL).",
+            journeys: ["upload", "watch"],
+            invariants: [
+              "Deleting a recording cascades all its comments automatically",
+              'Display names computed at read time ("Admin" or "Guest <4-hex>")',
+            ],
+            files: [
+              "db/migrations/20260408000000_create_recordings.sql",
+              "db/migrations/20260410090400_create_comments.sql",
+            ],
+          },
+          {
+            id: "pg-auth",
+            district: "db",
+            title: "device_tokens & schema_migrations",
+            tag: "Auth + Bookkeeping",
+            x: 2355,
+            y: 645,
+            w: 328,
+            h: 250,
+            summary:
+              "Tracks revocable per-Mac SHA-256 token hashes with hostname label & last_used_at, plus ordered migration history.",
+            chips: ["device_tokens (token_hash UNIQUE)", "schema_migrations"],
+            streetNote:
+              "All DDL goes exclusively through db/migrations/*.sql applied inside transactions by scripts/db.ts and linted by squawk.",
+            journeys: ["auth", "ops"],
+            invariants: [
+              "Raw device tokens are never stored in Postgres — only SHA-256 hashes",
+              "Postgres major version 17 kept in lockstep across Docker, Render, CI & squawk",
+            ],
+            files: [
+              "db/migrations/20261114174600_create_device_tokens.sql",
+              "scripts/db.ts",
+            ],
+          },
+          {
+            id: "viewer-browser",
+            district: "browser",
+            title: "Public Viewer",
+            tag: "No Account Needed",
+            x: 1997,
+            y: 1050,
+            w: 336,
+            h: 230,
+            summary:
+              "Opens any /r/[id] share link to stream video directly from R2 CDN, click words in the live transcript to seek, and drop timestamped comments.",
+            chips: [
+              "/r/[id]?t=42",
+              "koom-commenter cookie",
+              "Click-to-seek transcript",
+            ],
+            streetNote:
+              "Light/dark/system theme synced via localStorage. Viewers can delete their own comments via their persistent anonymous cookie.",
+            journeys: ["watch"],
+            invariants: [
+              "Video playback never routes through Next.js — streams straight from Cloudflare R2",
+            ],
+            files: [
+              "web/app/r/[id]/watch-experience.tsx",
+              "web/app/r/[id]/video-player.tsx",
+            ],
+          },
+          {
+            id: "admin-browser",
+            district: "browser",
+            title: "Admin Browser",
+            tag: "iron-session Cookie",
+            x: 2355,
+            y: 1050,
+            w: 328,
+            h: 230,
+            summary:
+              "Signs in via Google OAuth to browse /app/recordings, rename titles inline on watch pages, moderate comments, and approve Mac pairing at /connect.",
+            chips: [
+              "/app/recordings",
+              "Inline title rename",
+              "/connect approval",
+            ],
+            streetNote:
+              "Uses the exact same Google OAuth flow to authorize both browser sessions and new macOS desktop installations.",
+            journeys: ["watch", "auth"],
+            invariants: [
+              "Single-tenant: restricted strictly to emails in KOOM_ADMIN_EMAILS",
+            ],
+            files: [
+              "web/app/app/recordings/page.tsx",
+              "web/app/connect/page.tsx",
+            ],
+          },
+          {
+            id: "google-oauth",
+            district: "oauth",
+            title: "Google Identity Provider",
+            tag: "OAuth 2.0",
+            x: 1162,
+            y: 1200,
+            w: 496,
+            h: 86,
+            summary:
+              "Authenticates admin Google accounts and redirects back to /api/auth/google/callback for allowlist verification.",
+            chips: [
+              "GOOGLE_CLIENT_ID",
+              "GOOGLE_CLIENT_SECRET",
+              "KOOM_ADMIN_EMAILS",
+            ],
+            streetNote:
+              "Authorized redirect URIs cover both localhost:3000 and production Render / custom domain (KOOM_PUBLIC_BASE_URL).",
+            journeys: ["auth"],
+            invariants: ["No passwords stored anywhere in koom"],
+            files: [
+              "web/lib/auth/google.ts",
+              "web/app/api/auth/google/start/route.ts",
+            ],
+          },
+          {
+            id: "render-bp",
+            district: "ops",
+            title: "Render Blueprint & Pre-Deploy",
+            tag: "render.yaml",
+            x: 102,
+            y: 1452,
+            w: 616,
+            h: 185,
+            summary:
+              "Declares koom-web (Node web service) and koom-db (Postgres 17) in Oregon. Runs npm run db:migrate as preDeployCommand before each release.",
+            chips: [
+              "render.yaml",
+              "preDeployCommand: db:migrate",
+              "buildFilter",
+              "healthCheckPath: /login",
+            ],
+            streetNote:
+              "buildFilter skips web redeploys when only client/ or docs/ change. DATABASE_URL wired automatically via fromDatabase.",
+            journeys: ["ops"],
+            invariants: [
+              "A failing SQL migration aborts the deploy while previous release stays live",
+            ],
+            files: ["render.yaml", "scripts/db.ts"],
+          },
+          {
+            id: "ops-scripts",
+            district: "ops",
+            title: "Operator CLI Suite (tsx)",
+            tag: "scripts/*.ts",
+            x: 748,
+            y: 1452,
+            w: 616,
+            h: 185,
+            summary:
+              "Guided self-host diagnostics (doctor), zero-click R2 bucket+CORS provisioning (r2:setup), orphan sweep, env drift check & device token minting.",
+            chips: [
+              "npm run doctor",
+              "r2:setup",
+              "r2:orphans",
+              "render:sync",
+              "device:token",
+            ],
+            streetNote:
+              "doctor validates R2 Range requests, Render Postgres schema, Render service env drift & desktop runtime without needing Docker.",
+            journeys: ["ops"],
+            invariants: [
+              "render:sync is read-only and never prints secret values",
+            ],
+            files: [
+              "scripts/doctor.ts",
+              "scripts/r2-setup.ts",
+              "scripts/r2-orphans.ts",
+              "scripts/render-sync.ts",
+              "scripts/device-token.ts",
+            ],
+          },
+          {
+            id: "local-dev",
+            district: "ops",
+            title: "Local Dev Stack & SQL Lint",
+            tag: "Docker Compose",
+            x: 1394,
+            y: 1452,
+            w: 616,
+            h: 185,
+            summary:
+              "Project-local Postgres 17 container on 127.0.0.1:54322 matching production, validated by doctor:dev, db:reset (localhost-only) & squawk.",
+            chips: [
+              "docker-compose.yml",
+              "web/.env.local",
+              "web/.env.prod.local",
+              "sql:lint (squawk)",
+            ],
+            streetNote:
+              "Pre-commit (husky) & CI run ESLint, Prettier, swift format, ShellCheck, squawk, and gitleaks.",
+            journeys: ["ops"],
+            invariants: [
+              "db:reset refuses to run against anything other than localhost",
+            ],
+            files: ["docker-compose.yml", "scripts/db.ts", "package.json"],
+          },
+          {
+            id: "audio-lab",
+            district: "ops",
+            title: "Audio Lab & macOS Build Scripts",
+            tag: "Local Tooling",
+            x: 2040,
+            y: 1452,
+            w: 642,
+            h: 185,
+            summary:
+              "Blind listening evaluation harness (scripts/audio-lab) that selected Sidon, plus terminal-only Swift app build, codesign & /Applications install scripts.",
+            chips: [
+              "scripts/audio-lab/",
+              "app:build",
+              "app:install",
+              "app:codesign",
+              "app:run:onboarding",
+            ],
+            streetNote:
+              "app:codesign creates a stable local signing identity so rebuilds preserve Keychain & macOS privacy permissions.",
+            journeys: ["ops"],
+            invariants: [
+              "app:run:onboarding launches a fresh disposable temp profile without touching real settings",
+            ],
+            files: [
+              "scripts/audio-lab/README.md",
+              "client/scripts/build-app.sh",
+              "client/scripts/install-app.sh",
+              "client/scripts/setup-dev-codesign.sh",
+            ],
+          },
+        ];
+
+        const EDGES = [
+          {
+            id: "e-init",
+            step: "1",
+            from: "uploader",
+            to: "admin-api",
+            label: "POST /uploads/init",
+            detail:
+              "Bearer token → inserts pending row in Postgres & returns 15-min presigned R2 PUT URL + recordingId.",
+            kind: "api",
+            color: "#0d9488",
+            journeys: ["upload"],
+            path: "M 828 650 C 920 650, 945 360, 1062 360",
+            labelPos: [950, 445],
+          },
+          {
+            id: "e-r2-put",
+            step: "2",
+            from: "uploader",
+            to: "r2-bucket",
+            label: "Direct PUT video.mp4 (bypasses web server)",
+            detail:
+              "Streams finalized H.264 MP4 straight from macOS URLSession to Cloudflare R2 using the short-lived presigned URL (no Bearer header sent to R2).",
+            kind: "media",
+            color: "#ea580c",
+            journeys: ["upload"],
+            path: "M 828 600 L 882 600 C 896 600, 902 588, 902 568 L 902 108 C 902 78, 922 66, 956 66 L 2110 66 C 2150 66, 2165 86, 2165 124 L 2165 270",
+            labelPos: [1480, 66],
+          },
+          {
+            id: "e-complete",
+            step: "3",
+            from: "uploader",
+            to: "admin-api",
+            label: "POST /uploads/complete",
+            detail:
+              "Server verifies video.mp4 landed via R2 HEAD, flips Postgres status pending → complete, and returns share URL /r/[id].",
+            kind: "api",
+            color: "#0d9488",
+            journeys: ["upload"],
+            path: "M 828 705 C 925 705, 955 435, 1062 435",
+            labelPos: [950, 540],
+          },
+          {
+            id: "e-sidecars",
+            step: "4",
+            from: "uploader",
+            to: "admin-api",
+            label: "PATCH title + PUT transcript & thumbnail",
+            detail:
+              "Once parallel on-device WhisperKit + llama.cpp + AVAssetImageGenerator finish, client PATCHes title and PUTs transcript.json & thumbnail-v1.jpg.",
+            kind: "api",
+            color: "#0d9488",
+            journeys: ["upload"],
+            path: "M 828 760 C 930 760, 965 510, 1062 510",
+            labelPos: [950, 650],
+          },
+          {
+            id: "e-s3-api",
+            step: "5",
+            from: "server-clients",
+            to: "r2-bucket",
+            label: "S3 API: HEAD, sidecar PUT & DELETE",
+            detail:
+              "Next.js uses @aws-sdk/client-s3 with scoped R2 credentials to verify MP4 uploads, upload immutable transcript/thumbnail sidecars, and clean up deleted recordings.",
+            kind: "api",
+            color: "#0d9488",
+            journeys: ["upload", "watch"],
+            path: "M 1758 935 L 1852 935 C 1876 935, 1886 920, 1886 895 L 1886 385 C 1886 365, 1902 355, 1928 355 L 1997 355",
+            labelPos: [1886, 465],
+          },
+          {
+            id: "e-pg-sql",
+            step: "6",
+            from: "server-clients",
+            to: "pg-recordings",
+            label: "SQL over Render private network (pg)",
+            detail:
+              "Parameterized pg pool queries to recordings, comments, commenters & device_tokens. Next.js is the ONLY service with DB access.",
+            kind: "api",
+            color: "#4f46e5",
+            journeys: ["upload", "watch", "auth"],
+            path: "M 1758 985 L 1885 985 C 1908 985, 1916 972, 1916 946 L 1916 792 C 1916 774, 1930 765, 1955 765 L 1997 765",
+            labelPos: [1908, 868],
+          },
+          {
+            id: "e-cdn-stream",
+            step: "7",
+            from: "r2-cdn",
+            to: "viewer-browser",
+            label: "Direct CDN stream: MP4 & sidecars",
+            detail:
+              "Browsers stream video.mp4 (HTTP Range requests), transcript.json, and thumbnail-v1.jpg straight from Cloudflare R2 edge with zero egress fees.",
+            kind: "media",
+            color: "#ea580c",
+            journeys: ["watch"],
+            path: "M 2683 380 L 2790 380 C 2820 380, 2832 396, 2832 428 L 2832 1140 C 2832 1170, 2816 1185, 2788 1185 L 2683 1185",
+            labelPos: [2832, 780],
+          },
+          {
+            id: "e-watch-http",
+            step: "8",
+            from: "viewer-browser",
+            to: "watch-ui",
+            label: "HTTPS: SSR /r/[id] & comments API",
+            detail:
+              "Loads server-rendered watch page and posts/deletes timestamped comments with koom-commenter HttpOnly UUID cookie.",
+            kind: "api",
+            color: "#7c3aed",
+            journeys: ["watch"],
+            path: "M 1997 1150 L 1872 1150 C 1848 1150, 1838 1136, 1838 1108 L 1838 908 C 1838 892, 1826 885, 1805 885 L 1255 885 C 1238 885, 1232 880, 1232 870",
+            labelPos: [1845, 1110],
+          },
+          {
+            id: "e-oauth-web",
+            step: "A",
+            from: "auth-layer",
+            to: "google-oauth",
+            label: "OAuth 2.0 (/api/auth/google/*)",
+            detail:
+              "Redirects admin browser or /connect sheet to Google consent screen and verifies returned email against KOOM_ADMIN_EMAILS.",
+            kind: "auth",
+            color: "#db2777",
+            journeys: ["auth"],
+            path: "M 1410 1080 L 1410 1200",
+            labelPos: [1410, 1142],
+          },
+          {
+            id: "e-connect-mac",
+            step: "B",
+            from: "client-auth",
+            to: "admin-ui",
+            label: "/connect pairing → Keychain device token",
+            detail:
+              "macOS Settings opens /connect in system sign-in sheet; after Google sign-in, server stores SHA-256 hash in device_tokens and hands token to Mac Keychain.",
+            kind: "auth",
+            color: "#db2777",
+            journeys: ["auth"],
+            path: "M 828 945 L 966 945 C 986 945, 996 932, 996 908 L 996 620 C 996 606, 1006 600, 1024 600 L 1572 600 C 1586 600, 1591 605, 1591 615",
+            labelPos: [950, 945],
+          },
+          {
+            id: "e-admin-cookie",
+            step: "C",
+            from: "admin-browser",
+            to: "admin-ui",
+            label: "Signed iron-session cookie",
+            detail:
+              "Browser admin accesses /app/recordings, inline renames, comment moderation, and /connect confirmation.",
+            kind: "auth",
+            color: "#db2777",
+            journeys: ["auth", "watch"],
+            path: "M 2519 1280 L 2519 1316 C 2519 1326, 2508 1330, 2490 1330 L 1842 1330 C 1818 1330, 1808 1316, 1808 1292 L 1808 760 C 1808 746, 1798 740, 1782 740 L 1758 740",
+            labelPos: [2160, 1330],
+          },
+          {
+            id: "e-local-audio",
+            from: "capture",
+            to: "audio",
+            label: "Assembled MP4",
+            detail:
+              "RecordingAssembler stitches ~30s segments into finalized ~/Movies/koom/<env>/koom_*.mp4.",
+            kind: "local",
+            color: "#3b82f6",
+            journeys: ["upload"],
+            path: "M 277 495 L 277 525",
+            labelPos: null,
+          },
+          {
+            id: "e-local-opt",
+            from: "audio",
+            to: "optimizer",
+            label: "Cleaned MP4",
+            detail:
+              "Denoised + loudness-normalized MP4 handed to optional ffmpeg re-encoder.",
+            kind: "local",
+            color: "#3b82f6",
+            journeys: ["upload"],
+            path: "M 277 750 L 277 780",
+            labelPos: null,
+          },
+          {
+            id: "e-local-upload",
+            from: "optimizer",
+            to: "uploader",
+            label: "Final MP4",
+            detail:
+              "Uploader starts MP4 upload and local AI post-processing concurrently.",
+            kind: "local",
+            color: "#3b82f6",
+            journeys: ["upload"],
+            path: "M 452 865 L 468 865 C 474 865, 476 860, 476 850 L 476 725 C 476 715, 478 710, 484 710",
+            labelPos: null,
+          },
+          {
+            id: "e-local-ai",
+            from: "uploader",
+            to: "local-ai",
+            label: "Parallel AI",
+            detail:
+              "Extracts 16 kHz PCM → WhisperKit transcript → llama.cpp title + JPEG thumbnail while MP4 streams to R2.",
+            kind: "local",
+            color: "#3b82f6",
+            journeys: ["upload"],
+            path: "M 656 575 L 656 545",
+            labelPos: null,
+          },
+          {
+            id: "e-ops-deploy",
+            step: "D",
+            from: "render-bp",
+            to: "pg-auth",
+            label: "Pre-deploy db:migrate",
+            detail:
+              "Render runs npm run db:migrate against koom-db before koom-web starts serving the new release.",
+            kind: "ops",
+            color: "#64748b",
+            journeys: ["ops"],
+            path: "M 410 1452 L 410 1352 L 1938 1352 C 1944 1352, 1946 1346, 1946 1336 L 1946 952 C 1946 944, 1952 940, 1966 940 L 2504 940 C 2515 940, 2519 934, 2519 922 L 2519 895",
+            labelPos: [1060, 1352],
+          },
+        ];
+
+        const JOURNEYS = {
+          upload: {
+            title:
+              "Journey: Record on Mac → Direct R2 Upload → On-Device AI Sidecars",
+            steps: [
+              { label: "1. Capture ~30s segments", target: "capture" },
+              { label: "2. Denoise & -20.5 LUFS", target: "audio" },
+              { label: "3. POST /uploads/init", target: "admin-api" },
+              { label: "4. Direct PUT to R2", target: "r2-bucket" },
+              { label: "5. Parallel WhisperKit + Qwen", target: "local-ai" },
+              { label: "6. Complete & Sidecars", target: "uploader" },
+            ],
+          },
+          watch: {
+            title:
+              "Journey: Share Link /r/[id] → Zero-Egress CDN Playback & Comments",
+            steps: [
+              { label: "1. Open /r/[id]", target: "viewer-browser" },
+              { label: "2. SSR Metadata + Comments", target: "watch-ui" },
+              { label: "3. Query Postgres 17", target: "pg-recordings" },
+              { label: "4. Stream R2 CDN Edge", target: "r2-cdn" },
+            ],
+          },
+          auth: {
+            title:
+              "Journey: Google OAuth Allowlist → Browser Cookie & Mac Device Token",
+            steps: [
+              { label: "1. Google OAuth 2.0", target: "google-oauth" },
+              { label: "2. Allowlist & iron-session", target: "auth-layer" },
+              { label: "3. /connect Mac Pairing", target: "admin-ui" },
+              { label: "4. SHA-256 device_tokens", target: "pg-auth" },
+              { label: "5. macOS Keychain", target: "client-auth" },
+            ],
+          },
+          ops: {
+            title:
+              "Journey: Render Blueprint, Pre-Deploy Migrations & CLI Doctor",
+            steps: [
+              { label: "1. Render Blueprint", target: "render-bp" },
+              { label: "2. db:migrate Pre-Deploy", target: "pg-auth" },
+              { label: "3. CLI Doctor & r2:setup", target: "ops-scripts" },
+              { label: "4. Local Docker Postgres", target: "local-dev" },
+            ],
+          },
+        };
+
+        const state = {
+          x: 0,
+          y: 0,
+          scale: 0.55,
+          minScale: 0.24,
+          maxScale: 2.25,
+          vx: 0,
+          vy: 0,
+          dragging: false,
+          lastX: 0,
+          lastY: 0,
+          dragDist: 0,
+          activeJourney: "all",
+          selectedType: null,
+          selectedId: null,
+          animId: null,
+        };
+
+        const viewport = document.getElementById("viewport");
+        const worldLayer = document.getElementById("world-layer");
+        const gridCanvas = document.getElementById("grid-canvas");
+        const gridCtx = gridCanvas.getContext("2d");
+        const edgesSvg = document.getElementById("edges-svg");
+        const districtsLayer = document.getElementById("districts-layer");
+        const modulesLayer = document.getElementById("modules-layer");
+        const edgeLabelsLayer = document.getElementById("edge-labels-layer");
+        const minimapCanvas = document.getElementById("minimap-canvas");
+        const minimapCtx = minimapCanvas.getContext("2d");
+        const inspector = document.getElementById("inspector");
+        const inspKicker = document.getElementById("insp-kicker");
+        const inspTitle = document.getElementById("insp-title");
+        const inspBody = document.getElementById("inspector-body");
+        const lodLabel = document.getElementById("lod-label");
+        const zoomPct = document.getElementById("zoom-pct");
+        const themeIcon = document.getElementById("theme-icon");
+
+        const districtMap = Object.fromEntries(DISTRICTS.map((d) => [d.id, d]));
+        const moduleMap = Object.fromEntries(MODULES.map((m) => [m.id, m]));
+        const edgeMap = Object.fromEntries(EDGES.map((e) => [e.id, e]));
+
+        function isDarkTheme() {
+          return document.documentElement.getAttribute("data-theme") === "dark";
+        }
+
+        function syncThemeButton() {
+          themeIcon.textContent = isDarkTheme() ? "☀" : "☾";
+        }
+
+        function setTheme(theme) {
+          document.documentElement.setAttribute("data-theme", theme);
+          try {
+            localStorage.setItem("koom-arch-theme", theme);
+          } catch {
+            // Ignore storage errors.
+          }
+          syncThemeButton();
+          updateDistrictThemeColors();
+          drawGrid();
+          drawMinimap();
+        }
+
+        function buildWorld() {
+          const dark = isDarkTheme();
+
+          districtsLayer.innerHTML = "";
+          for (const d of DISTRICTS) {
+            const el = document.createElement("div");
+            el.className = "district";
+            el.dataset.districtId = d.id;
+            el.style.left = d.x + "px";
+            el.style.top = d.y + "px";
+            el.style.width = d.w + "px";
+            el.style.height = d.h + "px";
+            el.style.background = dark ? d.darkBg : d.lightBg;
+            el.style.borderColor = d.border;
+
+            el.innerHTML = `
+              <div class="district-header" title="Click to zoom into ${d.name}">
+                <div class="district-title-group">
+                  <div class="district-icon" style="background:${d.accent}">${d.icon}</div>
+                  <div>
+                    <div class="district-title">${d.name}</div>
+                    <div class="district-sub">${d.subtitle}</div>
+                  </div>
+                </div>
+                <span class="district-badge" style="background:${d.accent}22; color:${d.accent}; border:1px solid ${d.accent}44;">${d.badge}</span>
+              </div>
+              <div class="district-macro">
+                ${d.macroPoints
+                  .map(
+                    (p) => `
+                  <div style="display:flex; align-items:flex-start; gap:10px; font-size:21px; line-height:1.38; font-weight:550; color:var(--fg);">
+                    <span style="color:${d.accent}; font-weight:800;">•</span>
+                    <span>${p}</span>
+                  </div>
+                `,
+                  )
+                  .join("")}
+              </div>
+            `;
+            el.querySelector(".district-header").addEventListener(
+              "click",
+              (ev) => {
+                if (state.dragDist > 6) return;
+                ev.stopPropagation();
+                flyToRect(d.x - 40, d.y - 40, d.w + 80, d.h + 80);
+                selectDistrict(d.id);
+              },
+            );
+            districtsLayer.appendChild(el);
+          }
+
+          modulesLayer.innerHTML = "";
+          for (const m of MODULES) {
+            const d = districtMap[m.district];
+            const el = document.createElement("div");
+            el.className = "module-card";
+            el.dataset.moduleId = m.id;
+            el.style.left = m.x + "px";
+            el.style.top = m.y + "px";
+            el.style.width = m.w + "px";
+            el.style.height = m.h + "px";
+            el.style.setProperty("--ring-color", d.accent);
+
+            el.innerHTML = `
+              <div class="module-head">
+                <div class="module-title">${m.title}</div>
+                <span class="module-tag" style="background:${d.accent}1c; color:${d.accent};">${m.tag}</span>
+              </div>
+              <div class="module-summary">${m.summary}</div>
+              <div class="street-details">
+                <div class="code-chips">
+                  ${m.chips.map((c) => `<span class="code-chip">${c}</span>`).join("")}
+                </div>
+                <div class="street-only">${m.streetNote}</div>
+              </div>
+            `;
+            el.addEventListener("click", (ev) => {
+              if (state.dragDist > 6) return;
+              ev.stopPropagation();
+              selectModule(m.id);
+            });
+            el.addEventListener("dblclick", (ev) => {
+              ev.stopPropagation();
+              flyToRect(m.x - 70, m.y - 70, m.w + 140, m.h + 140, 1.38);
+            });
+            modulesLayer.appendChild(el);
+          }
+
+          const ns = "http://www.w3.org/2000/svg";
+          edgesSvg.innerHTML = "";
+          const defs = document.createElementNS(ns, "defs");
+          const colors = [...new Set(EDGES.map((e) => e.color))];
+          for (const col of colors) {
+            const cid = col.replace("#", "");
+            const marker = document.createElementNS(ns, "marker");
+            marker.setAttribute("id", `arrow-${cid}`);
+            marker.setAttribute("viewBox", "0 0 12 12");
+            marker.setAttribute("refX", "9");
+            marker.setAttribute("refY", "6");
+            marker.setAttribute("markerWidth", "7.5");
+            marker.setAttribute("markerHeight", "7.5");
+            marker.setAttribute("orient", "auto-start-reverse");
+            const p = document.createElementNS(ns, "path");
+            p.setAttribute("d", "M 1 1.5 L 10.5 6 L 1 10.5 z");
+            p.setAttribute("fill", col);
+            marker.appendChild(p);
+            defs.appendChild(marker);
+          }
+          edgesSvg.appendChild(defs);
+
+          edgeLabelsLayer.innerHTML = "";
+          for (const e of EDGES) {
+            const cid = e.color.replace("#", "");
+            const g = document.createElementNS(ns, "g");
+            g.dataset.edgeId = e.id;
+
+            const base = document.createElementNS(ns, "path");
+            base.setAttribute("d", e.path);
+            base.setAttribute("class", "edge-path");
+            base.setAttribute("stroke", e.color);
+            base.setAttribute(
+              "stroke-width",
+              e.kind === "media" ? "5.5" : e.kind === "local" ? "2.4" : "3",
+            );
+            if (e.kind === "auth") base.setAttribute("stroke-dasharray", "9 7");
+            if (e.kind === "local")
+              base.setAttribute("stroke-dasharray", "3 5");
+            if (e.kind === "ops") base.setAttribute("stroke-dasharray", "6 6");
+            base.setAttribute("marker-end", `url(#arrow-${cid})`);
+            g.appendChild(base);
+
+            const pulse = document.createElementNS(ns, "path");
+            pulse.setAttribute("d", e.path);
+            pulse.setAttribute("class", "edge-flow");
+            pulse.setAttribute("stroke", "#ffffff");
+            pulse.setAttribute("stroke-opacity", "0.8");
+            pulse.setAttribute(
+              "stroke-width",
+              e.kind === "media" ? "2.5" : "1.6",
+            );
+            pulse.style.display = "none";
+            g.appendChild(pulse);
+
+            const hit = document.createElementNS(ns, "path");
+            hit.setAttribute("d", e.path);
+            hit.setAttribute("class", "edge-hit");
+            hit.addEventListener("click", (ev) => {
+              if (state.dragDist > 6) return;
+              ev.stopPropagation();
+              selectEdge(e.id);
+            });
+            g.appendChild(hit);
+            edgesSvg.appendChild(g);
+
+            if (e.labelPos) {
+              const pill = document.createElement("div");
+              pill.className = "edge-label-pill";
+              pill.dataset.edgeLabelId = e.id;
+              pill.style.left = e.labelPos[0] + "px";
+              pill.style.top = e.labelPos[1] + "px";
+              pill.style.borderColor = e.color + "66";
+              pill.innerHTML = `
+                ${e.step ? `<span class="edge-step-num" style="background:${e.color}">${e.step}</span>` : ""}
+                <span>${e.label}</span>
+              `;
+              pill.addEventListener("click", (ev) => {
+                if (state.dragDist > 6) return;
+                ev.stopPropagation();
+                selectEdge(e.id);
+              });
+              edgeLabelsLayer.appendChild(pill);
+            }
+          }
+        }
+
+        function updateDistrictThemeColors() {
+          const dark = isDarkTheme();
+          document.querySelectorAll(".district").forEach((el) => {
+            const d = districtMap[el.dataset.districtId];
+            if (d) el.style.background = dark ? d.darkBg : d.lightBg;
+          });
+        }
+
+        function applyTransform() {
+          worldLayer.style.transform = `translate3d(${state.x}px, ${state.y}px, 0) scale(${state.scale})`;
+
+          viewport.classList.remove(
+            "zoom-world",
+            "zoom-district",
+            "zoom-street",
+          );
+          if (state.scale < 0.34) {
+            viewport.classList.add("zoom-world");
+            lodLabel.textContent = "World View";
+          } else if (state.scale < 0.88) {
+            viewport.classList.add("zoom-district");
+            lodLabel.textContent = "District View";
+          } else {
+            viewport.classList.add("zoom-street");
+            lodLabel.textContent = "Street / Code View";
+          }
+          zoomPct.textContent = Math.round(state.scale * 100) + "%";
+
+          drawGrid();
+          drawMinimap();
+        }
+
+        function drawGrid() {
+          const dpr = window.devicePixelRatio || 1;
+          const vw = window.innerWidth;
+          const vh = window.innerHeight;
+          if (
+            gridCanvas.width !== Math.round(vw * dpr) ||
+            gridCanvas.height !== Math.round(vh * dpr)
+          ) {
+            gridCanvas.width = Math.round(vw * dpr);
+            gridCanvas.height = Math.round(vh * dpr);
+            gridCanvas.style.width = vw + "px";
+            gridCanvas.style.height = vh + "px";
+          }
+          gridCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          gridCtx.clearRect(0, 0, vw, vh);
+
+          const dark = isDarkTheme();
+          const step = 80 * state.scale;
+          if (step < 14) return;
+
+          const offsetX = ((state.x % step) + step) % step;
+          const offsetY = ((state.y % step) + step) % step;
+
+          gridCtx.fillStyle = dark
+            ? "rgba(148, 163, 184, 0.2)"
+            : "rgba(100, 116, 139, 0.22)";
+          for (let x = offsetX; x < vw; x += step) {
+            for (let y = offsetY; y < vh; y += step) {
+              gridCtx.beginPath();
+              gridCtx.arc(x, y, 1.15, 0, Math.PI * 2);
+              gridCtx.fill();
+            }
+          }
+
+          const major = 320 * state.scale;
+          const mx0 = ((state.x % major) + major) % major;
+          const my0 = ((state.y % major) + major) % major;
+          gridCtx.strokeStyle = dark
+            ? "rgba(148, 163, 184, 0.07)"
+            : "rgba(100, 116, 139, 0.07)";
+          gridCtx.lineWidth = 1;
+          gridCtx.beginPath();
+          for (let x = mx0; x < vw; x += major) {
+            gridCtx.moveTo(x, 0);
+            gridCtx.lineTo(x, vh);
+          }
+          for (let y = my0; y < vh; y += major) {
+            gridCtx.moveTo(0, y);
+            gridCtx.lineTo(vw, y);
+          }
+          gridCtx.stroke();
+        }
+
+        function drawMinimap() {
+          const w = minimapCanvas.width;
+          const h = minimapCanvas.height;
+          const sx = w / WORLD_W;
+          const sy = h / WORLD_H;
+          const dark = isDarkTheme();
+
+          minimapCtx.clearRect(0, 0, w, h);
+          minimapCtx.fillStyle = dark
+            ? "rgba(15, 23, 42, 0.65)"
+            : "rgba(241, 245, 249, 0.9)";
+          minimapCtx.fillRect(0, 0, w, h);
+
+          for (const d of DISTRICTS) {
+            minimapCtx.fillStyle = d.accent + "44";
+            minimapCtx.strokeStyle = d.accent;
+            minimapCtx.lineWidth = 1.6;
+            const rx = d.x * sx;
+            const ry = d.y * sy;
+            const rw = d.w * sx;
+            const rh = d.h * sy;
+            minimapCtx.beginPath();
+            minimapCtx.roundRect(rx, ry, rw, rh, 5);
+            minimapCtx.fill();
+            minimapCtx.stroke();
+          }
+
+          const vx = (-state.x / state.scale) * sx;
+          const vy = (-state.y / state.scale) * sy;
+          const vw = (window.innerWidth / state.scale) * sx;
+          const vh = (window.innerHeight / state.scale) * sy;
+
+          minimapCtx.fillStyle = "rgba(37, 99, 235, 0.16)";
+          minimapCtx.strokeStyle = "#3b82f6";
+          minimapCtx.lineWidth = 2.4;
+          minimapCtx.fillRect(vx, vy, vw, vh);
+          minimapCtx.strokeRect(vx, vy, vw, vh);
+        }
+
+        function stopAnim() {
+          if (state.animId) {
+            cancelAnimationFrame(state.animId);
+            state.animId = null;
+          }
+        }
+
+        function animateTo(tx, ty, ts, duration = 420) {
+          stopAnim();
+          const sx = state.x;
+          const sy = state.y;
+          const ss = state.scale;
+          const start = performance.now();
+          const ease = (t) => 1 - Math.pow(1 - t, 3);
+          function tick(now) {
+            const p = Math.min(1, (now - start) / duration);
+            const e = ease(p);
+            state.x = sx + (tx - sx) * e;
+            state.y = sy + (ty - sy) * e;
+            state.scale = ss + (ts - ss) * e;
+            applyTransform();
+            if (p < 1) {
+              state.animId = requestAnimationFrame(tick);
+            } else {
+              state.animId = null;
+            }
+          }
+          state.animId = requestAnimationFrame(tick);
+        }
+
+        function flyToRect(rx, ry, rw, rh, maxZoom = 1.45) {
+          const padTop = 74;
+          const padRight = inspector.classList.contains("open") ? 380 : 36;
+          const padBottom = 64;
+          const padLeft = 36;
+          const availW = Math.max(240, window.innerWidth - padLeft - padRight);
+          const availH = Math.max(200, window.innerHeight - padTop - padBottom);
+          const targetScale = Math.max(
+            state.minScale,
+            Math.min(maxZoom, availW / rw, availH / rh),
+          );
+          const cx = rx + rw / 2;
+          const cy = ry + rh / 2;
+          const targetX = padLeft + availW / 2 - cx * targetScale;
+          const targetY = padTop + availH / 2 - cy * targetScale;
+          animateTo(targetX, targetY, targetScale);
+        }
+
+        function fitAll(instant = false) {
+          const padTop = 68;
+          const padBottom = 40;
+          const padX = 28;
+          const availW = Math.max(300, window.innerWidth - padX * 2);
+          const availH = Math.max(220, window.innerHeight - padTop - padBottom);
+          const s = Math.max(
+            state.minScale,
+            Math.min(1.0, availW / WORLD_W, availH / WORLD_H),
+          );
+          const x = padX + (availW - WORLD_W * s) / 2;
+          const y = padTop + (availH - WORLD_H * s) / 2;
+          if (instant) {
+            state.x = x;
+            state.y = y;
+            state.scale = s;
+            applyTransform();
+          } else {
+            animateTo(x, y, s, 400);
+          }
+        }
+
+        function zoomAt(clientX, clientY, factor) {
+          stopAnim();
+          const nextScale = Math.max(
+            state.minScale,
+            Math.min(state.maxScale, state.scale * factor),
+          );
+          const ratio = nextScale / state.scale;
+          state.x = clientX - (clientX - state.x) * ratio;
+          state.y = clientY - (clientY - state.y) * ratio;
+          state.scale = nextScale;
+          applyTransform();
+        }
+
+        viewport.addEventListener("pointerdown", (e) => {
+          if (e.button !== 0) return;
+          stopAnim();
+          state.dragging = true;
+          state.lastX = e.clientX;
+          state.lastY = e.clientY;
+          state.vx = 0;
+          state.vy = 0;
+          state.dragDist = 0;
+          viewport.classList.add("dragging");
+        });
+
+        window.addEventListener("pointermove", (e) => {
+          if (!state.dragging) return;
+          const dx = e.clientX - state.lastX;
+          const dy = e.clientY - state.lastY;
+          state.lastX = e.clientX;
+          state.lastY = e.clientY;
+          state.dragDist += Math.hypot(dx, dy);
+          state.x += dx;
+          state.y += dy;
+          state.vx = dx;
+          state.vy = dy;
+          applyTransform();
+        });
+
+        window.addEventListener("pointerup", () => {
+          if (!state.dragging) return;
+          state.dragging = false;
+          viewport.classList.remove("dragging");
+          if (Math.hypot(state.vx, state.vy) > 2.2) {
+            function glide() {
+              state.vx *= 0.91;
+              state.vy *= 0.91;
+              state.x += state.vx;
+              state.y += state.vy;
+              applyTransform();
+              if (Math.hypot(state.vx, state.vy) > 0.35) {
+                state.animId = requestAnimationFrame(glide);
+              } else {
+                state.animId = null;
+              }
+            }
+            state.animId = requestAnimationFrame(glide);
+          }
+        });
+
+        viewport.addEventListener("click", () => {
+          if (state.dragDist > 6) return;
+          clearSelection();
+        });
+
+        viewport.addEventListener(
+          "wheel",
+          (e) => {
+            e.preventDefault();
+            const isPinch = e.ctrlKey;
+            const intensity = isPinch ? 0.012 : 0.0018;
+            const factor = Math.exp(-e.deltaY * intensity);
+            zoomAt(e.clientX, e.clientY, factor);
+          },
+          { passive: false },
+        );
+
+        let mmDragging = false;
+        function panFromMinimap(e) {
+          const rect = minimapCanvas.getBoundingClientRect();
+          const wx = ((e.clientX - rect.left) / rect.width) * WORLD_W;
+          const wy = ((e.clientY - rect.top) / rect.height) * WORLD_H;
+          stopAnim();
+          state.x = window.innerWidth / 2 - wx * state.scale;
+          state.y = window.innerHeight / 2 - wy * state.scale;
+          applyTransform();
+        }
+        minimapCanvas.addEventListener("pointerdown", (e) => {
+          mmDragging = true;
+          minimapCanvas.setPointerCapture(e.pointerId);
+          panFromMinimap(e);
+        });
+        minimapCanvas.addEventListener("pointermove", (e) => {
+          if (mmDragging) panFromMinimap(e);
+        });
+        minimapCanvas.addEventListener("pointerup", () => {
+          mmDragging = false;
+        });
+
+        function applyVisualFilters() {
+          const j = state.activeJourney;
+          const selMod =
+            state.selectedType === "module" ? state.selectedId : null;
+          const selEdge =
+            state.selectedType === "edge" ? state.selectedId : null;
+
+          const neighborMods = new Set();
+          const neighborEdges = new Set();
+          if (selMod) {
+            neighborMods.add(selMod);
+            for (const e of EDGES) {
+              if (e.from === selMod || e.to === selMod) {
+                neighborEdges.add(e.id);
+                neighborMods.add(e.from);
+                neighborMods.add(e.to);
+              }
+            }
+          } else if (selEdge) {
+            const e = edgeMap[selEdge];
+            if (e) {
+              neighborEdges.add(e.id);
+              neighborMods.add(e.from);
+              neighborMods.add(e.to);
+            }
+          }
+
+          document.querySelectorAll(".module-card").forEach((el) => {
+            const m = moduleMap[el.dataset.moduleId];
+            const inJourney = j === "all" || m.journeys.includes(j);
+            const isSelected = selMod === m.id;
+            const isNeighbor = neighborMods.has(m.id);
+
+            el.classList.toggle("selected", isSelected);
+            el.classList.toggle(
+              "highlighted",
+              !isSelected &&
+                ((j !== "all" && inJourney) ||
+                  (selMod && isNeighbor) ||
+                  (selEdge && isNeighbor)),
+            );
+            const shouldDim =
+              (j !== "all" && !inJourney) ||
+              ((selMod || selEdge) && !isNeighbor);
+            el.classList.toggle("dimmed", !!shouldDim);
+          });
+
+          document.querySelectorAll(".district").forEach((el) => {
+            const did = el.dataset.districtId;
+            const hasActiveMod = MODULES.some((m) => {
+              if (m.district !== did) return false;
+              const inJourney = j === "all" || m.journeys.includes(j);
+              const inSel = !(selMod || selEdge) || neighborMods.has(m.id);
+              return inJourney && inSel;
+            });
+            el.classList.toggle("dimmed", !hasActiveMod);
+          });
+
+          edgesSvg.querySelectorAll("g[data-edge-id]").forEach((g) => {
+            const e = edgeMap[g.dataset.edgeId];
+            const inJourney = j === "all" || e.journeys.includes(j);
+            const isFocus =
+              selEdge === e.id || (selMod && neighborEdges.has(e.id));
+            const active = inJourney && (!(selMod || selEdge) || isFocus);
+            const base = g.querySelector(".edge-path");
+            const pulse = g.querySelector(".edge-flow");
+
+            base.style.opacity = active ? "1" : "0.12";
+            base.setAttribute(
+              "stroke-width",
+              isFocus
+                ? e.kind === "media"
+                  ? "7"
+                  : "4.5"
+                : e.kind === "media"
+                  ? "5.5"
+                  : e.kind === "local"
+                    ? "2.4"
+                    : "3",
+            );
+            pulse.style.display =
+              active && (j !== "all" || isFocus) ? "block" : "none";
+
+            const pill = edgeLabelsLayer.querySelector(
+              `[data-edge-label-id="${e.id}"]`,
+            );
+            if (pill) {
+              pill.classList.toggle("dimmed", !active);
+            }
+          });
+        }
+
+        function setJourney(journeyId) {
+          state.activeJourney = journeyId;
+          document.querySelectorAll(".journey-chip").forEach((btn) => {
+            btn.classList.toggle("active", btn.dataset.journey === journeyId);
+          });
+
+          const banner = document.getElementById("journey-banner");
+          if (journeyId === "all") {
+            banner.classList.remove("open");
+            applyVisualFilters();
+            return;
+          }
+
+          const j = JOURNEYS[journeyId];
+          document.getElementById("journey-title").textContent = j.title;
+          const stepsEl = document.getElementById("journey-steps");
+          stepsEl.innerHTML = j.steps
+            .map(
+              (s, idx) => `
+            <button class="step-pill" data-target-mod="${s.target}" data-step-idx="${idx}">${s.label}</button>
+          `,
+            )
+            .join("");
+          stepsEl.querySelectorAll(".step-pill").forEach((btn) => {
+            btn.addEventListener("click", () => {
+              stepsEl
+                .querySelectorAll(".step-pill")
+                .forEach((b) => b.classList.remove("active"));
+              btn.classList.add("active");
+              const m = moduleMap[btn.dataset.targetMod];
+              if (m) {
+                selectModule(m.id, false);
+                flyToRect(m.x - 100, m.y - 100, m.w + 200, m.h + 200, 1.32);
+              }
+            });
+          });
+          banner.classList.add("open");
+          applyVisualFilters();
+        }
+
+        function openInspector(kicker, color, title, html) {
+          inspKicker.textContent = kicker;
+          inspKicker.style.color = color;
+          inspTitle.textContent = title;
+          inspBody.innerHTML = html;
+          inspector.classList.add("open");
+
+          inspBody.querySelectorAll("[data-jump-mod]").forEach((btn) => {
+            btn.addEventListener("click", () => {
+              const m = moduleMap[btn.dataset.jumpMod];
+              if (m) {
+                selectModule(m.id);
+                flyToRect(m.x - 90, m.y - 90, m.w + 180, m.h + 180, 1.32);
+              }
+            });
+          });
+        }
+
+        function clearSelection() {
+          state.selectedType = null;
+          state.selectedId = null;
+          inspector.classList.remove("open");
+          applyVisualFilters();
+        }
+
+        function selectModule(id, autoUpdate = true) {
+          const m = moduleMap[id];
+          if (!m) return;
+          const d = districtMap[m.district];
+          state.selectedType = "module";
+          state.selectedId = id;
+
+          const inbound = EDGES.filter((e) => e.to === id);
+          const outbound = EDGES.filter((e) => e.from === id);
+
+          const connList = (edges, dir) =>
+            edges.length === 0
+              ? `<div style="font-size:12px; color:var(--muted);">None</div>`
+              : edges
+                  .map((e) => {
+                    const other = moduleMap[dir === "in" ? e.from : e.to];
+                    const arrow = dir === "in" ? "←" : "→";
+                    return `
+                      <button data-jump-mod="${other.id}" style="width:100%; text-align:left; padding:8px 10px; border-radius:10px; border:1px solid var(--border); background:var(--bg); cursor:pointer; display:flex; flex-direction:column; gap:2px;">
+                        <div style="font-size:12px; font-weight:700; color:var(--fg);">${arrow} ${other.title}</div>
+                        <div style="font-size:11.5px; color:${e.color}; font-family:monospace;">${e.label}</div>
+                      </button>
+                    `;
+                  })
+                  .join("");
+
+          openInspector(
+            `${d.name} · ${m.tag}`,
+            d.accent,
+            m.title,
+            `
+              <p style="margin:0; font-size:13px; line-height:1.5; color:var(--fg);">${m.summary}</p>
+              <p style="margin:0; font-size:12.2px; line-height:1.48; color:var(--muted);">${m.streetNote}</p>
+
+              ${
+                m.invariants?.length
+                  ? `
+                <div>
+                  <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-bottom:6px;">Key Invariants</div>
+                  <ul style="margin:0; padding-left:16px; font-size:12.2px; line-height:1.48; display:flex; flex-direction:column; gap:4px;">
+                    ${m.invariants.map((i) => `<li>${i}</li>`).join("")}
+                  </ul>
+                </div>
+              `
+                  : ""
+              }
+
+              <div>
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-bottom:6px;">Outbound Interfaces (${outbound.length})</div>
+                <div style="display:flex; flex-direction:column; gap:6px;">${connList(outbound, "out")}</div>
+              </div>
+
+              <div>
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-bottom:6px;">Inbound Interfaces (${inbound.length})</div>
+                <div style="display:flex; flex-direction:column; gap:6px;">${connList(inbound, "in")}</div>
+              </div>
+
+              <div>
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-bottom:6px;">Source Files (GitHub ↗)</div>
+                <div class="code-chips">
+                  ${m.files
+                    .map(
+                      (f) =>
+                        `<a class="code-chip" href="${REPO_BLOB}${f}" target="_blank" rel="noopener noreferrer">${f} ↗</a>`,
+                    )
+                    .join("")}
+                </div>
+              </div>
+
+              <button id="btn-zoom-street" style="padding:9px 12px; border-radius:10px; border:none; background:${d.accent}; color:#fff; font-size:12.5px; font-weight:650; cursor:pointer;">
+                Zoom to Street Level
+              </button>
+            `,
+          );
+
+          const zbtn = document.getElementById("btn-zoom-street");
+          if (zbtn)
+            zbtn.addEventListener("click", () =>
+              flyToRect(m.x - 60, m.y - 60, m.w + 120, m.h + 120, 1.45),
+            );
+          if (autoUpdate) applyVisualFilters();
+        }
+
+        function selectEdge(id) {
+          const e = edgeMap[id];
+          if (!e) return;
+          const fromM = moduleMap[e.from];
+          const toM = moduleMap[e.to];
+          state.selectedType = "edge";
+          state.selectedId = id;
+
+          const kindLabel =
+            {
+              media: "Direct Media Highway",
+              api: "HTTPS / S3 / SQL Interface",
+              auth: "Auth / Control Flow",
+              local: "Local In-Process Pipeline",
+              ops: "Deployment / Ops",
+            }[e.kind] || "Interface";
+
+          openInspector(
+            kindLabel,
+            e.color,
+            e.label,
+            `
+              <p style="margin:0; font-size:13px; line-height:1.52;">${e.detail}</p>
+              <div>
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-bottom:6px;">Connected Modules</div>
+                <div style="display:flex; flex-direction:column; gap:6px;">
+                  <button data-jump-mod="${fromM.id}" style="text-align:left; padding:9px 11px; border-radius:10px; border:1px solid var(--border); background:var(--bg); cursor:pointer;">
+                    <div style="font-size:10.5px; color:var(--muted);">FROM</div>
+                    <div style="font-size:13px; font-weight:700; color:var(--fg);">${fromM.title}</div>
+                  </button>
+                  <button data-jump-mod="${toM.id}" style="text-align:left; padding:9px 11px; border-radius:10px; border:1px solid var(--border); background:var(--bg); cursor:pointer;">
+                    <div style="font-size:10.5px; color:var(--muted);">TO</div>
+                    <div style="font-size:13px; font-weight:700; color:var(--fg);">${toM.title}</div>
+                  </button>
+                </div>
+              </div>
+            `,
+          );
+          applyVisualFilters();
+        }
+
+        function selectDistrict(id) {
+          const d = districtMap[id];
+          if (!d) return;
+          state.selectedType = "district";
+          state.selectedId = id;
+          const mods = MODULES.filter((m) => m.district === id);
+
+          openInspector(
+            d.badge,
+            d.accent,
+            d.name,
+            `
+              <p style="margin:0; font-size:13px; line-height:1.5;">${d.subtitle}</p>
+              <ul style="margin:0; padding-left:16px; font-size:12.2px; line-height:1.5; display:flex; flex-direction:column; gap:4px;">
+                ${d.macroPoints.map((p) => `<li>${p}</li>`).join("")}
+              </ul>
+              <div>
+                <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-bottom:6px;">Modules Inside (${mods.length})</div>
+                <div style="display:flex; flex-direction:column; gap:6px;">
+                  ${mods
+                    .map(
+                      (m) => `
+                    <button data-jump-mod="${m.id}" style="text-align:left; padding:8px 10px; border-radius:10px; border:1px solid var(--border); background:var(--bg); cursor:pointer;">
+                      <div style="font-size:12.5px; font-weight:700; color:var(--fg);">${m.title}</div>
+                      <div style="font-size:11.2px; color:var(--muted);">${m.tag}</div>
+                    </button>
+                  `,
+                    )
+                    .join("")}
+                </div>
+              </div>
+            `,
+          );
+        }
+
+        const searchInput = document.getElementById("search-input");
+        const searchClear = document.getElementById("search-clear");
+        const searchResults = document.getElementById("search-results");
+
+        const searchIndex = [
+          ...DISTRICTS.map((d) => ({
+            kind: "District",
+            id: d.id,
+            title: d.name,
+            sub: d.badge,
+            color: d.accent,
+            haystack:
+              `${d.name} ${d.subtitle} ${d.badge} ${d.macroPoints.join(" ")}`.toLowerCase(),
+          })),
+          ...MODULES.map((m) => ({
+            kind: "Module",
+            id: m.id,
+            title: m.title,
+            sub: `${districtMap[m.district].name} · ${m.tag}`,
+            color: districtMap[m.district].accent,
+            haystack:
+              `${m.title} ${m.tag} ${m.summary} ${m.streetNote} ${m.chips.join(" ")} ${m.files.join(" ")}`.toLowerCase(),
+          })),
+          ...EDGES.filter((e) => e.labelPos).map((e) => ({
+            kind: "Interface",
+            id: e.id,
+            title: e.label,
+            sub: `${moduleMap[e.from].title} → ${moduleMap[e.to].title}`,
+            color: e.color,
+            haystack:
+              `${e.label} ${e.detail} ${moduleMap[e.from].title} ${moduleMap[e.to].title}`.toLowerCase(),
+          })),
+        ];
+
+        function renderSearch(q) {
+          const query = q.trim().toLowerCase();
+          searchClear.style.display = query ? "block" : "none";
+          if (!query) {
+            searchResults.classList.remove("open");
+            return;
+          }
+          const hits = searchIndex
+            .filter((item) => item.haystack.includes(query))
+            .slice(0, 10);
+          if (!hits.length) {
+            searchResults.innerHTML = `<div style="padding:10px 12px; font-size:12.5px; color:var(--muted);">No matching modules, routes, or files.</div>`;
+          } else {
+            searchResults.innerHTML = hits
+              .map(
+                (h) => `
+              <div class="search-item" data-skind="${h.kind}" data-sid="${h.id}">
+                <div style="min-width:0;">
+                  <div style="font-size:13px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${h.title}</div>
+                  <div style="font-size:11.2px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${h.sub}</div>
+                </div>
+                <span style="font-size:10.5px; font-weight:700; padding:2px 7px; border-radius:999px; background:${h.color}1c; color:${h.color}; flex-shrink:0;">${h.kind}</span>
+              </div>
+            `,
+              )
+              .join("");
+            searchResults.querySelectorAll(".search-item").forEach((row) => {
+              row.addEventListener("click", () => {
+                const kind = row.dataset.skind;
+                const id = row.dataset.sid;
+                searchResults.classList.remove("open");
+                if (kind === "District") {
+                  const d = districtMap[id];
+                  flyToRect(d.x - 40, d.y - 40, d.w + 80, d.h + 80);
+                  selectDistrict(id);
+                } else if (kind === "Module") {
+                  const m = moduleMap[id];
+                  selectModule(id);
+                  flyToRect(m.x - 80, m.y - 80, m.w + 160, m.h + 160, 1.38);
+                } else {
+                  const e = edgeMap[id];
+                  selectEdge(id);
+                  if (e.labelPos) {
+                    flyToRect(
+                      e.labelPos[0] - 260,
+                      e.labelPos[1] - 180,
+                      520,
+                      360,
+                      1.15,
+                    );
+                  }
+                }
+              });
+            });
+          }
+          searchResults.classList.add("open");
+        }
+
+        searchInput.addEventListener("input", () =>
+          renderSearch(searchInput.value),
+        );
+        searchInput.addEventListener("focus", () => {
+          if (searchInput.value.trim()) searchResults.classList.add("open");
+        });
+        searchClear.addEventListener("click", () => {
+          searchInput.value = "";
+          renderSearch("");
+          searchInput.focus();
+        });
+        document.addEventListener("click", (e) => {
+          if (!document.getElementById("search-wrap").contains(e.target)) {
+            searchResults.classList.remove("open");
+          }
+        });
+
+        document
+          .getElementById("btn-zoom-in")
+          .addEventListener("click", () =>
+            zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1.28),
+          );
+        document
+          .getElementById("btn-zoom-out")
+          .addEventListener("click", () =>
+            zoomAt(window.innerWidth / 2, window.innerHeight / 2, 0.78),
+          );
+        document
+          .getElementById("btn-fit")
+          .addEventListener("click", () => fitAll(false));
+        document
+          .getElementById("insp-close")
+          .addEventListener("click", clearSelection);
+        document
+          .getElementById("journey-reset")
+          .addEventListener("click", () => setJourney("all"));
+        document
+          .getElementById("theme-toggle")
+          .addEventListener("click", () =>
+            setTheme(isDarkTheme() ? "light" : "dark"),
+          );
+
+        document.querySelectorAll(".journey-chip").forEach((btn) => {
+          btn.addEventListener("click", () => setJourney(btn.dataset.journey));
+        });
+
+        window.addEventListener("keydown", (e) => {
+          if (document.activeElement === searchInput) {
+            if (e.key === "Escape") {
+              searchInput.blur();
+              searchResults.classList.remove("open");
+            }
+            return;
+          }
+          if (e.key === "/") {
+            e.preventDefault();
+            searchInput.focus();
+            return;
+          }
+          if (e.key === "+" || e.key === "=")
+            zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1.25);
+          else if (e.key === "-" || e.key === "_")
+            zoomAt(window.innerWidth / 2, window.innerHeight / 2, 0.8);
+          else if (e.key === "0" || e.key === "f" || e.key === "F")
+            fitAll(false);
+          else if (e.key === "Escape") {
+            clearSelection();
+            setJourney("all");
+          } else if (e.key >= "1" && e.key <= "7") {
+            const d = DISTRICTS.find((x) => x.key === e.key);
+            if (d) {
+              flyToRect(d.x - 40, d.y - 40, d.w + 80, d.h + 80);
+              selectDistrict(d.id);
+            }
+          }
+        });
+
+        window.addEventListener("resize", () => {
+          drawGrid();
+          drawMinimap();
+        });
+
+        syncThemeButton();
+        buildWorld();
+        fitAll(true);
+        applyVisualFilters();
+      })();
+    </script>
+  </body>
+</html>

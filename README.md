@@ -34,6 +34,8 @@ Features koom is particularly proud of:
 
 ## Architecture
 
+[Explore the interactive architecture map](https://akurilin.github.io/koom/architecture.html).
+
 koom is a small monorepo split by runtime:
 
 | Component  | Stack                                            | Role                                                                       |
